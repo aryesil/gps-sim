@@ -1,7 +1,21 @@
 // frontend/live.js
+window._liveChannels = window._liveChannels || new Set();
+function _updateRfBar() {
+  const bar = document.getElementById('rf-status-bar');
+  if (!bar) return;
+  if (window._liveChannels.size > 0) {
+    bar.textContent = '● RF TRANSMITTING — SHIELDED TEST ENVIRONMENT ONLY';
+    bar.className = 'rf-on';
+  } else {
+    bar.textContent = 'RF OUTPUT: OFF';
+    bar.className = 'rf-off';
+  }
+}
+
 window.enableLiveTabs = function (channelId, txSlot) {
   const id = channelId;
   channelState(id).txSlot = txSlot;
+  window._liveChannels.add(id); _updateRfBar();
   document.getElementById(`${id}-live-hint`).hidden = true;
   document.getElementById(`${id}-jog-controls`).hidden = false;
   document.getElementById(`${id}-time-controls`).hidden = false;
@@ -27,12 +41,14 @@ window.enableLiveTabs = function (channelId, txSlot) {
       });
       const d = await r.json();
       if (!r.ok) { if (window.logLine) logLine('live time_shift failed: ' + JSON.stringify(d), 'error'); return; }
-      document.getElementById(`${id}-time-offset`).value = d.time_offset_s;
+      const v = d.time_offset_s;
+      document.getElementById(`${id}-time-offset`).value = (v >= 0 ? '+' : '') + v;
     };
   });
 };
 
 window.disableLiveTabs = function (channelId) {
+  window._liveChannels.delete(channelId); _updateRfBar();
   document.getElementById(`${channelId}-live-hint`).hidden = false;
   document.getElementById(`${channelId}-jog-controls`).hidden = true;
   document.getElementById(`${channelId}-time-controls`).hidden = true;

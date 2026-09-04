@@ -1,4 +1,15 @@
 // frontend/app.js (trimmed)
+window.openConfirmModal = function (onConfirm) {
+  const modal = document.getElementById('confirm-modal');
+  const input = document.getElementById('confirm-modal-input');
+  const ok = document.getElementById('confirm-modal-ok');
+  input.value = ''; ok.disabled = true; modal.hidden = false;
+  input.oninput = () => { ok.disabled = input.value.trim() !== 'TRANSMIT'; };
+  document.getElementById('confirm-modal-cancel').onclick = () => { modal.hidden = true; };
+  ok.onclick = () => { modal.hidden = true; onConfirm(); };
+  input.focus();
+};
+
 window.addEventListener('DOMContentLoaded', () => {
   addChannel();   // start with one channel card
   document.getElementById('btn-add-channel').onclick = () => addChannel();

@@ -4,9 +4,23 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>GPS L1 C/A Signal Simulator</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<div id="rf-status-bar" class="rf-off">RF OUTPUT: OFF</div>
+<div id="confirm-modal" class="modal-overlay" hidden>
+  <div class="modal-box">
+    <h3>Confirm RF Transmission</h3>
+    <p>This will transmit real RF. Confirm you are in a shielded/isolated test
+    environment by typing <strong>TRANSMIT</strong> below.</p>
+    <input id="confirm-modal-input" placeholder="Type TRANSMIT" autocomplete="off">
+    <div class="modal-actions">
+      <button id="confirm-modal-cancel" class="btn-secondary">Cancel</button>
+      <button id="confirm-modal-ok" class="btn-danger" disabled>Confirm &amp; Transmit</button>
+    </div>
+  </div>
+</div>
 <div id="app-shell">
   <nav id="sidebar">
     <button class="side-icon active" data-page="channels" title="Channels">CH</button>

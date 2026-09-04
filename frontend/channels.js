@@ -17,9 +17,9 @@ window.addChannel = function () {
   card.id = id;
   card.innerHTML = `
     <div class="channel-header">
-      <strong>Channel ${_channelCount}</strong>
-      <span class="badge" id="${id}-badge">Ready</span>
-      <button id="${id}-start">Start</button>
+      <strong>GPS L1 C/A — Channel ${_channelCount}</strong>
+      <span class="badge" id="${id}-badge">STOPPED</span>
+      <button id="${id}-start" class="btn-danger">Start</button>
       <button id="${id}-stop">Stop</button>
       <button id="${id}-remove">Remove</button>
     </div>
@@ -29,7 +29,8 @@ window.addChannel = function () {
         <label>Device URI <input id="${id}-uri" value="ip:192.168.2.1"></label>
         <label>LO Hz <input id="${id}-lo" value="1575420000"></label>
         <label>TX gain dB <input id="${id}-gain" type="number" value="-50"></label>
-        <label><input type="checkbox" id="${id}-tx-confirm"> Isolated/cabled setup confirmed</label>
+        <input type="checkbox" id="${id}-tx-confirm" hidden>
+        <div class="hint">Isolated setup confirmed by typing TRANSMIT at Start.</div>
         <label><input type="checkbox" id="${id}-tx-dryrun"> Dry run (no RF)</label>
       </div>
       <div class="col-sim">
@@ -51,8 +52,8 @@ window.addChannel = function () {
         <div class="channel-tabs">
           <button class="tab-btn active" data-tab="status">Status</button>
           <button class="tab-btn" data-tab="satellites">Satellites</button>
-          <button class="tab-btn" data-tab="position">Position</button>
-          <button class="tab-btn" data-tab="time">Time</button>
+          <button class="tab-btn" data-tab="position">LLA Manipulation</button>
+          <button class="tab-btn" data-tab="time">Time Manipulation</button>
         </div>
         <div class="tab-content" data-tab="status">
           <table id="${id}-inspect-table"></table>
@@ -72,23 +73,37 @@ window.addChannel = function () {
         <div class="tab-content" data-tab="position" hidden>
           <div id="${id}-live-hint" class="hint">Start live transmit to enable jog controls.</div>
           <div id="${id}-jog-controls" hidden>
-            <button data-dir="north">North</button>
-            <button data-dir="south">South</button>
-            <button data-dir="east">East</button>
-            <button data-dir="west">West</button>
-            <button data-dir="up">Up</button>
-            <button data-dir="down">Down</button>
-            <label>Step m <input id="${id}-jog-step" type="number" value="1000"></label>
-            <div id="${id}-live-llh"></div>
+            <div class="jog-row">
+              <div>
+                <div class="jog-grid">
+                  <span></span><button data-dir="north">N</button><span></span>
+                  <button data-dir="west">W</button><span></span><button data-dir="east">E</button>
+                  <span></span><button data-dir="south">S</button><span></span>
+                </div>
+              </div>
+              <div class="jog-updown">
+                <button data-dir="up">Up</button>
+                <button data-dir="down">Down</button>
+              </div>
+              <div>
+                <h4>Offsets</h4>
+                <label>Distance step (m) <input id="${id}-jog-step" type="number" value="1000"></label>
+                <div id="${id}-live-llh" class="jog-readout"></div>
+              </div>
+            </div>
           </div>
         </div>
         <div class="tab-content" data-tab="time" hidden>
           <div id="${id}-time-controls" hidden>
-            <label>GPS ToW shift s <input id="${id}-time-offset" type="number" value="0"></label>
-            <button data-field="time_offset_s" data-delta="-30">-30s</button>
-            <button data-field="time_offset_s" data-delta="30">+30s</button>
-            <button data-field="time_offset_s" data-delta="-1">-1s</button>
-            <button data-field="time_offset_s" data-delta="1">+1s</button>
+            <h4>Time Manipulation</h4>
+            <label>GPS Time of Week shift, s</label>
+            <div class="time-stepper">
+              <button data-field="time_offset_s" data-delta="-30">«</button>
+              <button data-field="time_offset_s" data-delta="-1">‹</button>
+              <output id="${id}-time-offset">+0</output>
+              <button data-field="time_offset_s" data-delta="1">›</button>
+              <button data-field="time_offset_s" data-delta="30">»</button>
+            </div>
           </div>
         </div>
       </div>
@@ -220,6 +235,13 @@ function wireChannelActions(id) {
   document.getElementById(`${id}-start`).onclick = async () => {
     const ll = st.map.latlng();
     if (!ll) return alert('click the map to set a start position first');
+    if (!document.getElementById(`${id}-tx-confirm`).checked) {
+      openConfirmModal(() => {
+        document.getElementById(`${id}-tx-confirm`).checked = true;
+        document.getElementById(`${id}-start`).click();
+      });
+      return;
+    }
     const body = {
       rinex_path: document.getElementById(`${id}-rinex-path`).value.trim() || 'AUTO',
       lat: ll.lat, lon: ll.lng, alt: 100,
@@ -251,7 +273,8 @@ function wireChannelActions(id) {
       alert(msg);
       return;
     }
-    document.getElementById(`${id}-badge`).textContent = 'On Air';
+    const badge = document.getElementById(`${id}-badge`);
+    badge.textContent = 'LIVE'; badge.classList.add('badge-live');
     const rd = r.body.getReader(), dec = new TextDecoder();
     (function pump() {
       rd.read().then(({ value, done }) => {
@@ -260,11 +283,11 @@ function wireChannelActions(id) {
           const line = chunk.replace(/^data: /, '').trim(); if (!line) return;
           const msg = JSON.parse(line);
           if (msg.slot && !channelState(id).txSlot) enableLiveTabs(id, msg.slot);
-          if (msg.finished) { document.getElementById(`${id}-badge`).textContent = 'Ready'; disableLiveTabs(id); }
+          if (msg.finished) { badge.textContent = 'STOPPED'; badge.classList.remove('badge-live'); disableLiveTabs(id); }
         });
         pump();
       }).catch(() => {
-        document.getElementById(`${id}-badge`).textContent = 'Ready';
+        badge.textContent = 'STOPPED'; badge.classList.remove('badge-live');
         disableLiveTabs(id);
       });
     })();
