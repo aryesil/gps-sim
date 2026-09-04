@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend import (config, ephemeris, geometry, scenario, generator,
-                     inspector, receiver, lnav_display, transmit)
+                     inspector, receiver, lnav_display, transmit, live)
 
 app = FastAPI(title="GPS L1 C/A Signal Simulator")
 
@@ -25,8 +25,25 @@ def _eph_unavailable(request: Request, exc: ephemeris.EphemerisUnavailable):
         content={"detail": f"ephemeris unavailable: {exc}. "
                            "Put a local RINEX path in the RINEX field instead of AUTO."})
 _FRONT = pathlib.Path(__file__).resolve().parent.parent / "frontend"
-_tx_lock = threading.Lock()
-_tx_stop = threading.Event()
+# TX1/TX2 -- the PlutoSDR's two real simultaneous outputs (KNOWN hardware
+# fact, not an arbitrary cap). Each slot holds {"stop": Event, "session":
+# LiveSession | None} for whatever is currently occupying it, or None.
+_tx_slots: dict[str, dict | None] = {"TX1": None, "TX2": None}
+_tx_slots_lock = threading.Lock()
+
+
+def _acquire_tx_slot() -> str:
+    with _tx_slots_lock:
+        for slot, occ in _tx_slots.items():
+            if occ is None:
+                _tx_slots[slot] = {"stop": threading.Event(), "session": None}
+                return slot
+    raise HTTPException(409, "both TX1 and TX2 are already transmitting")
+
+
+def _release_tx_slot(slot: str) -> None:
+    with _tx_slots_lock:
+        _tx_slots[slot] = None
 
 
 def download_free_bytes(path) -> int:
@@ -277,8 +294,7 @@ def lnav(prn: int, outdir: str):
 def start_transmit(body: dict):
     if not config.ALLOW_TX or not body.get("confirm_isolated"):
         raise HTTPException(403, "transmit disabled: needs ALLOW_TX and confirm_isolated")
-    if _tx_lock.locked():
-        raise HTTPException(409, "a transmit is already running")
+    slot = _acquire_tx_slot()
     params = transmit.TxParams(
         iq_path=str(config.OUT_DIR / body["outdir"] / "gpssim.bin")
         if "outdir" in body else body["iq_path"],
@@ -287,7 +303,6 @@ def start_transmit(body: dict):
         tx_gain_db=float(body.get("tx_gain_db", -50.0)),
         uri=body.get("uri", config.DEVICE_URI),
         tx_scale=float(body.get("tx_scale", 1.0)))
-    _tx_stop.clear()
     itemsize = 1 if params.sample_format == "int8" else 2
     try:
         total_samples = pathlib.Path(params.iq_path).stat().st_size // (2 * itemsize)
@@ -295,29 +310,119 @@ def start_transmit(body: dict):
         total_samples = 0
 
     def events():
-        with _tx_lock:
+        try:
             q: list = []
             def cb(d):
                 d["fraction"] = (d["samples"] / total_samples) if total_samples else None
                 q.append(d)
             th = threading.Thread(target=transmit.stream,
                                   kwargs=dict(params=params, dry_run=body.get("dry_run", False),
-                                              progress_cb=cb, cancel=_tx_stop))
+                                              progress_cb=cb, cancel=_tx_slots[slot]["stop"]))
             th.start()
             while th.is_alive() or q:
                 while q:
-                    yield f"data: {json.dumps(q.pop(0))}\n\n"
-                if _tx_stop.is_set():
+                    yield f"data: {json.dumps({**q.pop(0), 'slot': slot})}\n\n"
+                if _tx_slots[slot]["stop"].is_set():
                     break
                 th.join(timeout=0.2)
-            yield f"data: {json.dumps({'finished': True})}\n\n"
+            yield f"data: {json.dumps({'finished': True, 'slot': slot})}\n\n"
+        finally:
+            _release_tx_slot(slot)
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
 @app.post("/api/transmit/stop")
-def stop_transmit():
-    _tx_stop.set()
+def stop_transmit(body: dict | None = None):
+    slot = (body or {}).get("slot")
+    if slot is None:
+        occupied = [s for s, occ in _tx_slots.items() if occ is not None]
+        if len(occupied) == 1:
+            slot = occupied[0]
+        elif len(occupied) == 0:
+            return {"stopped": True}
+        else:
+            raise HTTPException(400, "both TX1 and TX2 occupied: specify {\"slot\": \"TX1\"|\"TX2\"}")
+    if _tx_slots.get(slot):
+        _tx_slots[slot]["stop"].set()
+    return {"stopped": True}
+
+
+_live_sessions: dict[str, live.LiveSession] = {}  # keyed by TX slot
+
+
+@app.post("/api/live/start")
+def live_start(body: dict):
+    if not config.ALLOW_TX or not body.get("confirm_isolated"):
+        raise HTTPException(403, "transmit disabled: needs ALLOW_TX and confirm_isolated")
+    slot = _acquire_tx_slot()
+    start = dt.datetime.fromisoformat(body["start_utc"])
+    req = scenario.ScenarioRequest(
+        rinex_path=body["rinex_path"], lat=body["lat"], lon=body["lon"], alt=body["alt"],
+        start=start, duration_s=int(body.get("duration_s", 300)),
+        sample_rate=float(body.get("sample_rate", config.DEFAULT_SAMPLE_RATE)),
+        sample_format=body.get("sample_format", "int16"))
+    session = live.LiveSession(req)
+    _tx_slots[slot]["session"] = session
+    params = transmit.TxParams(
+        iq_path="(live)", sample_rate=req.sample_rate, sample_format=req.sample_format,
+        lo_hz=float(body.get("lo_hz", config.L1_HZ)),
+        tx_gain_db=float(body.get("tx_gain_db", -50.0)),
+        uri=body.get("uri", config.DEVICE_URI))
+
+    def events():
+        try:
+            q: list = []
+            def cb(d):
+                d["fraction"] = None  # unbounded live stream -- no total to divide by
+                q.append(d)
+            th = threading.Thread(
+                target=transmit.stream,
+                kwargs=dict(params=params, dry_run=body.get("dry_run", False),
+                           progress_cb=cb, cancel=_tx_slots[slot]["stop"],
+                           chunk_source=session.segments()))
+            th.start()
+            while th.is_alive() or q:
+                while q:
+                    yield f"data: {json.dumps({**q.pop(0), 'slot': slot})}\n\n"
+                if _tx_slots[slot]["stop"].is_set():
+                    break
+                th.join(timeout=0.2)
+            yield f"data: {json.dumps({'finished': True, 'slot': slot})}\n\n"
+        finally:
+            _release_tx_slot(slot)
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
+def _session_for_slot(slot: str) -> live.LiveSession:
+    occ = _tx_slots.get(slot)
+    if not occ or occ.get("session") is None:
+        raise HTTPException(404, f"no live session on {slot}")
+    return occ["session"]
+
+
+@app.post("/api/live/jog")
+def live_jog(body: dict):
+    _session_for_slot(body["slot"]).jog(body["direction"], float(body["distance_m"]))
+    return {"llh": _session_for_slot(body["slot"]).state.llh}
+
+
+@app.post("/api/live/time_shift")
+def live_time_shift(body: dict):
+    s = _session_for_slot(body["slot"])
+    s.shift_time(body["field"], float(body["delta"]))
+    return {"time_offset_s": s.state.time_offset_s, "pps_shift_s": s.state.pps_shift_s,
+            "clock_corr_ns": s.state.clock_corr_ns}
+
+
+@app.post("/api/live/stop")
+def live_stop(body: dict):
+    slot = body["slot"]
+    if _tx_slots.get(slot):
+        _tx_slots[slot]["stop"].set()
+        if _tx_slots[slot]["session"]:
+            _tx_slots[slot]["session"].stop()
     return {"stopped": True}
 
 
