@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend import (config, ephemeris, geometry, scenario, generator,
-                     inspector, receiver, lnav_display, transmit, live)
+                     inspector, receiver, lnav_display, transmit, live, trajectory)
 
 app = FastAPI(title="GPS L1 C/A Signal Simulator")
 
@@ -434,6 +434,28 @@ def live_stop(body: dict):
         if occ["session"]:
             occ["session"].stop()
     return {"stopped": True}
+
+
+@app.post("/api/trajectory/save")
+def trajectory_save(body: dict):
+    try:
+        trajectory.save(body["name"], body["waypoints"])
+    except trajectory.TrajectoryError as e:
+        raise HTTPException(400, str(e))
+    return {"saved": body["name"]}
+
+
+@app.get("/api/trajectory/list")
+def trajectory_list():
+    return {"names": trajectory.list_names()}
+
+
+@app.get("/api/trajectory/load")
+def trajectory_load(name: str):
+    try:
+        return {"waypoints": trajectory.load(name)}
+    except trajectory.TrajectoryError as e:
+        raise HTTPException(404, str(e))
 
 
 def _gps_tow(when_utc: dt.datetime) -> float:
