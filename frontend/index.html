@@ -23,9 +23,18 @@
 </div>
 <div id="app-shell">
   <nav id="sidebar">
-    <button class="side-icon active" data-page="channels" title="Channels">CH</button>
-    <button class="side-icon" data-page="trajectory" title="Trajectory Builder">TB</button>
-    <button class="side-icon" data-page="log" title="Log">LG</button>
+    <button class="side-icon active" data-page="channels" title="Channels">
+      <svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1"></rect><rect x="13" y="3" width="8" height="8" rx="1"></rect><rect x="3" y="13" width="8" height="8" rx="1"></rect><rect x="13" y="13" width="8" height="8" rx="1"></rect></svg>
+      <span>Channels</span>
+    </button>
+    <button class="side-icon" data-page="trajectory" title="Trajectory Builder">
+      <svg viewBox="0 0 24 24"><path d="M12 2c-4 0-7 3-7 7 0 5 7 13 7 13s7-8 7-13c0-4-3-7-7-7z"></path><circle cx="12" cy="9" r="2.4" fill="var(--bg)" stroke="none"></circle></svg>
+      <span>Trajectory Builder</span>
+    </button>
+    <button class="side-icon" data-page="log" title="Log">
+      <svg viewBox="0 0 24 24"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="4" y1="12" x2="20" y2="12"></line><line x1="4" y1="18" x2="14" y2="18"></line></svg>
+      <span>Log</span>
+    </button>
   </nav>
   <main id="page-container">
     <section data-page="channels" id="page-channels">
