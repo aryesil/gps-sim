@@ -98,7 +98,7 @@ def _iter_chunks(path: str, fmt: str, chunk_samples: int):
 
 
 def stream(params: TxParams, dry_run: bool = False, progress_cb=None,
-           cancel=None) -> dict:
+           cancel=None, chunk_source=None) -> dict:
     if not config.ALLOW_TX:
         raise TransmitDisabled("set ALLOW_TX=1 and confirm the isolated setup")
     if params.sample_format not in ("int8", "int16"):
@@ -115,10 +115,13 @@ def stream(params: TxParams, dry_run: bool = False, progress_cb=None,
         except Exception as ex:  # ImportError, AttributeError, iio errors, ...
             raise TransmitError(f"device open failed: {ex}") from ex
 
+    chunks = chunk_source if chunk_source is not None else _iter_chunks(
+        params.iq_path, params.sample_format, params.chunk_samples)
+
     total = 0
     t0 = time.monotonic()
     try:
-        for chunk in _iter_chunks(params.iq_path, params.sample_format, params.chunk_samples):
+        for chunk in chunks:
             if cancel is not None and cancel.is_set():
                 break
             if params.tx_scale != 1.0:
@@ -143,9 +146,10 @@ def stream(params: TxParams, dry_run: bool = False, progress_cb=None,
 
 
 class TxSession:
-    def __init__(self, params: TxParams, dry_run: bool = False):
+    def __init__(self, params: TxParams, dry_run: bool = False, chunk_source=None):
         self._params = params
         self._dry_run = dry_run
+        self._chunk_source = chunk_source
         self._cancel = threading.Event()
         self._thread = None
         self._result = None
@@ -161,7 +165,8 @@ class TxSession:
         def _run():
             try:
                 self._result = stream(self._params, dry_run=self._dry_run,
-                                      progress_cb=_cb, cancel=self._cancel)
+                                      progress_cb=_cb, cancel=self._cancel,
+                                      chunk_source=self._chunk_source)
             finally:
                 q.put(None)
         self._thread = threading.Thread(target=_run, daemon=True)

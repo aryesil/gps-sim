@@ -121,3 +121,15 @@ def test_txsession_stop_ends_stream(tmp_path, monkeypatch):
     consumer.join(timeout=3.0)
     assert consumer.is_alive() is False
     assert session.running is False
+
+
+def test_stream_uses_custom_chunk_source(monkeypatch):
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    chunks = [np.array([1 + 1j, 2 + 2j], dtype=np.complex64),
+             np.array([3 + 3j], dtype=np.complex64)]
+    p = transmit.TxParams(iq_path="unused", sample_rate=2.6e6, sample_format="int16")
+    seen = []
+    monkeypatch.setattr(transmit, "_DrySink", _recording_sink(seen))
+    out = transmit.stream(p, dry_run=True, chunk_source=iter(chunks))
+    assert out["samples"] == 3
+    assert len(seen) == 2

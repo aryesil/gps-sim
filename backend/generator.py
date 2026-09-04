@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import json
 import pathlib
@@ -32,6 +33,41 @@ def binary_version(binary: str | None = None) -> str:
         return "unknown"
 
 
+def _prepare_nav(req: scenario.ScenarioRequest, outdir: pathlib.Path,
+                 time_offset_s: float = 0.0) -> pathlib.Path:
+    """Resolve + realign ephemeris for req.start (+ time_offset_s), write it
+    as a RINEX-2 nav file inside outdir, and return its path. Shared by
+    run() and run_segment() so the F2/F4 handling in KNOWN_ISSUES only
+    exists once."""
+    eph = ephemeris.parse_rinex(req.rinex_path)
+    gps_start = (req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
+                 + dt.timedelta(seconds=time_offset_s))
+    week, sow = ephemeris.gps_week_and_sow(gps_start)
+    eph = ephemeris.align_epochs(eph, week, sow)
+    nav_path = outdir / "nav.rinex2.n"
+    nav_path.write_text(ephemeris.to_rinex2_nav(eph))
+    return nav_path
+
+
+def _run_gps_sdr_sim(argv: list[str], duration_s: float, progress_cb=None) -> None:
+    """Run gps-sdr-sim to completion, draining its merged stdout/stderr
+    (KNOWN_ISSUES F5) and raising GeneratorError on nonzero exit. Shared
+    exec core for run() and run_segment()."""
+    tail_lines: list[str] = []
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    for line in proc.stdout:
+        tail_lines.append(line)
+        if len(tail_lines) > 100:
+            tail_lines.pop(0)
+        frac = parse_progress(line, duration_s)
+        if frac is not None and progress_cb:
+            progress_cb(frac)
+    proc.wait()
+    if proc.returncode != 0:
+        tail = "".join(tail_lines)[-2000:]
+        raise GeneratorError(f"gps-sdr-sim exit {proc.returncode}: {tail}")
+
+
 def run(req: scenario.ScenarioRequest, progress_cb=None, binary: str | None = None) -> pathlib.Path:
     b = binary or config.GPS_SDR_SIM_BIN
     outdir = config.OUT_DIR / dt.datetime.utcnow().strftime("%Y%m%dT%H%M%S%f")
@@ -44,41 +80,9 @@ def run(req: scenario.ScenarioRequest, progress_cb=None, binary: str | None = No
         scenario.write_motion_csv(req, motion_csv)
 
     argv = [b] + scenario.build_args(req, str(out_bin), motion_csv)
-    # gps-sdr-sim's bundled parser only understands RINEX-2 nav (KNOWN_ISSUES
-    # F2); re-serialize whatever RINEX version was resolved into one so it
-    # always gets a file it accepts. Align every satellite's toc/toe to the
-    # requested start ourselves (KNOWN_ISSUES F4) rather than relying on
-    # gps-sdr-sim's own -T, which only realigns to whichever satellite it
-    # finds first and aborts ("No current set of ephemerides has been
-    # found") if the file's other satellites keep their own, possibly
-    # far-off broadcast epochs.
-    eph = ephemeris.parse_rinex(req.rinex_path)
-    gps_start = req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
-    week, sow = ephemeris.gps_week_and_sow(gps_start)
-    eph = ephemeris.align_epochs(eph, week, sow)
-    nav_path = outdir / "nav.rinex2.n"
-    nav_path.write_text(ephemeris.to_rinex2_nav(eph))
+    nav_path = _prepare_nav(req, outdir)
     argv[argv.index("-e") + 1] = str(nav_path)
-    # gps-sdr-sim's progress lines ("Time into run = ...") print to stderr,
-    # not stdout (confirmed by inspecting its output directly). Reading only
-    # stdout while nobody drains stderr deadlocks as soon as stderr's ~3000
-    # lines (one per 0.1s of a multi-minute scenario) fill the OS pipe
-    # buffer: the child blocks on write(), the parent blocks on proc.wait()
-    # -- the process never dies, generate never completes (KNOWN_ISSUES F5).
-    # Merging stderr into stdout means there is only one pipe to drain.
-    tail_lines: list[str] = []
-    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    for line in proc.stdout:
-        tail_lines.append(line)
-        if len(tail_lines) > 100:
-            tail_lines.pop(0)
-        frac = parse_progress(line, req.duration_s)
-        if frac is not None and progress_cb:
-            progress_cb(frac)
-    proc.wait()
-    if proc.returncode != 0:
-        tail = "".join(tail_lines)[-2000:]
-        raise GeneratorError(f"gps-sdr-sim exit {proc.returncode}: {tail}")
+    _run_gps_sdr_sim(argv, req.duration_s, progress_cb)
     if progress_cb:
         progress_cb(1.0)
 
@@ -96,4 +100,33 @@ def run(req: scenario.ScenarioRequest, progress_cb=None, binary: str | None = No
         "output": "gpssim.bin",
     }
     (outdir / "meta.json").write_text(json.dumps(meta, indent=2))
+    return outdir
+
+
+def run_segment(base_req: scenario.ScenarioRequest, llh: tuple[float, float, float],
+                time_offset_s: float, duration_s: float = 1.0,
+                binary: str | None = None) -> pathlib.Path:
+    """Short, static-position segment for LiveSession: same gps-sdr-sim
+    invocation as run(), but with base_req's lat/lon/alt overridden by
+    `llh` and the whole segment's GPS time shifted by `time_offset_s`
+    (real GPS-time-of-week spoofing, not cosmetic). No route/motion_csv
+    support: live segments are one static point per segment by construction.
+
+    The shift is applied to seg_req.start, so BOTH the nav file's aligned
+    toc/toe (_prepare_nav) and gps-sdr-sim's `-t` (scenario.build_args) move
+    together. Shifting only the nav epoch would leave tk = t - toe nonzero
+    and silently propagate every satellite to the wrong point in its orbit
+    -- geometry corruption, not a time shift."""
+    b = binary or config.GPS_SDR_SIM_BIN
+    outdir = config.OUT_DIR / ("live_" + dt.datetime.utcnow().strftime("%Y%m%dT%H%M%S%f"))
+    outdir.mkdir(parents=True, exist_ok=True)
+    out_bin = outdir / "gpssim.bin"
+
+    seg_req = dataclasses.replace(base_req, lat=llh[0], lon=llh[1], alt=llh[2],
+                                  start=base_req.start + dt.timedelta(seconds=time_offset_s),
+                                  duration_s=duration_s, route=None)
+    argv = [b] + scenario.build_args(seg_req, str(out_bin), motion_csv=None)
+    nav_path = _prepare_nav(seg_req, outdir, time_offset_s=0.0)
+    argv[argv.index("-e") + 1] = str(nav_path)
+    _run_gps_sdr_sim(argv, duration_s)
     return outdir

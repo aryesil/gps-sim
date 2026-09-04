@@ -7,3 +7,13 @@ table { border-collapse: collapse; width: 100%; }
 td, th { border: 1px solid #ddd; padding: 2px 6px; font-size: 12px; text-align: right; }
 .warn { color: #a40000; }
 canvas { border: 1px solid #eee; }
+#app-shell { display: flex; align-items: flex-start; }
+#sidebar { display: flex; flex-direction: column; gap: 0.25rem; padding: 0.5rem;
+  border-right: 1px solid #ccc; }
+.side-icon { padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px;
+  background: #f5f5f5; cursor: pointer; }
+.side-icon.active { background: #06c; color: #fff; }
+#page-container { flex: 1; padding: 0.5rem 1rem; min-width: 0; }
+.channel-card { border: 1px solid #999; border-radius: 6px; margin: 0.75rem 0; padding: 0.5rem; }
+.channel-columns { display: flex; gap: 1rem; flex-wrap: wrap; }
+.channel-tabs button.active { background: #06c; color: #fff; }

@@ -1,10 +1,10 @@
 // frontend/iqplot.js
-let _lastWaveform = null;   // {i, q} -- for hover readout
-let _lastSpectrum = null;   // {freqs, db} -- for hover readout
+let _lastWaveform = {};   // canvasId -> {i, q} -- for hover readout
+let _lastSpectrum = {};   // canvasId -> {freqs, db} -- for hover readout
 
-window.drawWaveform = function (i, q) {
-  _lastWaveform = { i, q };
-  const c = document.getElementById('iq-waveform'), g = c.getContext('2d');
+window.drawWaveform = function (canvasId, i, q) {
+  _lastWaveform[canvasId] = { i, q };
+  const c = document.getElementById(canvasId), g = c.getContext('2d');
   g.clearRect(0, 0, c.width, c.height);
   const n = i.length, mid = c.height / 2;
   const maxAbs = Math.max(1, ...i.map(Math.abs), ...q.map(Math.abs));
@@ -20,17 +20,20 @@ window.drawWaveform = function (i, q) {
   plot(i, '#06c'); plot(q, '#c60');
 };
 
-document.getElementById('iq-waveform').addEventListener('mousemove', (ev) => {
-  if (!_lastWaveform) return;
-  const c = ev.target, rect = c.getBoundingClientRect();
-  const k = Math.round(((ev.clientX - rect.left) / rect.width) * (_lastWaveform.i.length - 1));
-  if (k < 0 || k >= _lastWaveform.i.length) return;
-  document.getElementById('iq-waveform-readout').textContent =
-    `sample ${k}: I=${_lastWaveform.i[k].toFixed(1)} Q=${_lastWaveform.q[k].toFixed(1)}`;
-});
+window.attachWaveformHover = function (canvasId, readoutId) {
+  document.getElementById(canvasId).addEventListener('mousemove', (ev) => {
+    const last = _lastWaveform[canvasId];
+    if (!last) return;
+    const c = ev.target, rect = c.getBoundingClientRect();
+    const k = Math.round(((ev.clientX - rect.left) / rect.width) * (last.i.length - 1));
+    if (k < 0 || k >= last.i.length) return;
+    document.getElementById(readoutId).textContent =
+      `sample ${k}: I=${last.i[k].toFixed(1)} Q=${last.q[k].toFixed(1)}`;
+  });
+};
 
-window.drawConstellation = function (i, q) {
-  const c = document.getElementById('iq-constellation'), g = c.getContext('2d');
+window.drawConstellation = function (canvasId, i, q) {
+  const c = document.getElementById(canvasId), g = c.getContext('2d');
   g.clearRect(0, 0, c.width, c.height);
   const cx = c.width / 2, cy = c.height / 2;
   const maxAbs = Math.max(1, ...i.map(Math.abs), ...q.map(Math.abs));
@@ -41,9 +44,9 @@ window.drawConstellation = function (i, q) {
   }
 };
 
-window.drawSpectrum = function (freqs, db) {
-  _lastSpectrum = { freqs, db };
-  const c = document.getElementById('iq-spectrum'), g = c.getContext('2d');
+window.drawSpectrum = function (canvasId, freqs, db) {
+  _lastSpectrum[canvasId] = { freqs, db };
+  const c = document.getElementById(canvasId), g = c.getContext('2d');
   g.clearRect(0, 0, c.width, c.height);
   const lo = Math.min(...db), hi = Math.max(...db);
   const span = Math.max(1e-6, hi - lo);
@@ -56,17 +59,20 @@ window.drawSpectrum = function (freqs, db) {
   g.stroke();
 };
 
-document.getElementById('iq-spectrum').addEventListener('mousemove', (ev) => {
-  if (!_lastSpectrum) return;
-  const c = ev.target, rect = c.getBoundingClientRect();
-  const k = Math.round(((ev.clientX - rect.left) / rect.width) * (_lastSpectrum.freqs.length - 1));
-  if (k < 0 || k >= _lastSpectrum.freqs.length) return;
-  document.getElementById('iq-spectrum-readout').textContent =
-    `${(_lastSpectrum.freqs[k] / 1e3).toFixed(1)} kHz: ${_lastSpectrum.db[k].toFixed(1)} dB`;
-});
+window.attachSpectrumHover = function (canvasId, readoutId) {
+  document.getElementById(canvasId).addEventListener('mousemove', (ev) => {
+    const last = _lastSpectrum[canvasId];
+    if (!last) return;
+    const c = ev.target, rect = c.getBoundingClientRect();
+    const k = Math.round(((ev.clientX - rect.left) / rect.width) * (last.freqs.length - 1));
+    if (k < 0 || k >= last.freqs.length) return;
+    document.getElementById(readoutId).textContent =
+      `${(last.freqs[k] / 1e3).toFixed(1)} kHz: ${last.db[k].toFixed(1)} dB`;
+  });
+};
 
-window.drawCorrelationCurve = function (chips, amp) {
-  const c = document.getElementById('corr-curve'), g = c.getContext('2d');
+window.drawCorrelationCurve = function (canvasId, chips, amp) {
+  const c = document.getElementById(canvasId), g = c.getContext('2d');
   g.clearRect(0, 0, c.width, c.height);
   if (!amp.length) return;
   const hi = Math.max(...amp);
@@ -78,19 +84,19 @@ window.drawCorrelationCurve = function (chips, amp) {
   g.stroke();
 };
 
-window.loadCorrelationCurve = async function (outdir, prn) {
+window.loadCorrelationCurve = async function (canvasId, readoutId, outdir, prn) {
   const r = await fetch(`/api/correlation?outdir=${outdir}&prn=${prn}`);
-  const out = document.getElementById('corr-readout');
+  const out = document.getElementById(readoutId);
   if (!r.ok) { out.textContent = 'correlation error ' + r.status; return; }
   const d = await r.json();
-  drawCorrelationCurve(d.code_phase_chips, d.amplitude);
+  drawCorrelationCurve(canvasId, d.code_phase_chips, d.amplitude);
   out.textContent = `G${d.prn}: Doppler ${d.doppler_hz.toFixed(0)} Hz, peak ${d.metric_db.toFixed(1)} dB`;
 };
 
 // Reuses metric_db already computed per-PRN by /api/generate's inspect step
 // (backend/inspector.py:compare -> acquire) -- no extra backend call needed.
-window.drawCorrelationBars = function (rows) {
-  const c = document.getElementById('iq-correlation'), g = c.getContext('2d');
+window.drawCorrelationBars = function (canvasId, rows) {
+  const c = document.getElementById(canvasId), g = c.getContext('2d');
   g.clearRect(0, 0, c.width, c.height);
   if (!rows || !rows.length) return;
   const w = c.width / rows.length;
@@ -104,11 +110,11 @@ window.drawCorrelationBars = function (rows) {
   });
 };
 
-window.loadIqPlots = async function (outdir) {
+window.loadIqPlots = async function (channelId, outdir) {
   const r = await fetch(`/api/iqplot?outdir=${outdir}`);
   if (!r.ok) return;
   const d = await r.json();
-  drawWaveform(d.i, d.q);
-  drawConstellation(d.i, d.q);
-  drawSpectrum(d.spectrum_freq_hz, d.spectrum_db);
+  drawWaveform(`${channelId}-iq-waveform`, d.i, d.q);
+  drawConstellation(`${channelId}-iq-constellation`, d.i, d.q);
+  drawSpectrum(`${channelId}-iq-spectrum`, d.spectrum_freq_hz, d.spectrum_db);
 };

@@ -59,3 +59,56 @@ def test_run_raises_on_failure(tmp_path, monkeypatch):
     with pytest.raises(generator.GeneratorError) as ei:
         generator.run(req, binary=str(bad))
     assert "boom" in str(ei.value)
+
+
+def _capture_segment_argv(tmp_path, monkeypatch, time_offset_s):
+    """Run run_segment with the nav write + subprocess stubbed out, and
+    return the argv it would have executed. Argv-level so this does not
+    depend on gps-sdr-sim running (KNOWN_ISSUES F3 makes that xfail under
+    pytest)."""
+    monkeypatch.setattr(generator.config, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(generator, "_prepare_nav",
+                        lambda req, outdir, time_offset_s=0.0: outdir / "nav.rinex2.n")
+    captured = {}
+    monkeypatch.setattr(generator, "_run_gps_sdr_sim",
+                        lambda argv, duration_s, progress_cb=None: captured.update(argv=argv))
+    req = scenario.ScenarioRequest(
+        rinex_path=str(_FIX), lat=41.0, lon=29.0, alt=100.0,
+        start=dt.datetime(2026, 1, 1, 12, 0, 0), duration_s=300)
+    generator.run_segment(req, llh=(40.0, 33.0, 850.0),
+                          time_offset_s=time_offset_s, duration_s=1.0, binary="fake")
+    return captured["argv"]
+
+
+def test_run_segment_shifts_scenario_start_with_time_offset(tmp_path, monkeypatch):
+    """time_offset_s must move gps-sdr-sim's -t timestamp, not just the nav
+    file's toc/toe: shifting only the epoch leaves tk = t - toe nonzero and
+    corrupts satellite geometry instead of shifting time."""
+    base = _capture_segment_argv(tmp_path, monkeypatch, 0.0)
+    shifted = _capture_segment_argv(tmp_path, monkeypatch, 30.0)
+    t_base = base[base.index("-t") + 1]
+    t_shifted = shifted[shifted.index("-t") + 1]
+    fmt = "%Y/%m/%d,%H:%M:%S"
+    assert (dt.datetime.strptime(t_shifted, fmt)
+            - dt.datetime.strptime(t_base, fmt)) == dt.timedelta(seconds=30)
+
+
+def test_run_segment_passes_no_extra_offset_to_prepare_nav(tmp_path, monkeypatch):
+    """The nav epoch is shifted via seg_req.start alone; passing the offset
+    to _prepare_nav as well would double-shift the ephemeris."""
+    monkeypatch.setattr(generator.config, "OUT_DIR", tmp_path)
+    seen = {}
+    def fake_prepare_nav(req, outdir, time_offset_s=0.0):
+        seen["start"] = req.start
+        seen["offset"] = time_offset_s
+        return outdir / "nav.rinex2.n"
+    monkeypatch.setattr(generator, "_prepare_nav", fake_prepare_nav)
+    monkeypatch.setattr(generator, "_run_gps_sdr_sim",
+                        lambda argv, duration_s, progress_cb=None: None)
+    req = scenario.ScenarioRequest(
+        rinex_path=str(_FIX), lat=41.0, lon=29.0, alt=100.0,
+        start=dt.datetime(2026, 1, 1, 12, 0, 0), duration_s=300)
+    generator.run_segment(req, llh=(40.0, 33.0, 850.0), time_offset_s=45.0,
+                          duration_s=1.0, binary="fake")
+    assert seen["offset"] == 0.0
+    assert seen["start"] == dt.datetime(2026, 1, 1, 12, 0, 45)
