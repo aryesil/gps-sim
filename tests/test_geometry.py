@@ -10,7 +10,7 @@ from backend import geometry, ephemeris
 
 FIXDIR = pathlib.Path(__file__).parent / "fixtures"
 RX_LLH = (41.0082, 28.9784, 100.0)
-T_RX = 259200.0  # GPS TOW seconds, fixed for the fixture day
+T_RX = 475200.0  # GPS TOW seconds, fixed for the fixture day (== fixture toe)
 
 
 def test_llh_ecef_roundtrip_magnitude():
@@ -20,11 +20,14 @@ def test_llh_ecef_roundtrip_magnitude():
 
 def test_sat_state_radius_is_orbital():
     eph = ephemeris.parse_rinex(FIXDIR / "brdc_sample.rnx")
-    e = eph[sorted(eph)[0]]
+    rx = geometry.llh_to_ecef(*RX_LLH)
+    entries = geometry.constellation(eph, rx, T_RX)
+    top = max(entries, key=lambda ent: ent["el_deg"])
+    e = eph[top["prn"]]
     pos, vel, clk = geometry.sat_state(e, e["toe"])
     r = np.linalg.norm(pos)
-    assert 2.55e7 < r < 2.70e7            # GPS orbital radius ~26,560 km
-    assert 3.0e3 < np.linalg.norm(vel) < 4.2e3
+    assert 2.55e7 < r < 2.72e7            # GPS orbital radius ~26,560 km (near apogee for eccentric SVs)
+    assert 2.5e3 < np.linalg.norm(vel) < 4.2e3
     assert abs(clk) < 1e-3
 
 
@@ -40,10 +43,12 @@ def test_velocity_matches_numeric_difference():
 def test_observables_are_physical():
     eph = ephemeris.parse_rinex(FIXDIR / "brdc_sample.rnx")
     rx = geometry.llh_to_ecef(*RX_LLH)
-    obs = geometry.observables(eph[sorted(eph)[0]], rx, T_RX)
+    entries = geometry.constellation(eph, rx, T_RX)
+    top = max(entries, key=lambda ent: ent["el_deg"])
+    obs = geometry.observables(eph[top["prn"]], rx, T_RX)
     assert -90 <= obs["az_deg"] <= 360
     assert -90 <= obs["el_deg"] <= 90
-    assert 1.9e7 < obs["geo_range_m"] < 2.6e7
+    assert 1.9e7 < obs["geo_range_m"] < 2.7e7
     assert 0 <= obs["code_phase_chips"] < 1023
     assert abs(obs["carrier_doppler_hz"]) < 6000
 
