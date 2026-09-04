@@ -563,3 +563,15 @@ real `brdc0010.22n` (2022-01-01, ships with gps-sdr-sim), RX Istanbul, 12 s int8
   hand-trimmed RINEX-3 epoch. Regenerate it from a real multi-epoch BRDC subset
   so `tests/test_integration_generate.py` can stop skipping. Until then the
   integration test only runs against a manually supplied real BRDC.
+- **F2 (Important) — `gps-sdr-sim` rejects RINEX-3 nav files** (`.rnx`, e.g. a
+  file downloaded from BKG/CDDIS via `ephemeris._download`), failing with
+  "ERROR: Invalid start time" even though `georinex`/`backend.ephemeris`
+  parse them fine. It only accepts RINEX-2 nav (`.YYn`, e.g.
+  `brdc0010.22n`). Confirmed by running the built binary directly against
+  both `data/rinex/BRDC_2022001.rnx` (fails) and `gps-sdr-sim/brdc0010.22n`
+  (works) with identical `-t`/`-l` args. `/api/generate`'s AUTO path and the
+  `app._newest_cached_rinex()` fallback can therefore pick a cached `.rnx`
+  that geometry/preview handle correctly but that generation then rejects.
+  Fix requires either converting RINEX-3 nav to RINEX-2 before calling
+  `gps-sdr-sim`, or preferring cached RINEX-2 files when both exist for a
+  date.

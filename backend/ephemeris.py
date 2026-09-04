@@ -73,6 +73,8 @@ def _download(date: dt.date) -> pathlib.Path | None:
             continue
         content = r.content
         data = gzip.decompress(content) if content[:2] == b"\x1f\x8b" else content
+        if b"RINEX VERSION" not in data[:200]:
+            continue  # mirror returned an error page / HTML, not a RINEX file
         p = _cache_path(date)
         p.write_bytes(data)
         return p
@@ -125,7 +127,12 @@ def get_ephemeris(date: dt.date, download: bool = True) -> dict[int, dict]:
         p = _download(date)
         if p is None:
             raise EphemerisUnavailable(f"all mirrors failed for {date}")
-    return parse_rinex(p)
+    try:
+        return parse_rinex(p)
+    except EphemerisUnavailable:
+        raise
+    except Exception as e:
+        raise EphemerisUnavailable(f"could not parse cached RINEX {p}: {e}") from e
 
 
 def cached_rinex_path(date: dt.date) -> pathlib.Path:

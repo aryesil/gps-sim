@@ -9,13 +9,21 @@ import shutil
 import threading
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend import (config, ephemeris, geometry, scenario, generator,
                      inspector, receiver, lnav_display, transmit)
 
 app = FastAPI(title="GPS L1 C/A Signal Simulator")
+
+
+@app.exception_handler(ephemeris.EphemerisUnavailable)
+def _eph_unavailable(request: Request, exc: ephemeris.EphemerisUnavailable):
+    return JSONResponse(
+        status_code=503,
+        content={"detail": f"ephemeris unavailable: {exc}. "
+                           "Put a local RINEX path in the RINEX field instead of AUTO."})
 _FRONT = pathlib.Path(__file__).resolve().parent.parent / "frontend"
 _tx_lock = threading.Lock()
 _tx_stop = threading.Event()
@@ -29,11 +37,37 @@ def _finite(x):
     return x if isinstance(x, (int, float)) and math.isfinite(x) else None
 
 
+def _rinex_dir():
+    return config.DATA_DIR / "rinex"
+
+
+def _newest_cached_rinex():
+    d = _rinex_dir()
+    if not d.is_dir():
+        return None
+    files = [p for p in d.iterdir()
+             if p.is_file() and (p.suffix == ".rnx" or p.name[-1:].lower() == "n")]
+    if not files:
+        return None
+    return max(files, key=lambda p: p.stat().st_mtime)
+
+
 def _resolve_eph(date, rinex_path=None):
-    """Parse a local RINEX file when a real path is given, else download for `date`."""
+    """Return (eph_by_prn, source_label).
+
+    - explicit real path         -> parse that file
+    - 'AUTO'/None                -> that day's cache, else download,
+                                    else fall back to the newest cached RINEX
+    """
     if rinex_path and rinex_path != "AUTO":
-        return ephemeris.parse_rinex(rinex_path)
-    return ephemeris.get_ephemeris(date)
+        return ephemeris.parse_rinex(rinex_path), pathlib.Path(rinex_path).name
+    try:
+        return ephemeris.get_ephemeris(date), f"downloaded/cached {date:%Y-%j}"
+    except ephemeris.EphemerisUnavailable:
+        fb = _newest_cached_rinex()
+        if fb is None:
+            raise
+        return ephemeris.parse_rinex(fb), f"fallback: {fb.name}"
 
 
 def _has_libiio() -> bool:
@@ -67,13 +101,13 @@ def preview(body: dict):
     start = dt.datetime.fromisoformat(body["start_utc"])
     date = start.date()
     tow = _gps_tow(start)
-    eph = _resolve_eph(date, body.get("rinex_path"))
+    eph, eph_src = _resolve_eph(date, body.get("rinex_path"))
     rx = geometry.llh_to_ecef(body["lat"], body["lon"], body["alt"])
     sats = geometry.constellation(eph, rx, tow, body.get("mask_deg", 5.0))
     d = geometry.dop(sats, rx)
     pdop_raw = d["pdop"]
     d = {k: _finite(v) for k, v in d.items()}
-    warnings = []
+    warnings = [f"ephemeris: {eph_src}"]
     if len(sats) < 4:
         warnings.append("fewer than 4 visible satellites — no hardware fix")
     if math.isfinite(pdop_raw) and pdop_raw > 10:
@@ -98,7 +132,13 @@ def generate(body: dict):
     start = dt.datetime.fromisoformat(body["start_utc"])
     rinex_path = body["rinex_path"]
     if rinex_path == "AUTO":
-        rinex_path = str(ephemeris.cached_rinex_path(start.date()))
+        try:
+            rinex_path = str(ephemeris.cached_rinex_path(start.date()))
+        except ephemeris.EphemerisUnavailable:
+            fb = _newest_cached_rinex()
+            if fb is None:
+                raise
+            rinex_path = str(fb)
     req = scenario.ScenarioRequest(
         rinex_path=rinex_path, lat=body["lat"], lon=body["lon"], alt=body["alt"],
         start=start, duration_s=int(body["duration_s"]),
@@ -114,7 +154,7 @@ def generate(body: dict):
         outdir = generator.run(req, progress_cb=lambda f: q.append(f))
         for f in q:
             yield f"data: {json.dumps({'progress': f})}\n\n"
-        eph = _resolve_eph(req.start.date(), req.rinex_path)
+        eph, _ = _resolve_eph(req.start.date(), req.rinex_path)
         rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
         sats = geometry.constellation(eph, rx, _gps_tow(req.start))
         iq = inspector.read_iq(outdir / "gpssim.bin", req.sample_format,
@@ -133,7 +173,7 @@ def run_receiver(body: dict):
     outdir = config.OUT_DIR / body["outdir"]
     meta = json.loads((outdir / "meta.json").read_text())
     start = dt.datetime.fromisoformat(meta["config"]["start_utc"])
-    eph = _resolve_eph(start.date(), meta["config"].get("rinex_path"))
+    eph, _ = _resolve_eph(start.date(), meta["config"].get("rinex_path"))
     return receiver.fix_from_iq(
         outdir / "gpssim.bin", meta["sample_format"], meta["sample_rate"],
         eph, _gps_tow(start), marker_llh=body.get("marker"))
@@ -144,7 +184,7 @@ def lnav(prn: int, outdir: str):
     od = config.OUT_DIR / outdir
     meta = json.loads((od / "meta.json").read_text())
     start = dt.datetime.fromisoformat(meta["config"]["start_utc"])
-    eph = _resolve_eph(start.date(), meta["config"].get("rinex_path"))[prn]
+    eph = _resolve_eph(start.date(), meta["config"].get("rinex_path"))[0][prn]
     return lnav_display.explain(eph, tow_count=int(_gps_tow(start) / 6), week=eph.get("gps_week", 0))
 
 
@@ -203,4 +243,6 @@ def index():
     return FileResponse(_FRONT / "index.html")
 
 
+config.OUT_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/out", StaticFiles(directory=str(config.OUT_DIR)), name="out")
 app.mount("/static", StaticFiles(directory=str(_FRONT)), name="static")

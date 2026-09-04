@@ -9,7 +9,7 @@ window.addEventListener('DOMContentLoaded', () => {
     if (!su) return alert('set a start UTC');
     const warn = document.getElementById('warnings');
     warn.textContent = 'loading…';
-    let r, d;
+    let r, txt, d;
     try {
       r = await fetch('/api/preview', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -18,8 +18,10 @@ window.addEventListener('DOMContentLoaded', () => {
           rinex_path: document.getElementById('rinex-path').value.trim(),
         }),
       });
-      d = await r.json();
+      txt = await r.text();
     } catch (e) { warn.textContent = 'request failed: ' + e; return; }
+    try { d = JSON.parse(txt); }
+    catch (e) { warn.textContent = 'server error ' + r.status + ': ' + txt.slice(0, 300); return; }
     if (!r.ok) { warn.textContent = 'error ' + r.status + ': ' + (d.detail || JSON.stringify(d)); return; }
     if (!d.satellites || !d.satellites.length) { warn.textContent = 'no satellites returned'; return; }
     drawSkyplot(d.satellites);
@@ -46,24 +48,33 @@ window.addEventListener('DOMContentLoaded', () => {
       sample_rate: Number(document.getElementById('rate').value),
       sample_format: document.getElementById('fmt').value,
     };
+    const warn = document.getElementById('warnings');
+    warn.textContent = 'generating…';
     fetch('/api/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    }).then(r => {
+    }).then(async r => {
+      if (!r.ok) {
+        const t = await r.text();
+        let m; try { m = JSON.parse(t).detail; } catch (e) { m = t.slice(0, 300); }
+        warn.textContent = 'generate error ' + r.status + ': ' + m;
+        return;
+      }
       const rd = r.body.getReader(), dec = new TextDecoder();
       (function pump() {
         rd.read().then(({ value, done }) => {
-          if (done) return;
+          if (done) { if (warn.textContent === 'generating…') warn.textContent = ''; return; }
           dec.decode(value).split('\n\n').forEach(chunk => {
             const line = chunk.replace(/^data: /, '').trim(); if (!line) return;
-            const msg = JSON.parse(line);
+            let msg; try { msg = JSON.parse(line); } catch (e) { return; }
             if (msg.progress !== undefined)
               document.getElementById('gen-progress').value = msg.progress;
             if (msg.done) {
               lastOutdir = msg.done.outdir;
+              warn.textContent = 'IQ ready: ' + msg.done.outdir;
               drawInspectTable(msg.done.inspect);
               const a = document.getElementById('download-link');
-              a.href = `/static/../out/${msg.done.outdir}/gpssim.bin`; a.hidden = false;
+              a.href = `/out/${msg.done.outdir}/gpssim.bin`; a.hidden = false;
             }
           });
           pump();
