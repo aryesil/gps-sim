@@ -67,12 +67,30 @@ window.addChannel = function () {
           <table id="${id}-sat-table"></table>
         </div>
         <div class="tab-content" data-tab="position" hidden>
-          <p class="hint">Enabled once this channel is transmitting live.</p>
-          <!-- Task 8 fills this in -->
+          <div id="${id}-live-hint" class="hint">Start live transmit to enable jog controls.</div>
+          <div id="${id}-jog-controls" hidden>
+            <button data-dir="north">North</button>
+            <button data-dir="south">South</button>
+            <button data-dir="east">East</button>
+            <button data-dir="west">West</button>
+            <button data-dir="up">Up</button>
+            <button data-dir="down">Down</button>
+            <label>Step m <input id="${id}-jog-step" type="number" value="1000"></label>
+            <div id="${id}-live-llh"></div>
+          </div>
         </div>
         <div class="tab-content" data-tab="time" hidden>
-          <p class="hint">Enabled once this channel is transmitting live.</p>
-          <!-- Task 8 fills this in -->
+          <div id="${id}-time-controls" hidden>
+            <label>GPS ToW shift s <input id="${id}-time-offset" type="number" value="0"></label>
+            <button data-field="time_offset_s" data-delta="-30">-30s</button>
+            <button data-field="time_offset_s" data-delta="30">+30s</button>
+            <label>PPS phase shift s <input id="${id}-pps-shift" type="number" value="0"></label>
+            <button data-field="pps_shift_s" data-delta="-1">-1s</button>
+            <button data-field="pps_shift_s" data-delta="1">+1s</button>
+            <label>Sat clock corr ns <input id="${id}-clock-corr" type="number" value="0"></label>
+            <button data-field="clock_corr_ns" data-delta="-100">-100ns</button>
+            <button data-field="clock_corr_ns" data-delta="100">+100ns</button>
+          </div>
         </div>
       </div>
     </div>
@@ -183,4 +201,52 @@ function wireChannelActions(id) {
   };
 
   st.map = gpsMap.init(`${id}-map`);
+
+  document.getElementById(`${id}-start`).onclick = async () => {
+    const ll = st.map.latlng();
+    if (!ll) return alert('click the map to set a start position first');
+    const body = {
+      rinex_path: document.getElementById(`${id}-rinex-path`).value.trim() || 'AUTO',
+      lat: ll.lat, lon: ll.lng, alt: 100,
+      start_utc: document.getElementById(`${id}-start-utc`).value + ':00',
+      duration_s: Number(document.getElementById(`${id}-duration`).value),
+      sample_rate: Number(document.getElementById(`${id}-rate`).value),
+      sample_format: document.getElementById(`${id}-fmt`).value,
+      uri: document.getElementById(`${id}-uri`).value,
+      lo_hz: Number(document.getElementById(`${id}-lo`).value),
+      tx_gain_db: Number(document.getElementById(`${id}-gain`).value),
+      confirm_isolated: true,   // TODO: no per-card confirmation checkbox exists yet -- flag this
+                                // as a concern in the report; this task assumes the operator has
+                                // already confirmed the isolated setup elsewhere in the UI session.
+                                // Do NOT invent a checkbox here -- that is a follow-up decision,
+                                // not this task's job.
+      dry_run: false,
+    };
+    const r = await fetch('/api/live/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (r.status === 403) { alert('Set ALLOW_TX and confirm the isolated setup.'); return; }
+    if (r.status === 409) { alert('Both TX1 and TX2 are already transmitting.'); return; }
+    document.getElementById(`${id}-badge`).textContent = 'On Air';
+    const rd = r.body.getReader(), dec = new TextDecoder();
+    (function pump() {
+      rd.read().then(({ value, done }) => {
+        if (done) return;
+        dec.decode(value).split('\n\n').forEach(chunk => {
+          const line = chunk.replace(/^data: /, '').trim(); if (!line) return;
+          const msg = JSON.parse(line);
+          if (msg.slot && !channelState(id).txSlot) enableLiveTabs(id, msg.slot);
+          if (msg.finished) { document.getElementById(`${id}-badge`).textContent = 'Ready'; disableLiveTabs(id); }
+        });
+        pump();
+      });
+    })();
+  };
+
+  document.getElementById(`${id}-stop`).onclick = () => {
+    const slot = channelState(id).txSlot;
+    if (slot) fetch('/api/live/stop', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slot }),
+    });
+  };
 }
