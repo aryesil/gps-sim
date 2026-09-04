@@ -29,6 +29,13 @@ def _finite(x):
     return x if isinstance(x, (int, float)) and math.isfinite(x) else None
 
 
+def _resolve_eph(date, rinex_path=None):
+    """Parse a local RINEX file when a real path is given, else download for `date`."""
+    if rinex_path and rinex_path != "AUTO":
+        return ephemeris.parse_rinex(rinex_path)
+    return ephemeris.get_ephemeris(date)
+
+
 def _has_libiio() -> bool:
     try:
         import iio  # noqa: F401
@@ -60,7 +67,7 @@ def preview(body: dict):
     start = dt.datetime.fromisoformat(body["start_utc"])
     date = start.date()
     tow = _gps_tow(start)
-    eph = ephemeris.get_ephemeris(date)
+    eph = _resolve_eph(date, body.get("rinex_path"))
     rx = geometry.llh_to_ecef(body["lat"], body["lon"], body["alt"])
     sats = geometry.constellation(eph, rx, tow, body.get("mask_deg", 5.0))
     d = geometry.dop(sats, rx)
@@ -107,7 +114,7 @@ def generate(body: dict):
         outdir = generator.run(req, progress_cb=lambda f: q.append(f))
         for f in q:
             yield f"data: {json.dumps({'progress': f})}\n\n"
-        eph = ephemeris.get_ephemeris(req.start.date())
+        eph = _resolve_eph(req.start.date(), req.rinex_path)
         rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
         sats = geometry.constellation(eph, rx, _gps_tow(req.start))
         iq = inspector.read_iq(outdir / "gpssim.bin", req.sample_format,
@@ -126,7 +133,7 @@ def run_receiver(body: dict):
     outdir = config.OUT_DIR / body["outdir"]
     meta = json.loads((outdir / "meta.json").read_text())
     start = dt.datetime.fromisoformat(meta["config"]["start_utc"])
-    eph = ephemeris.get_ephemeris(start.date())
+    eph = _resolve_eph(start.date(), meta["config"].get("rinex_path"))
     return receiver.fix_from_iq(
         outdir / "gpssim.bin", meta["sample_format"], meta["sample_rate"],
         eph, _gps_tow(start), marker_llh=body.get("marker"))
@@ -137,7 +144,7 @@ def lnav(prn: int, outdir: str):
     od = config.OUT_DIR / outdir
     meta = json.loads((od / "meta.json").read_text())
     start = dt.datetime.fromisoformat(meta["config"]["start_utc"])
-    eph = ephemeris.get_ephemeris(start.date())[prn]
+    eph = _resolve_eph(start.date(), meta["config"].get("rinex_path"))[prn]
     return lnav_display.explain(eph, tow_count=int(_gps_tow(start) / 6), week=eph.get("gps_week", 0))
 
 

@@ -5,14 +5,23 @@ window.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('btn-preview').onclick = async () => {
     const ll = gpsMap.latlng(); if (!ll) return alert('pick a point');
-    const r = await fetch('/api/preview', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        lat: ll.lat, lon: ll.lng, alt: 100,
-        start_utc: document.getElementById('start-utc').value + ':00',
-      }),
-    });
-    const d = await r.json();
+    const su = document.getElementById('start-utc').value;
+    if (!su) return alert('set a start UTC');
+    const warn = document.getElementById('warnings');
+    warn.textContent = 'loading…';
+    let r, d;
+    try {
+      r = await fetch('/api/preview', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lat: ll.lat, lon: ll.lng, alt: 100, start_utc: su + ':00',
+          rinex_path: document.getElementById('rinex-path').value.trim(),
+        }),
+      });
+      d = await r.json();
+    } catch (e) { warn.textContent = 'request failed: ' + e; return; }
+    if (!r.ok) { warn.textContent = 'error ' + r.status + ': ' + (d.detail || JSON.stringify(d)); return; }
+    if (!d.satellites || !d.satellites.length) { warn.textContent = 'no satellites returned'; return; }
     drawSkyplot(d.satellites);
     const f2 = (x) => (typeof x === 'number' ? x.toFixed(2) : '—');
     document.getElementById('dop').textContent =
@@ -27,9 +36,12 @@ window.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('btn-generate').onclick = () => {
     const ll = gpsMap.latlng(); if (!ll) return alert('pick a point');
-    const start = document.getElementById('start-utc').value + ':00';
+    const su = document.getElementById('start-utc').value;
+    if (!su) return alert('set a start UTC');
+    const start = su + ':00';
     const body = {
-      rinex_path: 'AUTO', lat: ll.lat, lon: ll.lng, alt: 100, start_utc: start,
+      rinex_path: document.getElementById('rinex-path').value.trim() || 'AUTO',
+      lat: ll.lat, lon: ll.lng, alt: 100, start_utc: start,
       duration_s: Number(document.getElementById('duration').value),
       sample_rate: Number(document.getElementById('rate').value),
       sample_format: document.getElementById('fmt').value,
