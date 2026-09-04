@@ -37,23 +37,44 @@ def test_dry_run_paces_and_reports(tmp_path, monkeypatch):
     assert dt >= 0.015
 
 
-def test_default_tx_scale_attenuates_chunks(tmp_path, monkeypatch):
-    # KNOWN_ISSUES I2: gps-sdr-sim's -b 16 output is near full int16 scale but
-    # the AD936x DAC is 12-bit -- pushed unscaled it clips/wraps. tx_scale
-    # defaults to 0.25; verify stream() actually applies it to what reaches
-    # the sink, not just that it accepts the parameter.
-    monkeypatch.setattr(config, "ALLOW_TX", True)
-    p = transmit.TxParams(iq_path=_iq_file(tmp_path, samples=1000),
-                          sample_rate=2.6e6, sample_format="int16",
-                          chunk_samples=1000)
-    assert p.tx_scale == 0.25
-    seen_chunks = []
+def _recording_sink(seen_chunks):
     real_dry_sink = transmit._DrySink
     class _RecordingSink(real_dry_sink):
         def push(self, chunk):
             seen_chunks.append(chunk)
             super().push(chunk)
-    monkeypatch.setattr(transmit, "_DrySink", _RecordingSink)
+    return _RecordingSink
+
+
+def test_default_tx_scale_is_unity(tmp_path, monkeypatch):
+    # KNOWN_ISSUES I2: measured against a real generated file, gps-sdr-sim's
+    # -b 16 output peaks around +-1331 out of int16's +-32767 -- comfortably
+    # inside the AD936x's 12-bit range already, and libiio's own
+    # iio_channel_convert() handles the 12-in-16-bit MSB alignment using the
+    # real hardware format (channel.c format.shift), so no manual pre-scaling
+    # is needed or correct here. Default must not alter samples.
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    p = transmit.TxParams(iq_path=_iq_file(tmp_path, samples=1000),
+                          sample_rate=2.6e6, sample_format="int16",
+                          chunk_samples=1000)
+    assert p.tx_scale == 1.0
+    seen_chunks = []
+    monkeypatch.setattr(transmit, "_DrySink", _recording_sink(seen_chunks))
+    transmit.stream(p, dry_run=True)
+    assert seen_chunks
+    raw = next(transmit._iter_chunks(p.iq_path, p.sample_format, p.chunk_samples))
+    assert np.array_equal(seen_chunks[0], raw)
+
+
+def test_explicit_tx_scale_attenuates_chunks(tmp_path, monkeypatch):
+    # The knob still works when a caller wants headroom margin for a
+    # pathological scenario (many simultaneous satellites at max fixed gain).
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    p = transmit.TxParams(iq_path=_iq_file(tmp_path, samples=1000),
+                          sample_rate=2.6e6, sample_format="int16",
+                          chunk_samples=1000, tx_scale=0.25)
+    seen_chunks = []
+    monkeypatch.setattr(transmit, "_DrySink", _recording_sink(seen_chunks))
     transmit.stream(p, dry_run=True)
     assert seen_chunks
     raw = next(transmit._iter_chunks(p.iq_path, p.sample_format, p.chunk_samples))

@@ -203,18 +203,31 @@ invisible. Read the device attribute between pushes, e.g.
 attribute exposed by the firmware, and surface it. If the clone's firmware does not
 expose one, report `None` rather than `0` and say so in the UI.
 
-**I2 (FIXED 2026-09-04). DAC full-scale scaling for `-b 16` output is not implemented at all.**
-`backend/transmit.py:81,62-63`
+**I2 (addressed 2026-09-04, revised same day after measurement). DAC full-scale scaling for `-b 16` output.**
+`backend/transmit.py`
 
-Fixed: `TxParams.tx_scale` (default `0.25`) is applied to every chunk in
-`stream()` before `sink.push()`, and `/api/transmit` accepts an optional
-`tx_scale` body field to override it. `test_default_tx_scale_attenuates_chunks`
-asserts the sink actually receives the attenuated samples, not just that the
-parameter is accepted. The exact DAC full-scale mapping (12-bit AD936x vs.
-16-bit input) hasn't been verified against real hardware -- lower `tx_scale`
-further (e.g. `0.0625`) if a spectrum check still shows clipping.
+First pass added `TxParams.tx_scale` defaulting to `0.25` on the assumption
+(from the original finding below) that gps-sdr-sim's `-b 16` output sits near
+full int16 scale. Measured against a real generated file, that assumption was
+wrong: peak amplitude is **~1331 out of int16's ±32767 (~4% of full scale)**
+-- comfortably inside the AD936x's 12-bit range already, nothing to clip.
+Separately, checked `libiio` v0.25's own source (`channel.c`,
+`iio_channel_convert()`/`format.shift`): the 12-bit-in-a-16-bit-word MSB
+alignment (kernel `scan_elements` format `s12/16>>4`) is handled internally
+by libiio using the real hardware format it reads from the driver -- a caller
+writes plain int16 values and libiio bit-shifts them into place; manually
+pre-scaling or pre-shifting before `sdr.tx()` is neither needed nor correct.
+Default reverted to `tx_scale = 1.0` (no attenuation); the field stays as a
+headroom knob for a pathological scenario (`-p 128` with many simultaneous
+satellites can push the raw sum toward ±4096) -- lower it only if a real
+spectrum/power measurement shows clipping. `/api/transmit` still accepts an
+optional `tx_scale` body field. `test_default_tx_scale_is_unity` and
+`test_explicit_tx_scale_attenuates_chunks` assert both the default and the
+override actually reach the sink unaltered/attenuated, not just that the
+parameter is accepted.
 
-Original finding, kept for context:
+Original finding, kept for context (its "near full ±32767 scale" premise is
+now known to not hold for typical scenarios -- see above):
 
 Spec §9 open item 5 flags this explicitly and it was never closed. `_iter_chunks` yields
 raw int16 sample values straight from `gps-sdr-sim -b 16` (near full ±32767 scale) and

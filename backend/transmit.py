@@ -29,12 +29,22 @@ class TxParams:
     tx_gain_db: float = -50.0
     uri: str = config.DEVICE_URI
     chunk_samples: int = 262144
-    # gps-sdr-sim's `-b 16` output sits near full int16 scale (+-32767), but
-    # pyadi-iio hands samples straight to the AD936x's 12-bit DAC with no
-    # scaling of its own (KNOWN_ISSUES I2) -- unscaled, that clips/wraps and
-    # distorts the L1 spectrum. Attenuate before tx() by default; lower this
-    # further (e.g. 0.0625) if a spectrum check still shows clipping.
-    tx_scale: float = 0.25
+    # KNOWN_ISSUES I2 originally assumed gps-sdr-sim's `-b 16` output sits
+    # near full int16 scale and defaulted this to 0.25 to protect the
+    # AD936x's 12-bit DAC from clipping. Measured against a real generated
+    # file, that assumption was wrong: peak amplitude is ~1331 out of
+    # int16's +-32767 (~4% of full scale), so there is nothing to clip in
+    # the first place. Separately, the 12-bit-in-a-16-bit-word MSB alignment
+    # (kernel scan_elements "s12/16>>4" format) is handled inside libiio's
+    # own iio_channel_convert() (channel.c, format.shift) using the real
+    # hardware format it reads from the driver -- callers write plain
+    # int16 values and libiio bit-shifts them into place; no manual
+    # shifting or pre-scaling is needed or correct to do here. Default is
+    # therefore unity; the knob stays available as a headroom margin for a
+    # pathological scenario (e.g. `-p 128` with many simultaneous
+    # satellites can push the raw sum toward +-4096) -- lower it only if a
+    # real spectrum/power check shows clipping.
+    tx_scale: float = 1.0
 
 
 class _DrySink:
