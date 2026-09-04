@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import pathlib
 import shutil
 import threading
@@ -24,11 +25,15 @@ def download_free_bytes(path) -> int:
     return shutil.disk_usage(path).free
 
 
+def _finite(x):
+    return x if isinstance(x, (int, float)) and math.isfinite(x) else None
+
+
 def _has_libiio() -> bool:
     try:
         import iio  # noqa: F401
         return True
-    except ImportError:
+    except Exception:
         return False
 
 
@@ -46,7 +51,7 @@ def _try_import(name: str) -> bool:
     try:
         __import__(name)
         return True
-    except ImportError:
+    except Exception:
         return False
 
 
@@ -59,11 +64,13 @@ def preview(body: dict):
     rx = geometry.llh_to_ecef(body["lat"], body["lon"], body["alt"])
     sats = geometry.constellation(eph, rx, tow, body.get("mask_deg", 5.0))
     d = geometry.dop(sats, rx)
+    pdop_raw = d["pdop"]
+    d = {k: _finite(v) for k, v in d.items()}
     warnings = []
     if len(sats) < 4:
         warnings.append("fewer than 4 visible satellites — no hardware fix")
-    if d["pdop"] > 10:
-        warnings.append(f"high PDOP {d['pdop']:.1f}")
+    if math.isfinite(pdop_raw) and pdop_raw > 10:
+        warnings.append(f"high PDOP {pdop_raw:.1f}")
     for s in sats:
         toe = eph[s["prn"]]["toe"]
         if abs(((tow - toe + 302400) % 604800) - 302400) > 7200:
