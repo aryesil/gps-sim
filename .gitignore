@@ -8,3 +8,4 @@ gps-sdr-sim/
 # python build metadata
 *.egg-info/
 .DS_Store
+docs/
