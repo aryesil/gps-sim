@@ -23,15 +23,15 @@ window.addChannel = function () {
       <button id="${id}-stop">Stop</button>
       <button id="${id}-remove">Remove</button>
     </div>
-    <div class="channel-columns">
+    <div class="channel-top">
       <div class="col-hw">
         <h4>Hardware Config</h4>
         <label>Device URI <input id="${id}-uri" value="ip:192.168.2.1"></label>
         <label>LO Hz <input id="${id}-lo" value="1575420000"></label>
         <label>TX gain dB <input id="${id}-gain" type="number" value="-50"></label>
+        <label><input type="checkbox" id="${id}-tx-dryrun"> Dry run (no RF)</label>
         <input type="checkbox" id="${id}-tx-confirm" hidden>
         <div class="hint">Isolated setup confirmed by typing TRANSMIT at Start.</div>
-        <label><input type="checkbox" id="${id}-tx-dryrun"> Dry run (no RF)</label>
       </div>
       <div class="col-sim">
         <h4>Simulation Config</h4>
@@ -41,13 +41,20 @@ window.addChannel = function () {
           <option>2600000</option><option>4000000</option><option>5000000</option><option>8000000</option>
         </select></label>
         <label>Format <select id="${id}-fmt"><option>int16</option><option>int8</option></select></label>
-        <label>RINEX <input id="${id}-rinex-path" value="AUTO" size="30"></label>
-        <div id="${id}-size-estimate"></div>
-        <div id="${id}-map" style="height:200px"></div>
-        <button id="${id}-btn-preview">Preview geometry</button>
-        <button id="${id}-btn-generate">Generate</button>
-        <progress id="${id}-gen-progress" max="1" value="0"></progress>
+        <label>RINEX <input id="${id}-rinex-path" value="AUTO" size="26"></label>
+        <div id="${id}-size-estimate" class="hint"></div>
       </div>
+      <div class="col-map">
+        <h4>Reference Position</h4>
+        <div id="${id}-map"></div>
+      </div>
+    </div>
+    <div class="channel-actions">
+      <button id="${id}-btn-preview">Preview geometry</button>
+      <button id="${id}-btn-generate" class="btn-primary">Generate</button>
+      <progress id="${id}-gen-progress" max="1" value="0"></progress>
+    </div>
+    <div class="channel-columns">
       <div class="col-panel">
         <div class="channel-tabs">
           <button class="tab-btn active" data-tab="status">Status</button>

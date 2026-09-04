@@ -134,10 +134,21 @@ progress { width: 100%; height: 6px; }
 .badge.badge-live { background: var(--danger); color: #fff; border-color: var(--danger); }
 .badge.badge-generating { background: var(--warning); color: #1a1300; border-color: var(--warning); }
 
-.channel-columns { display: flex; gap: var(--sp-4); flex-wrap: wrap; align-items: flex-start; }
-.col-hw, .col-sim { flex: 1 1 220px; min-width: 220px; }
+/* top row: hardware + sim config narrow, map wide */
+.channel-top { display: grid; grid-template-columns: 220px 220px 1fr; gap: var(--sp-4); align-items: start; }
 .col-hw label, .col-sim label { display: block; }
-.col-panel { flex: 2 1 420px; min-width: 320px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--sp-3); }
+.col-map { min-width: 0; }
+#app-shell #page-channels .col-map div[id$="-map"] { height: 340px; width: 100%; border-radius: var(--radius); border: 1px solid var(--border); }
+
+.channel-actions { display: flex; align-items: center; gap: var(--sp-3); margin: var(--sp-3) 0; }
+.channel-actions progress { flex: 1; max-width: 240px; }
+
+.channel-columns { display: flex; gap: var(--sp-4); flex-wrap: wrap; align-items: flex-start; margin-top: var(--sp-3); }
+.col-panel { flex: 1 1 100%; min-width: 0; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--sp-3); }
+
+@media (max-width: 900px) {
+  .channel-top { grid-template-columns: 1fr; }
+}
 
 /* underline tabs, accent active state */
 .channel-tabs { display: flex; gap: var(--sp-4); border-bottom: 1px solid var(--border); margin-bottom: var(--sp-3); }
