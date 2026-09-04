@@ -7,9 +7,23 @@ software receiver, and stream it to a PlutoSDR-class SDR for replay.
 ## Setup
 
     ./scripts/setup.sh
-    python -m uvicorn backend.app:app --reload
+    ./scripts/run_server.sh
 
 Open http://127.0.0.1:8000
+
+`setup.sh` creates a `.venv`, installs the Python dependencies into it, and
+(for the transmit path only) builds `libiio` and `libad9361-iio` from source
+straight into `.venv`'s own prefix -- no system-wide install, no Homebrew
+formula (neither ships one). `run_server.sh` activates `.venv` and points the
+dynamic linker at its `lib/` before starting uvicorn, so nothing extra needs
+sourcing by hand.
+
+**Prerequisites** (only needed to build the transmit path's native deps):
+`cmake`, a C compiler (Xcode Command Line Tools on macOS / `build-essential`
+on Debian), and `libusb` (`brew install libusb` / `apt install libusb-1.0-0-dev`).
+Without these, `setup.sh` still completes -- generation, inspection, and the
+internal receiver check all work; only PlutoSDR-class hardware transmit needs
+`libiio`.
 
 ## Safety
 
