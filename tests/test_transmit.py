@@ -63,7 +63,7 @@ def test_txsession_stop_ends_stream(tmp_path, monkeypatch):
     p = transmit.TxParams(iq_path=_iq_file(tmp_path, samples=520000),
                           sample_rate=2.6e6, sample_format="int16",
                           chunk_samples=13000)
-    session = transmit.TxSession(p)
+    session = transmit.TxSession(p, dry_run=True)
     seen = []
 
     def _drain():

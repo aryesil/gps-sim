@@ -94,8 +94,10 @@ def stream(params: TxParams, dry_run: bool = False, progress_cb=None,
     if not dry_run:
         try:
             sink = _open_device(params)
-        except ImportError as ex:
-            raise TransmitError(f"libiio/pyadi-iio not available: {ex}")
+        except TransmitError:
+            raise
+        except Exception as ex:  # ImportError, AttributeError, iio errors, ...
+            raise TransmitError(f"device open failed: {ex}") from ex
 
     total = 0
     t0 = time.monotonic()
@@ -123,8 +125,9 @@ def stream(params: TxParams, dry_run: bool = False, progress_cb=None,
 
 
 class TxSession:
-    def __init__(self, params: TxParams):
+    def __init__(self, params: TxParams, dry_run: bool = False):
         self._params = params
+        self._dry_run = dry_run
         self._cancel = threading.Event()
         self._thread = None
         self._result = None
@@ -139,7 +142,8 @@ class TxSession:
         def _cb(d): q.put(d)
         def _run():
             try:
-                self._result = stream(self._params, progress_cb=_cb, cancel=self._cancel)
+                self._result = stream(self._params, dry_run=self._dry_run,
+                                      progress_cb=_cb, cancel=self._cancel)
             finally:
                 q.put(None)
         self._thread = threading.Thread(target=_run, daemon=True)
