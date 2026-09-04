@@ -203,8 +203,18 @@ invisible. Read the device attribute between pushes, e.g.
 attribute exposed by the firmware, and surface it. If the clone's firmware does not
 expose one, report `None` rather than `0` and say so in the UI.
 
-**I2. DAC full-scale scaling for `-b 16` output is not implemented at all.**
+**I2 (FIXED 2026-09-04). DAC full-scale scaling for `-b 16` output is not implemented at all.**
 `backend/transmit.py:81,62-63`
+
+Fixed: `TxParams.tx_scale` (default `0.25`) is applied to every chunk in
+`stream()` before `sink.push()`, and `/api/transmit` accepts an optional
+`tx_scale` body field to override it. `test_default_tx_scale_attenuates_chunks`
+asserts the sink actually receives the attenuated samples, not just that the
+parameter is accepted. The exact DAC full-scale mapping (12-bit AD936x vs.
+16-bit input) hasn't been verified against real hardware -- lower `tx_scale`
+further (e.g. `0.0625`) if a spectrum check still shows clipping.
+
+Original finding, kept for context:
 
 Spec §9 open item 5 flags this explicitly and it was never closed. `_iter_chunks` yields
 raw int16 sample values straight from `gps-sdr-sim -b 16` (near full ±32767 scale) and

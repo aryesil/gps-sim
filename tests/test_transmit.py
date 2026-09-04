@@ -37,6 +37,29 @@ def test_dry_run_paces_and_reports(tmp_path, monkeypatch):
     assert dt >= 0.015
 
 
+def test_default_tx_scale_attenuates_chunks(tmp_path, monkeypatch):
+    # KNOWN_ISSUES I2: gps-sdr-sim's -b 16 output is near full int16 scale but
+    # the AD936x DAC is 12-bit -- pushed unscaled it clips/wraps. tx_scale
+    # defaults to 0.25; verify stream() actually applies it to what reaches
+    # the sink, not just that it accepts the parameter.
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    p = transmit.TxParams(iq_path=_iq_file(tmp_path, samples=1000),
+                          sample_rate=2.6e6, sample_format="int16",
+                          chunk_samples=1000)
+    assert p.tx_scale == 0.25
+    seen_chunks = []
+    real_dry_sink = transmit._DrySink
+    class _RecordingSink(real_dry_sink):
+        def push(self, chunk):
+            seen_chunks.append(chunk)
+            super().push(chunk)
+    monkeypatch.setattr(transmit, "_DrySink", _RecordingSink)
+    transmit.stream(p, dry_run=True)
+    assert seen_chunks
+    raw = next(transmit._iter_chunks(p.iq_path, p.sample_format, p.chunk_samples))
+    assert np.allclose(seen_chunks[0], raw * 0.25)
+
+
 def test_rate_mismatch_rejected(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "ALLOW_TX", True)
     p = transmit.TxParams(iq_path=_iq_file(tmp_path), sample_rate=1.0e6,

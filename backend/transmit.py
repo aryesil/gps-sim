@@ -29,6 +29,12 @@ class TxParams:
     tx_gain_db: float = -50.0
     uri: str = config.DEVICE_URI
     chunk_samples: int = 262144
+    # gps-sdr-sim's `-b 16` output sits near full int16 scale (+-32767), but
+    # pyadi-iio hands samples straight to the AD936x's 12-bit DAC with no
+    # scaling of its own (KNOWN_ISSUES I2) -- unscaled, that clips/wraps and
+    # distorts the L1 spectrum. Attenuate before tx() by default; lower this
+    # further (e.g. 0.0625) if a spectrum check still shows clipping.
+    tx_scale: float = 0.25
 
 
 class _DrySink:
@@ -105,6 +111,8 @@ def stream(params: TxParams, dry_run: bool = False, progress_cb=None,
         for chunk in _iter_chunks(params.iq_path, params.sample_format, params.chunk_samples):
             if cancel is not None and cancel.is_set():
                 break
+            if params.tx_scale != 1.0:
+                chunk = chunk * params.tx_scale
             sink.push(chunk)
             total += len(chunk)
             if cancel is not None and cancel.is_set():

@@ -232,7 +232,8 @@ def start_transmit(body: dict):
         sample_rate=float(body["sample_rate"]), sample_format=body["sample_format"],
         lo_hz=float(body.get("lo_hz", config.L1_HZ)),
         tx_gain_db=float(body.get("tx_gain_db", -50.0)),
-        uri=body.get("uri", config.DEVICE_URI))
+        uri=body.get("uri", config.DEVICE_URI),
+        tx_scale=float(body.get("tx_scale", 0.25)))
     _tx_stop.clear()
 
     def events():
