@@ -164,18 +164,30 @@ async def rinex_upload(date: str, file: UploadFile):
     return {"cached": True, "date": date}
 
 
+def _resolve_rinex(body: dict, start: dt.datetime) -> str:
+    """Turn a request body's rinex_path into a real file path.
+
+    'AUTO' (the UI's default) means "that day's cached/downloaded RINEX, or
+    the newest cached file as a fallback". Anything else is passed through
+    as an explicit path. Shared by /api/generate and /api/live/start -- both
+    build a ScenarioRequest, which needs a path gps-sdr-sim can open.
+    """
+    rinex_path = body.get("rinex_path") or "AUTO"
+    if rinex_path != "AUTO":
+        return rinex_path
+    try:
+        return str(ephemeris.cached_rinex_path(start.date()))
+    except ephemeris.EphemerisUnavailable:
+        fb = _newest_cached_rinex()
+        if fb is None:
+            raise
+        return str(fb)
+
+
 @app.post("/api/generate")
 def generate(body: dict):
     start = dt.datetime.fromisoformat(body["start_utc"])
-    rinex_path = body["rinex_path"]
-    if rinex_path == "AUTO":
-        try:
-            rinex_path = str(ephemeris.cached_rinex_path(start.date()))
-        except ephemeris.EphemerisUnavailable:
-            fb = _newest_cached_rinex()
-            if fb is None:
-                raise
-            rinex_path = str(fb)
+    rinex_path = _resolve_rinex(body, start)
     req = scenario.ScenarioRequest(
         rinex_path=rinex_path, lat=body["lat"], lon=body["lon"], alt=body["alt"],
         start=start, duration_s=int(body["duration_s"]),
@@ -362,7 +374,7 @@ def live_start(body: dict):
     try:
         start = dt.datetime.fromisoformat(body["start_utc"])
         req = scenario.ScenarioRequest(
-            rinex_path=body["rinex_path"], lat=body["lat"], lon=body["lon"], alt=body["alt"],
+            rinex_path=_resolve_rinex(body, start), lat=body["lat"], lon=body["lon"], alt=body["alt"],
             start=start, duration_s=int(body.get("duration_s", 300)),
             sample_rate=float(body.get("sample_rate", config.DEFAULT_SAMPLE_RATE)),
             sample_format=body.get("sample_format", "int16"))
@@ -421,8 +433,7 @@ def live_jog(body: dict):
 def live_time_shift(body: dict):
     s = _session_for_slot(body["slot"])
     s.shift_time(body["field"], float(body["delta"]))
-    return {"time_offset_s": s.state.time_offset_s, "pps_shift_s": s.state.pps_shift_s,
-            "clock_corr_ns": s.state.clock_corr_ns}
+    return {"time_offset_s": s.state.time_offset_s}
 
 
 @app.post("/api/live/stop")

@@ -47,6 +47,16 @@ def test_shift_time_rejects_unknown_field():
         s.shift_time("not_a_field", 1.0)
 
 
+def test_removed_time_fields_are_rejected():
+    """pps_shift_s/clock_corr_ns were removed: pps_shift_s only duplicated
+    time_offset_s and clock_corr_ns was never read by anything that
+    produced signal. Rejecting them keeps the API honest."""
+    s = live.LiveSession(_base_req())
+    for field in ("pps_shift_s", "clock_corr_ns"):
+        with pytest.raises(ValueError):
+            s.shift_time(field, 1.0)
+
+
 def test_segments_snapshot_is_consistent_under_concurrent_jog(monkeypatch):
     """Hammer jog() from another thread while segments() is mid-iteration;
     the snapshot each segment reads must never be a torn/partial state

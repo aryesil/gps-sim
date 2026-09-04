@@ -108,19 +108,25 @@ def run_segment(base_req: scenario.ScenarioRequest, llh: tuple[float, float, flo
                 binary: str | None = None) -> pathlib.Path:
     """Short, static-position segment for LiveSession: same gps-sdr-sim
     invocation as run(), but with base_req's lat/lon/alt overridden by
-    `llh` and every satellite's toc/toe shifted by `time_offset_s` (real
-    GPS-time-of-week spoofing, not cosmetic -- see KNOWN_ISSUES-style note
-    in the design spec). No route/motion_csv support: live segments are one
-    static point per segment by construction."""
+    `llh` and the whole segment's GPS time shifted by `time_offset_s`
+    (real GPS-time-of-week spoofing, not cosmetic). No route/motion_csv
+    support: live segments are one static point per segment by construction.
+
+    The shift is applied to seg_req.start, so BOTH the nav file's aligned
+    toc/toe (_prepare_nav) and gps-sdr-sim's `-t` (scenario.build_args) move
+    together. Shifting only the nav epoch would leave tk = t - toe nonzero
+    and silently propagate every satellite to the wrong point in its orbit
+    -- geometry corruption, not a time shift."""
     b = binary or config.GPS_SDR_SIM_BIN
     outdir = config.OUT_DIR / ("live_" + dt.datetime.utcnow().strftime("%Y%m%dT%H%M%S%f"))
     outdir.mkdir(parents=True, exist_ok=True)
     out_bin = outdir / "gpssim.bin"
 
     seg_req = dataclasses.replace(base_req, lat=llh[0], lon=llh[1], alt=llh[2],
+                                  start=base_req.start + dt.timedelta(seconds=time_offset_s),
                                   duration_s=duration_s, route=None)
     argv = [b] + scenario.build_args(seg_req, str(out_bin), motion_csv=None)
-    nav_path = _prepare_nav(seg_req, outdir, time_offset_s=time_offset_s)
+    nav_path = _prepare_nav(seg_req, outdir, time_offset_s=0.0)
     argv[argv.index("-e") + 1] = str(nav_path)
     _run_gps_sdr_sim(argv, duration_s)
     return outdir

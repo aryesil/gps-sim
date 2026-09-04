@@ -81,8 +81,6 @@ class _FakeSession:
         class _State:
             llh = (0.0, 0.0, 0.0)
             time_offset_s = 0.0
-            pps_shift_s = 0.0
-            clock_corr_ns = 0.0
 
         self.state = _State()
 

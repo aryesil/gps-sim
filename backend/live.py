@@ -13,15 +13,18 @@ _ENU_DIRECTIONS = {
     "east": (1.0, 0.0, 0.0), "west": (-1.0, 0.0, 0.0),
     "up": (0.0, 0.0, 1.0), "down": (0.0, 0.0, -1.0),
 }
-_TIME_FIELDS = {"time_offset_s", "pps_shift_s", "clock_corr_ns"}
+# Only one time control is real: a GPS-time-of-week shift applied to the
+# whole segment (start + nav epochs move together, see
+# generator.run_segment). A separate PPS-phase / satellite-clock knob
+# would need its own distinct effect on the generated signal; until one
+# exists, nothing here pretends to offer it.
+_TIME_FIELDS = {"time_offset_s"}
 
 
 @dataclass
 class LiveState:
     llh: list[float]
     time_offset_s: float = 0.0
-    pps_shift_s: float = 0.0
-    clock_corr_ns: float = 0.0
 
 
 class LiveSession:
@@ -63,7 +66,7 @@ class LiveSession:
             try:
                 outdir = generator.run_segment(
                     self.base_req, llh=tuple(snap.llh),
-                    time_offset_s=snap.time_offset_s + snap.pps_shift_s,
+                    time_offset_s=snap.time_offset_s,
                     duration_s=self.segment_duration_s)
                 iq = inspector.read_iq(outdir / "gpssim.bin", self.base_req.sample_format)
                 self.consecutive_errors = 0
