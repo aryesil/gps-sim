@@ -57,9 +57,10 @@ def acquire(iq, sample_rate, prn, doppler_range=(-6000, 6000),
     local = ca_code(prn).astype(np.float64)[idx]
     LOC = np.conj(np.fft.fft(local))
     dopps = np.arange(doppler_range[0], doppler_range[1] + 1, doppler_step)
-    best = (-1.0, 0.0, 0)
+    best = (-1.0, 0.0, 0, 0)
     acc_noise = []
-    for fd in dopps:
+    dopp_peaks = []
+    for di, fd in enumerate(dopps):
         acc = np.zeros(ncoh)
         for k in range(noncoherent):
             blk = seg[k * ncoh:(k + 1) * ncoh]
@@ -67,9 +68,16 @@ def acquire(iq, sample_rate, prn, doppler_range=(-6000, 6000),
             acc += np.abs(np.fft.ifft(np.fft.fft(blk) * LOC)) ** 2
         acc_noise.append(acc.mean())
         pk = acc.max()
+        dopp_peaks.append(np.sqrt(pk))
         if pk > best[0]:
-            best = (pk, fd, int(acc.argmax()))
-    peak, fd_hat, si = best
+            best = (pk, fd, int(acc.argmax()), di)
+    peak, fd_hat, si, dopp_idx = best
+    # 3-point parabolic interpolation of the Doppler estimate (skip at grid edges).
+    if 0 < dopp_idx < len(dopp_peaks) - 1:
+        p0, p1, p2 = dopp_peaks[dopp_idx - 1], dopp_peaks[dopp_idx], dopp_peaks[dopp_idx + 1]
+        den = p0 - 2 * p1 + p2
+        delta = 0.5 * (p0 - p2) / den if abs(den) > 1e-12 else 0.0
+        fd_hat = float(doppler_range[0] + (dopp_idx + delta) * doppler_step)
     floor = float(np.mean(acc_noise))
     chip = (si * config.CA_CHIP_HZ / sample_rate) % 1023
     return {

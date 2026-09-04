@@ -20,7 +20,18 @@ def test_static_args():
     assert a[a.index("-b") + 1] == "16"
     assert a[a.index("-d") + 1] == "30"
     assert a[a.index("-l") + 1] == "41.0,29.0,100.0"
-    assert a[a.index("-t") + 1] == "2026/09/03,06:00:00"
+    # -t is shifted by GPS-UTC leap seconds (gps-sdr-sim -t is GPS timescale)
+    assert a[a.index("-t") + 1] == "2026/09/03,06:00:18"
+
+
+def test_ionosphere_disabled_by_default():
+    a = scenario.build_args(_req(), out_bin="/o/g.bin", motion_csv=None)
+    assert "-i" in a
+
+
+def test_ionosphere_enabled_omits_flag():
+    a = scenario.build_args(_req(ionosphere=True), out_bin="/o/g.bin", motion_csv=None)
+    assert "-i" not in a
 
 
 def test_int8_format_sets_b8():

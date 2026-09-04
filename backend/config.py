@@ -21,6 +21,7 @@ MU = 3.986005e14
 OMEGA_E_DOT = 7.2921151467e-5
 C = 299792458.0
 F_REL = -4.442807633e-10
+GPS_UTC_LEAP_S = 18.0  # GPS - UTC, valid 2017-01-01 .. (update on next leap second)
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
 DATA_DIR = pathlib.Path(_str("DATA_DIR", str(_ROOT / "data")))

@@ -183,14 +183,11 @@ def stop_transmit():
     return {"stopped": True}
 
 
-_GPS_UTC_LEAP_S = 18.0  # GPS - UTC, valid 2017-01 .. (update when a leap second is added)
-
-
 def _gps_tow(when_utc: dt.datetime) -> float:
     epoch = dt.datetime(1980, 1, 6)
     delta = when_utc - epoch
     tow = (delta.days % 7) * 86400 + delta.seconds + delta.microseconds / 1e6
-    tow += _GPS_UTC_LEAP_S
+    tow += config.GPS_UTC_LEAP_S
     return tow % (7 * 86400)
 
 

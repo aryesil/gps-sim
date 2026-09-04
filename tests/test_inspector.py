@@ -41,6 +41,6 @@ def test_acquire_finds_synthetic_signal():
     rng = np.random.default_rng(0)
     sig = sig + 8 * (rng.standard_normal(n) + 1j * rng.standard_normal(n))
     res = inspector.acquire(sig.astype(np.complex64), fs, prn)
-    assert abs(res["doppler_hz"] - fd) <= 250
+    assert abs(res["doppler_hz"] - fd) < 25
     assert abs(res["code_phase_chips"] - 137.0) <= 0.5
     assert res["metric_db"] > 8

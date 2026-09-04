@@ -17,6 +17,7 @@ class ScenarioRequest:
     sample_rate: float = config.DEFAULT_SAMPLE_RATE
     sample_format: str = "int16"
     route: list[tuple[float, float, float]] | None = None
+    ionosphere: bool = False
 
 
 def _bytes_per_sample(fmt: str) -> int:
@@ -36,8 +37,11 @@ def build_args(req: ScenarioRequest, out_bin: str, motion_csv: str | None) -> li
         "-s", str(req.sample_rate),
         "-b", "8" if req.sample_format == "int8" else "16",
         "-d", str(req.duration_s),
-        "-t", req.start.strftime("%Y/%m/%d,%H:%M:%S"),
+        # gps-sdr-sim -t is GPS timescale; shift UTC start by GPS-UTC.
+        "-t", (req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)).strftime("%Y/%m/%d,%H:%M:%S"),
     ]
+    if not req.ionosphere:
+        args.append("-i")
     if req.route:
         if motion_csv is None:
             raise ValueError("dynamic scenario needs motion_csv")

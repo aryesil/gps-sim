@@ -14,8 +14,9 @@ window.addEventListener('DOMContentLoaded', () => {
     });
     const d = await r.json();
     drawSkyplot(d.satellites);
+    const f2 = (x) => (typeof x === 'number' ? x.toFixed(2) : '—');
     document.getElementById('dop').textContent =
-      `PDOP ${d.dop.pdop.toFixed(2)}  GDOP ${d.dop.gdop.toFixed(2)}`;
+      `PDOP ${f2(d.dop && d.dop.pdop)}  GDOP ${f2(d.dop && d.dop.gdop)}`;
     document.getElementById('warnings').textContent = d.warnings.join(' · ');
     document.getElementById('sat-table').innerHTML =
       '<tr><th>PRN</th><th>az</th><th>el</th><th>PR km</th><th>chip</th><th>Doppler</th></tr>' +
