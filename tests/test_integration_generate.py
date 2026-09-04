@@ -12,8 +12,9 @@ pytestmark = [
         not pathlib.Path(config.GPS_SDR_SIM_BIN).exists(),
         reason="gps-sdr-sim binary not built"),
     # KNOWN_ISSUES F1 (the RINEX-3/"Invalid start time" rejection) is fixed:
-    # generator.run re-serializes to RINEX-2 via ephemeris.to_rinex2_nav and
-    # uses -T. This test still fails under pytest specifically (KNOWN_ISSUES
+    # generator.run re-serializes to RINEX-2 via ephemeris.to_rinex2_nav, then
+    # aligns every satellite's toc/toe to the request (ephemeris.align_epochs,
+    # KNOWN_ISSUES F4) and uses -t. This test still fails under pytest specifically (KNOWN_ISSUES
     # F3: subprocess exit signal -5, not reproduced running the same argv
     # outside pytest or via the live /api/generate route).
     pytest.mark.xfail(reason="F3: generator.run's subprocess crashes only under pytest", strict=False),

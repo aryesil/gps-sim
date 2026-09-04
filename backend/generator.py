@@ -46,18 +46,38 @@ def run(req: scenario.ScenarioRequest, progress_cb=None, binary: str | None = No
     argv = [b] + scenario.build_args(req, str(out_bin), motion_csv)
     # gps-sdr-sim's bundled parser only understands RINEX-2 nav (KNOWN_ISSUES
     # F2); re-serialize whatever RINEX version was resolved into one so it
-    # always gets a file it accepts.
+    # always gets a file it accepts. Align every satellite's toc/toe to the
+    # requested start ourselves (KNOWN_ISSUES F4) rather than relying on
+    # gps-sdr-sim's own -T, which only realigns to whichever satellite it
+    # finds first and aborts ("No current set of ephemerides has been
+    # found") if the file's other satellites keep their own, possibly
+    # far-off broadcast epochs.
+    eph = ephemeris.parse_rinex(req.rinex_path)
+    gps_start = req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
+    week, sow = ephemeris.gps_week_and_sow(gps_start)
+    eph = ephemeris.align_epochs(eph, week, sow)
     nav_path = outdir / "nav.rinex2.n"
-    nav_path.write_text(ephemeris.to_rinex2_nav(ephemeris.parse_rinex(req.rinex_path)))
+    nav_path.write_text(ephemeris.to_rinex2_nav(eph))
     argv[argv.index("-e") + 1] = str(nav_path)
-    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # gps-sdr-sim's progress lines ("Time into run = ...") print to stderr,
+    # not stdout (confirmed by inspecting its output directly). Reading only
+    # stdout while nobody drains stderr deadlocks as soon as stderr's ~3000
+    # lines (one per 0.1s of a multi-minute scenario) fill the OS pipe
+    # buffer: the child blocks on write(), the parent blocks on proc.wait()
+    # -- the process never dies, generate never completes (KNOWN_ISSUES F5).
+    # Merging stderr into stdout means there is only one pipe to drain.
+    tail_lines: list[str] = []
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     for line in proc.stdout:
+        tail_lines.append(line)
+        if len(tail_lines) > 100:
+            tail_lines.pop(0)
         frac = parse_progress(line, req.duration_s)
         if frac is not None and progress_cb:
             progress_cb(frac)
     proc.wait()
     if proc.returncode != 0:
-        tail = proc.stderr.read()[-2000:]
+        tail = "".join(tail_lines)[-2000:]
         raise GeneratorError(f"gps-sdr-sim exit {proc.returncode}: {tail}")
     if progress_cb:
         progress_cb(1.0)

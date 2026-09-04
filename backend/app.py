@@ -150,16 +150,34 @@ def generate(body: dict):
         raise HTTPException(507, "estimated IQ size exceeds free disk space")
 
     def events():
-        q: list = []
-        outdir = generator.run(req, progress_cb=lambda f: q.append(f))
-        for f in q:
-            yield f"data: {json.dumps({'progress': f})}\n\n"
-        eph, _ = _resolve_eph(req.start.date(), req.rinex_path)
-        rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
-        sats = geometry.constellation(eph, rx, _gps_tow(req.start))
-        iq = inspector.read_iq(outdir / "gpssim.bin", req.sample_format,
-                               max_samples=int(req.sample_rate * 0.010))
-        table = inspector.compare(iq, req.sample_rate, sats)
+        try:
+            q: list = []
+            outdir = generator.run(req, progress_cb=lambda f: q.append(f))
+            for f in q:
+                yield f"data: {json.dumps({'progress': f})}\n\n"
+            # generator.run aligns every satellite's toc/toe to the request's
+            # start (KNOWN_ISSUES F4) before handing the nav file to
+            # gps-sdr-sim, so the IQ was generated from that aligned
+            # ephemeris, not the original broadcast one. Build "expected"
+            # from the same aligned copy here or this comparison reports
+            # huge, misleading errors whenever the real epoch was far from
+            # the requested start.
+            eph, _ = _resolve_eph(req.start.date(), req.rinex_path)
+            gps_start = req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
+            week, sow = ephemeris.gps_week_and_sow(gps_start)
+            eph = ephemeris.align_epochs(eph, week, sow)
+            rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
+            sats = geometry.constellation(eph, rx, _gps_tow(req.start))
+            iq = inspector.read_iq(outdir / "gpssim.bin", req.sample_format,
+                                   max_samples=int(req.sample_rate * 0.010))
+            table = inspector.compare(iq, req.sample_rate, sats)
+        except Exception as e:
+            # A mid-stream exception here (e.g. gps-sdr-sim exiting non-zero)
+            # would otherwise just kill the SSE connection with no payload --
+            # the frontend's reader never sees a final chunk and the progress
+            # bar is stuck forever. Always send a terminal event instead.
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            return
         done = {"done": {"outdir": outdir.name,
                          "size_bytes": (outdir / "gpssim.bin").stat().st_size,
                          "inspect": table}}
@@ -173,7 +191,15 @@ def run_receiver(body: dict):
     outdir = config.OUT_DIR / body["outdir"]
     meta = json.loads((outdir / "meta.json").read_text())
     start = dt.datetime.fromisoformat(meta["config"]["start_utc"])
+    # generator.run aligns every satellite's toc/toe to the request's start
+    # (KNOWN_ISSUES F4) before generating; the fix solve must use the same
+    # aligned ephemeris the transmitted IQ was actually built from, or the
+    # receiver's expected geometry mismatches the signal (same bug as the
+    # /api/generate inspect step, fixed there first).
     eph, _ = _resolve_eph(start.date(), meta["config"].get("rinex_path"))
+    gps_start = start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
+    week, sow = ephemeris.gps_week_and_sow(gps_start)
+    eph = ephemeris.align_epochs(eph, week, sow)
     return receiver.fix_from_iq(
         outdir / "gpssim.bin", meta["sample_format"], meta["sample_rate"],
         eph, _gps_tow(start), marker_llh=body.get("marker"))
@@ -184,7 +210,13 @@ def lnav(prn: int, outdir: str):
     od = config.OUT_DIR / outdir
     meta = json.loads((od / "meta.json").read_text())
     start = dt.datetime.fromisoformat(meta["config"]["start_utc"])
-    eph = _resolve_eph(start.date(), meta["config"].get("rinex_path"))[0][prn]
+    # Same alignment as generator.run/inspect/receiver (KNOWN_ISSUES F4): the
+    # generated IQ's subframes actually carry the aligned toc/toe/week, not
+    # the original broadcast ones.
+    eph_all, _ = _resolve_eph(start.date(), meta["config"].get("rinex_path"))
+    gps_start = start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
+    week, sow = ephemeris.gps_week_and_sow(gps_start)
+    eph = ephemeris.align_epochs(eph_all, week, sow)[prn]
     return lnav_display.explain(eph, tow_count=int(_gps_tow(start) / 6), week=int(eph.get("gps_week", 0)))
 
 

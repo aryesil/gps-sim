@@ -601,3 +601,33 @@ real `brdc0010.22n` (2022-01-01, ships with gps-sdr-sim), RX Istanbul, 12 s int8
   first (`python3 -c` driving `backend.generator.run` directly) to confirm
   the app-level fix still holds, then debug the pytest-specific crash
   separately.
+- **F4 (Important, FIXED 2026-09-04) — `-T`'s realignment only anchors to the
+  first satellite it finds, so a real downloaded BRDC file (each satellite
+  keeping its own, possibly hours-apart broadcast epoch) makes gps-sdr-sim
+  abort with "ERROR: No current set of ephemerides has been found"** for
+  every other satellite once its original epoch falls outside gps-sdr-sim's
+  own internal ±1h "current ephemeris set" window. Fix: `generator.run` now
+  aligns every satellite's `toc`/`toe`/`gps_week` to the exact requested
+  start itself (`ephemeris.align_epochs`) before serializing to RINEX-2, and
+  `scenario.build_args` reverted from `-T` to `-t` (whose strict
+  single-instant validity check always passes against a nav file
+  align_epochs already made single-instant). `app.py`'s inspect step and
+  `/api/receiver`/`/api/lnav` all rebuild the same aligned copy before
+  computing "expected" geometry, LNAV fields, or the position fix, so they
+  describe the ephemeris the IQ was actually generated from, not the
+  original broadcast one. Same approximation `-t`/`-T` always made (tk=0,
+  no orbit propagation) — the toe±2h preview warning still tells the user
+  when that shift is large enough to matter.
+- **F5 (Critical, FIXED 2026-09-04) — `generator.run` deadlocked forever on
+  scenarios longer than a few seconds.** `subprocess.Popen(..., stdout=PIPE,
+  stderr=PIPE)` only drained `stdout`, but gps-sdr-sim's progress lines
+  ("Time into run = ...") print to stderr — confirmed by inspecting its
+  output directly. Once stderr's ~64 KB OS pipe buffer filled (around
+  3000 lines, i.e. a multi-minute scenario at 0.1s/line), the child blocked
+  on `write()` and the parent blocked in `for line in proc.stdout`/
+  `proc.wait()`: neither ever unblocks. Reproduced live — a real
+  `gps-sdr-sim` process was found alive but blocked (`ps` state `SN`, ~0%
+  CPU) far longer than its requested 300s duration. Fix:
+  `stderr=subprocess.STDOUT` merges both streams into the one pipe already
+  being drained; a rolling `tail_lines` list replaces the old
+  `proc.stderr.read()` tail-capture for error reporting.

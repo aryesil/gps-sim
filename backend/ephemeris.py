@@ -47,6 +47,40 @@ def _seconds_of_week(when: dt.datetime) -> float:
     return _gps_seconds(when) % _WEEK_SECONDS
 
 
+def gps_week_and_sow(when_gps: dt.datetime) -> tuple[int, float]:
+    """GPS week number and seconds-of-week for a GPS-timescale datetime
+    (leap seconds already applied by the caller, as scenario.build_args does
+    for gps-sdr-sim's -t/-T)."""
+    total = _gps_seconds(when_gps)
+    return int(total // _WEEK_SECONDS), total % _WEEK_SECONDS
+
+
+def align_epochs(eph_by_prn: dict[int, dict], week: int, sow: float) -> dict[int, dict]:
+    """Return a copy of eph_by_prn with every satellite's toc/toe/gps_week
+    overwritten to the same (week, sow).
+
+    A downloaded daily BRDC file has each satellite's own broadcast epoch --
+    parse_rinex already picked, per PRN, whichever one is nearest the file's
+    midday, so those epochs can be many hours apart from each other. Feeding
+    that straight to gps-sdr-sim with -T only realigns the file to the first
+    satellite it finds (see KNOWN_ISSUES); every other satellite keeps its
+    original, possibly far-off epoch, and gps-sdr-sim aborts with
+    "No current set of ephemerides has been found" as soon as none of them
+    land within its ±1h window. Aligning every satellite to the requested
+    start ourselves keeps the approximation (same one -t/-T always makes:
+    tk=0, no orbit propagation) but bounds it uniformly instead of leaving it
+    to chance which satellite gps-sdr-sim's shift happens to land on.
+    """
+    out = {}
+    for prn, e in eph_by_prn.items():
+        e2 = dict(e)
+        e2["toc"] = sow
+        e2["toe"] = sow
+        e2["gps_week"] = week
+        out[prn] = e2
+    return out
+
+
 def _canonical_name(date: dt.date) -> str:
     return f"BRDC_{date:%Y%j}.rnx"
 
@@ -149,7 +183,7 @@ def to_rinex2_nav(eph_by_prn: dict[int, dict]) -> str:
         week = int(e["gps_week"])
         when = _GPS_EPOCH + dt.timedelta(weeks=week, seconds=e["toc"])
         epoch = (f"{prn:2d} {when.year % 100:02d} {when.month:02d} {when.day:02d} "
-                 f"{when.hour:02d} {when.minute:02d}{when.second:4.1f}")
+                 f"{when.hour:02d} {when.minute:02d} {when.second:4.1f}")
         lines.append(epoch + f(e["af0"]) + f(e["af1"]) + f(e["af2"]))
         lines.append("   " + f(e.get("iode", 0.0)) + f(e["crs"]) + f(e["delta_n"]) + f(e["m0"]))
         lines.append("   " + f(e["cuc"]) + f(e["e"]) + f(e["cus"]) + f(e["sqrtA"]))

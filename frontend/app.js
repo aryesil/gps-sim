@@ -69,6 +69,7 @@ window.addEventListener('DOMContentLoaded', () => {
             let msg; try { msg = JSON.parse(line); } catch (e) { return; }
             if (msg.progress !== undefined)
               document.getElementById('gen-progress').value = msg.progress;
+            if (msg.error) { warn.textContent = 'generate error: ' + msg.error; return; }
             if (msg.done) {
               lastOutdir = msg.done.outdir;
               warn.textContent = 'IQ ready: ' + msg.done.outdir;
