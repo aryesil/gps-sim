@@ -174,6 +174,14 @@ function wireChannelActions(id) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }).then(r => {
+      if (!r.ok) {
+        r.json().then(d => {
+          const msg = 'Channel ' + id + ' generate failed: ' + (d.detail || JSON.stringify(d));
+          document.getElementById(`${id}-warnings`).textContent = msg;
+          logLine(msg, 'error');
+        });
+        return;
+      }
       const rd = r.body.getReader(), dec = new TextDecoder();
       (function pump() {
         rd.read().then(({ value, done }) => {
@@ -183,6 +191,10 @@ function wireChannelActions(id) {
             const msg = JSON.parse(line);
             if (msg.progress !== undefined)
               document.getElementById(`${id}-gen-progress`).value = msg.progress;
+            if (msg.error) {
+              document.getElementById(`${id}-warnings`).textContent = 'error: ' + msg.error;
+              logLine('Channel ' + id + ': ' + msg.error, 'error');
+            }
             if (msg.done) {
               st.lastOutdir = msg.done.outdir;
               drawInspectTable(`${id}-inspect-table`, msg.done.inspect);
@@ -195,6 +207,8 @@ function wireChannelActions(id) {
             }
           });
           pump();
+        }).catch(() => {
+          logLine('Channel ' + id + ' generate stream error', 'error');
         });
       })();
     });
