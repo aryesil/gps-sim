@@ -5,6 +5,22 @@ let trackFrames = null;
 window.addEventListener('DOMContentLoaded', () => {
   gpsMap.init();
 
+  // Live estimated .bin size, mirroring backend/scenario.py:estimate_bytes
+  // (2 IQ channels * bytes-per-sample * sample_rate * duration_s).
+  function _updateSizeEstimate() {
+    const bytesPerSample = document.getElementById('fmt').value === 'int8' ? 1 : 2;
+    const rate = Number(document.getElementById('rate').value);
+    const duration = Number(document.getElementById('duration').value);
+    const bytes = 2 * bytesPerSample * rate * duration;
+    document.getElementById('size-estimate').textContent =
+      `estimated size: ${(bytes / 1e6).toFixed(1)} MB`;
+  }
+  ['fmt', 'rate', 'duration'].forEach(id => {
+    document.getElementById(id).addEventListener('input', _updateSizeEstimate);
+    document.getElementById(id).addEventListener('change', _updateSizeEstimate);
+  });
+  _updateSizeEstimate();
+
   document.getElementById('btn-preview').onclick = async () => {
     const ll = gpsMap.latlng(); if (!ll) return alert('pick a point');
     const su = document.getElementById('start-utc').value;
@@ -121,6 +137,12 @@ window.addEventListener('DOMContentLoaded', () => {
     out.textContent = JSON.stringify(JSON.parse(txt), null, 1);
   };
 
+  document.getElementById('btn-corr-curve').onclick = () => {
+    if (!lastOutdir) return alert('generate first');
+    const prn = document.getElementById('lnav-prn').value;
+    loadCorrelationCurve(lastOutdir, prn);
+  };
+
   document.getElementById('btn-track').onclick = async () => {
     const ll = gpsMap.latlng(); if (!ll) return alert('pick a point');
     const su = document.getElementById('start-utc').value;
@@ -142,10 +164,28 @@ window.addEventListener('DOMContentLoaded', () => {
     slider.max = trackFrames.length - 1;
     slider.value = 0;
     slider.disabled = trackFrames.length < 2;
+    document.getElementById('btn-track-play').disabled = trackFrames.length < 2;
     _drawTrackFrame(0);
   };
 
   document.getElementById('track-slider').oninput = (ev) => _drawTrackFrame(Number(ev.target.value));
+
+  let _trackTimer = null;
+  document.getElementById('btn-track-play').onclick = (ev) => {
+    const btn = ev.target;
+    if (_trackTimer) {
+      clearInterval(_trackTimer); _trackTimer = null; btn.textContent = 'Play';
+      return;
+    }
+    btn.textContent = 'Pause';
+    const slider = document.getElementById('track-slider');
+    _trackTimer = setInterval(() => {
+      let v = Number(slider.value) + 1;
+      if (v > Number(slider.max)) v = 0;
+      slider.value = v;
+      _drawTrackFrame(v);
+    }, 500);
+  };
 
   function _drawTrackFrame(idx) {
     if (!trackFrames || !trackFrames[idx]) return;

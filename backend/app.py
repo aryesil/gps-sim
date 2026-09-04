@@ -241,6 +241,23 @@ def iqplot(outdir: str, n: int = 2000):
     }
 
 
+@app.get("/api/correlation")
+def correlation(outdir: str, prn: int):
+    od = config.OUT_DIR / outdir
+    meta = json.loads((od / "meta.json").read_text())
+    iq = inspector.read_iq(od / "gpssim.bin", meta["sample_format"],
+                           max_samples=int(meta["sample_rate"] * 0.010))
+    res = inspector.acquire(iq, meta["sample_rate"], prn)
+    chips, amp = inspector.correlation_curve(iq, meta["sample_rate"], prn, res["doppler_hz"])
+    # argsort so the plotted line runs monotonically 0->1023 chips instead of
+    # in FFT-bin order (chip = bin_index * chip_rate / sample_rate wraps).
+    pairs = sorted(zip(chips.tolist(), amp.tolist()))
+    return {
+        "prn": prn, "doppler_hz": res["doppler_hz"], "metric_db": res["metric_db"],
+        "code_phase_chips": [p[0] for p in pairs], "amplitude": [p[1] for p in pairs],
+    }
+
+
 @app.get("/api/lnav")
 def lnav(prn: int, outdir: str):
     od = config.OUT_DIR / outdir
@@ -271,12 +288,17 @@ def start_transmit(body: dict):
         uri=body.get("uri", config.DEVICE_URI),
         tx_scale=float(body.get("tx_scale", 1.0)))
     _tx_stop.clear()
+    itemsize = 1 if params.sample_format == "int8" else 2
+    try:
+        total_samples = pathlib.Path(params.iq_path).stat().st_size // (2 * itemsize)
+    except OSError:
+        total_samples = 0
 
     def events():
         with _tx_lock:
             q: list = []
             def cb(d):
-                d["fraction"] = None
+                d["fraction"] = (d["samples"] / total_samples) if total_samples else None
                 q.append(d)
             th = threading.Thread(target=transmit.stream,
                                   kwargs=dict(params=params, dry_run=body.get("dry_run", False),

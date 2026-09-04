@@ -87,6 +87,31 @@ def acquire(iq, sample_rate, prn, doppler_range=(-6000, 6000),
     }
 
 
+def correlation_curve(iq, sample_rate, prn, fd_hz, coherent_ms=1, noncoherent=10):
+    """Full non-coherently-summed correlation magnitude vs code phase, at a
+    fixed (already-estimated) Doppler -- acquire() only keeps the scalar peak
+    of this curve; this recomputes it for the frontend's correlation-curve
+    plot (one FFT-correlate pass, same cost as one Doppler bin of acquire()).
+    """
+    ncoh = int(sample_rate * 1e-3 * coherent_ms)
+    need = ncoh * noncoherent
+    seg = iq[:need]
+    if len(seg) < need:
+        noncoherent = max(1, len(seg) // ncoh)
+        seg = seg[: ncoh * noncoherent]
+    tt = np.arange(ncoh) / sample_rate
+    idx = np.floor(tt * config.CA_CHIP_HZ).astype(int) % 1023
+    local = ca_code(prn).astype(np.float64)[idx]
+    LOC = np.conj(np.fft.fft(local))
+    acc = np.zeros(ncoh)
+    for k in range(noncoherent):
+        blk = seg[k * ncoh:(k + 1) * ncoh]
+        blk = blk * np.exp(-1j * 2 * np.pi * fd_hz * np.arange(k * ncoh, (k + 1) * ncoh) / sample_rate)
+        acc += np.abs(np.fft.ifft(np.fft.fft(blk) * LOC)) ** 2
+    chips = (np.arange(ncoh) * config.CA_CHIP_HZ / sample_rate) % 1023
+    return chips, np.sqrt(acc)
+
+
 def compare(iq, sample_rate, geometry_entries: list[dict]) -> list[dict]:
     rows = []
     for ent in geometry_entries:

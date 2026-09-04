@@ -21,7 +21,12 @@ window.startTransmit = function (outdir) {
         if (done) return;
         dec.decode(value).split('\n\n').forEach(chunk => {
           const line = chunk.replace(/^data: /, '').trim();
-          if (line) document.getElementById('tx-readout').textContent = line;
+          if (!line) return;
+          document.getElementById('tx-readout').textContent = line;
+          try {
+            const msg = JSON.parse(line);
+            if (typeof msg.fraction === 'number') _drawTxProgress(msg.fraction);
+          } catch (e) { /* not JSON, ignore */ }
         });
         pump();
       });
@@ -30,3 +35,10 @@ window.startTransmit = function (outdir) {
 };
 document.getElementById('btn-transmit-stop').onclick =
   () => fetch('/api/transmit/stop', { method: 'POST' });
+
+function _drawTxProgress(fraction) {
+  const c = document.getElementById('tx-progress'), g = c.getContext('2d');
+  g.clearRect(0, 0, c.width, c.height);
+  g.fillStyle = '#eee'; g.fillRect(0, 0, c.width, c.height);
+  g.fillStyle = '#2a6'; g.fillRect(0, 0, c.width * Math.max(0, Math.min(1, fraction)), c.height);
+}

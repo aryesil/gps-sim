@@ -22,6 +22,7 @@
   <label>Format <select id="fmt"><option>int16</option><option>int8</option></select></label>
   <label>RINEX <input id="rinex-path" value="AUTO" size="40"></label>
   <button id="btn-preview">Preview geometry</button>
+  <div id="size-estimate"></div>
 </section>
 
 <section id="panel-constellation"><h2>3. Constellation</h2>
@@ -31,6 +32,7 @@
   <h3>Trajectory playback</h3>
   <label>Step s <input type="number" id="track-step" value="30" size="4"></label>
   <button id="btn-track">Load track</button>
+  <button id="btn-track-play" disabled>Play</button>
   <input type="range" id="track-slider" min="0" max="0" value="0" disabled style="width:300px">
   <div id="track-readout"></div>
 </section>
@@ -44,10 +46,12 @@
   <canvas id="iq-correlation" width="600" height="120"></canvas>
   <h3>IQ waveform (first samples)</h3>
   <canvas id="iq-waveform" width="600" height="150"></canvas>
+  <div id="iq-waveform-readout">hover for sample value</div>
   <h3>IQ constellation</h3>
   <canvas id="iq-constellation" width="240" height="240"></canvas>
   <h3>Spectrum (PSD)</h3>
   <canvas id="iq-spectrum" width="600" height="150"></canvas>
+  <div id="iq-spectrum-readout">hover for frequency/power</div>
 </section>
 
 <section id="panel-receiver"><h2>5. Receiver check</h2>
@@ -58,7 +62,10 @@
 <section id="panel-lnav"><h2>6. LNAV teaching view</h2>
   <label>PRN <input type="number" id="lnav-prn" value="1"></label>
   <button id="btn-lnav">Show subframe 1</button>
+  <button id="btn-corr-curve">Show correlation curve</button>
   <pre id="lnav-out"></pre>
+  <canvas id="corr-curve" width="600" height="150"></canvas>
+  <div id="corr-readout"></div>
 </section>
 
 <section id="panel-transmit"><h2>7. Transmit</h2>
@@ -69,6 +76,7 @@
   <label><input type="checkbox" id="tx-dryrun"> dry run (no device)</label>
   <button id="btn-transmit">Start transmit</button>
   <button id="btn-transmit-stop">Stop</button>
+  <canvas id="tx-progress" width="600" height="20"></canvas>
   <div id="tx-readout"></div>
 </section>
 
