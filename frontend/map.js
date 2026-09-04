@@ -21,10 +21,15 @@ window.gpsMap = (function () {
     inst.handle = {
       onPick: (f) => { inst.cb = f; },
       latlng: () => inst.marker ? inst.marker.getLatLng() : null,
+      invalidateSize: () => m.invalidateSize(),
     };
     instances[mapElementId] = inst;
     return inst.handle;
   }
 
-  return { init };
+  function invalidateAll() {
+    Object.values(instances).forEach(inst => inst.map.invalidateSize());
+  }
+
+  return { init, invalidateAll };
 })();

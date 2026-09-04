@@ -41,7 +41,7 @@ function _tbRedrawMap() {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  _tbMap = L.map('trajectory-map').setView([52.0, 19.0], 6);
+  _tbMap = window._tbMap = L.map('trajectory-map').setView([52.0, 19.0], 6);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(_tbMap);
   _tbMap.on('click', (ev) => {
     _tbWaypoints.push({ lat: ev.latlng.lat, lon: ev.latlng.lng, alt: 100, speed: 5.0, accel: 1.0 });
