@@ -29,6 +29,8 @@ window.addChannel = function () {
         <label>Device URI <input id="${id}-uri" value="ip:192.168.2.1"></label>
         <label>LO Hz <input id="${id}-lo" value="1575420000"></label>
         <label>TX gain dB <input id="${id}-gain" type="number" value="-50"></label>
+        <label><input type="checkbox" id="${id}-tx-confirm"> Isolated/cabled setup confirmed</label>
+        <label><input type="checkbox" id="${id}-tx-dryrun"> Dry run (no RF)</label>
       </div>
       <div class="col-sim">
         <h4>Simulation Config</h4>
@@ -63,6 +65,7 @@ window.addChannel = function () {
         </div>
         <div class="tab-content" data-tab="satellites" hidden>
           <canvas id="${id}-skyplot" width="260" height="260"></canvas>
+          <label>Selected PRN <input id="${id}-lnav-prn" type="number" min="1" max="32"></label>
           <div id="${id}-dop"></div>
           <table id="${id}-sat-table"></table>
         </div>
@@ -84,12 +87,8 @@ window.addChannel = function () {
             <label>GPS ToW shift s <input id="${id}-time-offset" type="number" value="0"></label>
             <button data-field="time_offset_s" data-delta="-30">-30s</button>
             <button data-field="time_offset_s" data-delta="30">+30s</button>
-            <label>PPS phase shift s <input id="${id}-pps-shift" type="number" value="0"></label>
-            <button data-field="pps_shift_s" data-delta="-1">-1s</button>
-            <button data-field="pps_shift_s" data-delta="1">+1s</button>
-            <label>Sat clock corr ns <input id="${id}-clock-corr" type="number" value="0"></label>
-            <button data-field="clock_corr_ns" data-delta="-100">-100ns</button>
-            <button data-field="clock_corr_ns" data-delta="100">+100ns</button>
+            <button data-field="time_offset_s" data-delta="-1">-1s</button>
+            <button data-field="time_offset_s" data-delta="1">+1s</button>
           </div>
         </div>
       </div>
@@ -154,6 +153,8 @@ function wireChannelActions(id) {
     if (!r.ok) { warn.textContent = 'error: ' + (d.detail || JSON.stringify(d)); logLine('Channel ' + id + ' preview: ' + (d.detail || JSON.stringify(d)), 'error'); return; }
     st.lastSatellites = d.satellites;
     drawSkyplot(`${id}-skyplot`, d.satellites);
+    drawDop(`${id}-dop`, d.dop);
+    drawSatTable(`${id}-sat-table`, d.satellites);
     document.getElementById(`${id}-warnings`).textContent = d.warnings.join(' · ');
   };
 
@@ -229,18 +230,27 @@ function wireChannelActions(id) {
       uri: document.getElementById(`${id}-uri`).value,
       lo_hz: Number(document.getElementById(`${id}-lo`).value),
       tx_gain_db: Number(document.getElementById(`${id}-gain`).value),
-      confirm_isolated: true,   // TODO: no per-card confirmation checkbox exists yet -- flag this
-                                // as a concern in the report; this task assumes the operator has
-                                // already confirmed the isolated setup elsewhere in the UI session.
-                                // Do NOT invent a checkbox here -- that is a follow-up decision,
-                                // not this task's job.
-      dry_run: false,
+      confirm_isolated: document.getElementById(`${id}-tx-confirm`).checked,
+      dry_run: document.getElementById(`${id}-tx-dryrun`).checked,
     };
     const r = await fetch('/api/live/start', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
-    if (r.status === 403) { alert('Set ALLOW_TX and confirm the isolated setup.'); return; }
+    if (r.status === 403) { alert('Set ALLOW_TX and tick the isolated-setup confirmation.'); return; }
     if (r.status === 409) { alert('Both TX1 and TX2 are already transmitting.'); return; }
+    if (!r.ok) {
+      // Anything else (validation 400, 503 EphemerisUnavailable, 5xx) never
+      // produces an SSE stream, so the badge must NOT go to 'On Air' -- it
+      // would stay there forever with no 'finished' message to clear it.
+      let detail;
+      try { const d = await r.json(); detail = d.detail || JSON.stringify(d); }
+      catch (e) { detail = 'HTTP ' + r.status; }
+      const msg = 'Channel ' + id + ' live start failed: ' + detail;
+      document.getElementById(`${id}-warnings`).textContent = msg;
+      if (window.logLine) logLine(msg, 'error');
+      alert(msg);
+      return;
+    }
     document.getElementById(`${id}-badge`).textContent = 'On Air';
     const rd = r.body.getReader(), dec = new TextDecoder();
     (function pump() {

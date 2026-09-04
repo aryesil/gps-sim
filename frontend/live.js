@@ -28,8 +28,6 @@ window.enableLiveTabs = function (channelId, txSlot) {
       const d = await r.json();
       if (!r.ok) { if (window.logLine) logLine('live time_shift failed: ' + JSON.stringify(d), 'error'); return; }
       document.getElementById(`${id}-time-offset`).value = d.time_offset_s;
-      document.getElementById(`${id}-pps-shift`).value = d.pps_shift_s;
-      document.getElementById(`${id}-clock-corr`).value = d.clock_corr_ns;
     };
   });
 };

@@ -36,7 +36,8 @@ shielded or conducted laboratory setup and follow the applicable regulatory
 and equipment requirements. Use a cabled or shielded (Faraday) setup only.
 When feeding a receiver over cable, use low TX gain (-40 to -60 dB) plus
 30-60 dB in-line attenuation. Transmit is disabled unless `ALLOW_TX=1` and
-you confirm the isolated setup in the UI.
+you tick each channel card's "Isolated/cabled setup confirmed" checkbox
+(the server rejects a start request without it with HTTP 403).
 
 This software is provided for signal-generation and receiver-testing
 purposes. Responsibility for lawful, authorized operation rests entirely
@@ -46,8 +47,13 @@ with the person operating it; the authors accept no liability for misuse.
 
 1. `ALLOW_TX=1 python -m uvicorn backend.app:app`
 2. Generate a static scenario for your location, current UTC, 300 s, 2.6 Msps int16.
-3. Run "Receiver check" — expect a fix within 100 m of the marker.
+3. Receiver check — expect a fix within 100 m of the marker. **Not currently
+   exposed in the UI**: the per-channel redesign dropped the receiver panel,
+   so call the endpoint directly, e.g.
+   `curl -s localhost:8000/api/receiver -H 'Content-Type: application/json' -d '{"outdir": "<generated dir name>"}'`.
+   The same applies to `/api/lnav`, `/api/correlation` and `/api/preview_track`
+   — all four still work and are tested, but have no UI wiring yet.
 4. Connect SDR TX to the receiver antenna port through >= 40 dB attenuation.
-5. Transmit panel: URI, LO 1575.42 MHz, rate 2.6 Msps, TX gain -50 dB, tick the
-   isolated-setup confirmation, Start.
+5. On the channel card: Device URI, LO 1575.42 MHz, rate 2.6 Msps, TX gain
+   -50 dB, tick "Isolated/cabled setup confirmed", Start.
 6. Record: receiver TTFF, reported position vs marker, sustained underflow count.
