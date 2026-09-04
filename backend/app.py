@@ -88,9 +88,13 @@ async def rinex_upload(date: str, file: UploadFile):
 
 @app.post("/api/generate")
 def generate(body: dict):
+    start = dt.datetime.fromisoformat(body["start_utc"])
+    rinex_path = body["rinex_path"]
+    if rinex_path == "AUTO":
+        rinex_path = str(ephemeris.cached_rinex_path(start.date()))
     req = scenario.ScenarioRequest(
-        rinex_path=body["rinex_path"], lat=body["lat"], lon=body["lon"], alt=body["alt"],
-        start=dt.datetime.fromisoformat(body["start_utc"]), duration_s=int(body["duration_s"]),
+        rinex_path=rinex_path, lat=body["lat"], lon=body["lon"], alt=body["alt"],
+        start=start, duration_s=int(body["duration_s"]),
         sample_rate=float(body.get("sample_rate", config.DEFAULT_SAMPLE_RATE)),
         sample_format=body.get("sample_format", "int16"),
         route=[tuple(p) for p in body["route"]] if body.get("route") else None,

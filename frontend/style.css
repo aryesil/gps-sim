@@ -1,0 +1,9 @@
+/* frontend/style.css */
+body { font: 14px system-ui, sans-serif; margin: 1rem; max-width: 900px; }
+section { border: 1px solid #ccc; border-radius: 6px; padding: 0.75rem; margin: 0.75rem 0; }
+#map { height: 320px; }
+label { display: inline-block; margin: 0.25rem 0.5rem 0.25rem 0; }
+table { border-collapse: collapse; width: 100%; }
+td, th { border: 1px solid #ddd; padding: 2px 6px; font-size: 12px; text-align: right; }
+.warn { color: #a40000; }
+canvas { border: 1px solid #eee; }

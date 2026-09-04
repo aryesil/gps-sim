@@ -126,3 +126,9 @@ def get_ephemeris(date: dt.date, download: bool = True) -> dict[int, dict]:
         if p is None:
             raise EphemerisUnavailable(f"all mirrors failed for {date}")
     return parse_rinex(p)
+
+
+def cached_rinex_path(date: dt.date) -> pathlib.Path:
+    """Ensure a RINEX file for ``date`` is cached, then return its local path."""
+    get_ephemeris(date)
+    return _cache_path(date)
