@@ -45,11 +45,11 @@ class LiveSession:
             lat, lon, h = _ecef_to_llh(*new_ecef)
             self.state.llh = [lat, lon, h]
 
-    def shift_time(self, field_name: str, delta: float) -> None:
-        if field_name not in _TIME_FIELDS:
-            raise ValueError(f"unknown time field {field_name!r}")
+    def shift_time(self, field: str, delta: float) -> None:
+        if field not in _TIME_FIELDS:
+            raise ValueError(f"unknown time field {field!r}")
         with self._lock:
-            setattr(self.state, field_name, getattr(self.state, field_name) + delta)
+            setattr(self.state, field, getattr(self.state, field) + delta)
 
     def segments(self):
         """Generator of complex IQ chunks -- transmit.stream()'s chunk_source

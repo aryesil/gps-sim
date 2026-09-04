@@ -67,17 +67,55 @@ def test_segments_snapshot_is_consistent_under_concurrent_jog(monkeypatch):
     monkeypatch.setattr(live.inspector, "read_iq",
                         lambda path, fmt: np.zeros(50, dtype=np.complex64))
 
-    stop_jogging = threading.Event()
+    # Bounded, countable jogging: exactly NUM_JOGGERS threads each doing
+    # JOGS_PER_THREAD jogs of a known distance, all racing on jog()'s
+    # read-modify-write of self.state.llh concurrently with each other (not
+    # just with segments()'s reader). This is what actually falsifies a
+    # broken/removed lock: with a single jogger thread, jog()'s calls are
+    # already serialized by construction and a missing lock would not lose
+    # any updates (a bare list-object swap is already GIL-atomic against a
+    # concurrent *reader*). Only concurrent *writers* racing on jog()'s
+    # read-then-write can produce a lost update, which would show up as a
+    # final displacement measurably less than
+    # NUM_JOGGERS * JOGS_PER_THREAD * JOG_DISTANCE.
+    NUM_JOGGERS = 2
+    JOGS_PER_THREAD = 25
+    JOG_DISTANCE = 10.0
+    jog_count = {"n": 0}
+    jog_count_lock = threading.Lock()  # protects the test's own counter only
+    done_jogging = threading.Event()
+    threads_remaining = {"n": NUM_JOGGERS}
+
     def jogger():
-        while not stop_jogging.is_set():
-            s.jog("north", 10.0)
-    t = threading.Thread(target=jogger, daemon=True)
-    t.start()
+        for _ in range(JOGS_PER_THREAD):
+            s.jog("north", JOG_DISTANCE)
+            with jog_count_lock:
+                jog_count["n"] += 1
+        with jog_count_lock:
+            threads_remaining["n"] -= 1
+            if threads_remaining["n"] == 0:
+                done_jogging.set()
+    joggers = [threading.Thread(target=jogger, daemon=True) for _ in range(NUM_JOGGERS)]
+    for t in joggers:
+        t.start()
 
     gen = s.segments()
     for _ in range(20):
         next(gen)
     s.stop()
-    stop_jogging.set()
-    t.join(timeout=2.0)
+    done_jogging.wait(timeout=2.0)
+    for t in joggers:
+        t.join(timeout=2.0)
     assert call_count["n"] >= 20
+    assert jog_count["n"] == NUM_JOGGERS * JOGS_PER_THREAD
+
+    # Prove the lock actually mattered: with no lost updates, the final
+    # position's displacement from the origin must match the sum of all
+    # jogs from every thread (within a small curvature-tolerant slop), not
+    # something measurably short of it as a lost read-modify-write between
+    # two concurrent jog() calls would produce.
+    start_ecef = np.array(live.geometry.llh_to_ecef(0.0, 0.0, 0.0))
+    final_ecef = np.array(live.geometry.llh_to_ecef(*s.state.llh))
+    displacement = np.linalg.norm(final_ecef - start_ecef)
+    expected = NUM_JOGGERS * JOGS_PER_THREAD * JOG_DISTANCE
+    assert abs(displacement - expected) < 1.0
