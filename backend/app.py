@@ -185,7 +185,7 @@ def lnav(prn: int, outdir: str):
     meta = json.loads((od / "meta.json").read_text())
     start = dt.datetime.fromisoformat(meta["config"]["start_utc"])
     eph = _resolve_eph(start.date(), meta["config"].get("rinex_path"))[0][prn]
-    return lnav_display.explain(eph, tow_count=int(_gps_tow(start) / 6), week=eph.get("gps_week", 0))
+    return lnav_display.explain(eph, tow_count=int(_gps_tow(start) / 6), week=int(eph.get("gps_week", 0)))
 
 
 @app.post("/api/transmit")

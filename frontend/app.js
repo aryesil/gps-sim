@@ -96,8 +96,18 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-lnav').onclick = async () => {
     if (!lastOutdir) return alert('generate first');
     const prn = document.getElementById('lnav-prn').value;
-    const r = await fetch(`/api/lnav?prn=${prn}&outdir=${lastOutdir}`);
-    document.getElementById('lnav-out').textContent = JSON.stringify(await r.json(), null, 1);
+    const out = document.getElementById('lnav-out');
+    let r, txt;
+    try {
+      r = await fetch(`/api/lnav?prn=${prn}&outdir=${lastOutdir}`);
+      txt = await r.text();
+    } catch (e) { out.textContent = 'request failed: ' + e; return; }
+    if (!r.ok) {
+      let m; try { m = JSON.parse(txt).detail; } catch (e) { m = txt.slice(0, 300); }
+      out.textContent = 'error ' + r.status + ': ' + m;
+      return;
+    }
+    out.textContent = JSON.stringify(JSON.parse(txt), null, 1);
   };
 
   document.getElementById('btn-transmit').onclick = () => {
