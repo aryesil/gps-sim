@@ -1,0 +1,6 @@
+data/rinex/
+out/
+__pycache__/
+*.pyc
+.venv/
+gps-sdr-sim/
