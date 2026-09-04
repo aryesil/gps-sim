@@ -33,7 +33,10 @@ def load(name: str) -> list[dict]:
     p = _path_for(name)
     if not p.exists():
         raise TrajectoryError(f"no saved trajectory named {name!r}")
-    return json.loads(p.read_text())["waypoints"]
+    data = json.loads(p.read_text())
+    if "waypoints" not in data or not isinstance(data["waypoints"], list):
+        raise TrajectoryError(f"corrupt trajectory file for {name!r}")
+    return data["waypoints"]
 
 
 def list_names() -> list[str]:

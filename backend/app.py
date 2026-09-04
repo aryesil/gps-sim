@@ -440,6 +440,8 @@ def live_stop(body: dict):
 def trajectory_save(body: dict):
     try:
         trajectory.save(body["name"], body["waypoints"])
+    except KeyError as e:
+        raise HTTPException(400, f"missing field: {e}")
     except trajectory.TrajectoryError as e:
         raise HTTPException(400, str(e))
     return {"saved": body["name"]}

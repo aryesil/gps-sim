@@ -19,7 +19,8 @@ def test_save_rejects_single_waypoint(tmp_path, monkeypatch):
         trajectory.save("too-short", [{"lat": 1, "lon": 2, "alt": 3, "speed": 1, "accel": 1}])
 
 
-def test_load_missing_raises():
+def test_load_missing_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(trajectory, "_DIR", tmp_path / "trajectories")
     with pytest.raises(trajectory.TrajectoryError):
         trajectory.load("does-not-exist-xyz")
 
