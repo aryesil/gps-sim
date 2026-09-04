@@ -295,19 +295,23 @@ def start_transmit(body: dict):
     if not config.ALLOW_TX or not body.get("confirm_isolated"):
         raise HTTPException(403, "transmit disabled: needs ALLOW_TX and confirm_isolated")
     slot = _acquire_tx_slot()
-    params = transmit.TxParams(
-        iq_path=str(config.OUT_DIR / body["outdir"] / "gpssim.bin")
-        if "outdir" in body else body["iq_path"],
-        sample_rate=float(body["sample_rate"]), sample_format=body["sample_format"],
-        lo_hz=float(body.get("lo_hz", config.L1_HZ)),
-        tx_gain_db=float(body.get("tx_gain_db", -50.0)),
-        uri=body.get("uri", config.DEVICE_URI),
-        tx_scale=float(body.get("tx_scale", 1.0)))
-    itemsize = 1 if params.sample_format == "int8" else 2
     try:
-        total_samples = pathlib.Path(params.iq_path).stat().st_size // (2 * itemsize)
-    except OSError:
-        total_samples = 0
+        params = transmit.TxParams(
+            iq_path=str(config.OUT_DIR / body["outdir"] / "gpssim.bin")
+            if "outdir" in body else body["iq_path"],
+            sample_rate=float(body["sample_rate"]), sample_format=body["sample_format"],
+            lo_hz=float(body.get("lo_hz", config.L1_HZ)),
+            tx_gain_db=float(body.get("tx_gain_db", -50.0)),
+            uri=body.get("uri", config.DEVICE_URI),
+            tx_scale=float(body.get("tx_scale", 1.0)))
+        itemsize = 1 if params.sample_format == "int8" else 2
+        try:
+            total_samples = pathlib.Path(params.iq_path).stat().st_size // (2 * itemsize)
+        except OSError:
+            total_samples = 0
+    except Exception:
+        _release_tx_slot(slot)
+        raise
 
     def events():
         try:
@@ -325,6 +329,7 @@ def start_transmit(body: dict):
                 if _tx_slots[slot]["stop"].is_set():
                     break
                 th.join(timeout=0.2)
+            th.join(timeout=2.0)
             yield f"data: {json.dumps({'finished': True, 'slot': slot})}\n\n"
         finally:
             _release_tx_slot(slot)
@@ -343,12 +348,10 @@ def stop_transmit(body: dict | None = None):
             return {"stopped": True}
         else:
             raise HTTPException(400, "both TX1 and TX2 occupied: specify {\"slot\": \"TX1\"|\"TX2\"}")
-    if _tx_slots.get(slot):
-        _tx_slots[slot]["stop"].set()
+    occ = _tx_slots.get(slot)
+    if occ:
+        occ["stop"].set()
     return {"stopped": True}
-
-
-_live_sessions: dict[str, live.LiveSession] = {}  # keyed by TX slot
 
 
 @app.post("/api/live/start")
@@ -356,19 +359,23 @@ def live_start(body: dict):
     if not config.ALLOW_TX or not body.get("confirm_isolated"):
         raise HTTPException(403, "transmit disabled: needs ALLOW_TX and confirm_isolated")
     slot = _acquire_tx_slot()
-    start = dt.datetime.fromisoformat(body["start_utc"])
-    req = scenario.ScenarioRequest(
-        rinex_path=body["rinex_path"], lat=body["lat"], lon=body["lon"], alt=body["alt"],
-        start=start, duration_s=int(body.get("duration_s", 300)),
-        sample_rate=float(body.get("sample_rate", config.DEFAULT_SAMPLE_RATE)),
-        sample_format=body.get("sample_format", "int16"))
-    session = live.LiveSession(req)
-    _tx_slots[slot]["session"] = session
-    params = transmit.TxParams(
-        iq_path="(live)", sample_rate=req.sample_rate, sample_format=req.sample_format,
-        lo_hz=float(body.get("lo_hz", config.L1_HZ)),
-        tx_gain_db=float(body.get("tx_gain_db", -50.0)),
-        uri=body.get("uri", config.DEVICE_URI))
+    try:
+        start = dt.datetime.fromisoformat(body["start_utc"])
+        req = scenario.ScenarioRequest(
+            rinex_path=body["rinex_path"], lat=body["lat"], lon=body["lon"], alt=body["alt"],
+            start=start, duration_s=int(body.get("duration_s", 300)),
+            sample_rate=float(body.get("sample_rate", config.DEFAULT_SAMPLE_RATE)),
+            sample_format=body.get("sample_format", "int16"))
+        session = live.LiveSession(req)
+        _tx_slots[slot]["session"] = session
+        params = transmit.TxParams(
+            iq_path="(live)", sample_rate=req.sample_rate, sample_format=req.sample_format,
+            lo_hz=float(body.get("lo_hz", config.L1_HZ)),
+            tx_gain_db=float(body.get("tx_gain_db", -50.0)),
+            uri=body.get("uri", config.DEVICE_URI))
+    except Exception:
+        _release_tx_slot(slot)
+        raise
 
     def events():
         try:
@@ -388,6 +395,7 @@ def live_start(body: dict):
                 if _tx_slots[slot]["stop"].is_set():
                     break
                 th.join(timeout=0.2)
+            th.join(timeout=2.0)
             yield f"data: {json.dumps({'finished': True, 'slot': slot})}\n\n"
         finally:
             _release_tx_slot(slot)
@@ -404,8 +412,9 @@ def _session_for_slot(slot: str) -> live.LiveSession:
 
 @app.post("/api/live/jog")
 def live_jog(body: dict):
-    _session_for_slot(body["slot"]).jog(body["direction"], float(body["distance_m"]))
-    return {"llh": _session_for_slot(body["slot"]).state.llh}
+    session = _session_for_slot(body["slot"])
+    session.jog(body["direction"], float(body["distance_m"]))
+    return {"llh": session.state.llh}
 
 
 @app.post("/api/live/time_shift")
@@ -419,10 +428,11 @@ def live_time_shift(body: dict):
 @app.post("/api/live/stop")
 def live_stop(body: dict):
     slot = body["slot"]
-    if _tx_slots.get(slot):
-        _tx_slots[slot]["stop"].set()
-        if _tx_slots[slot]["session"]:
-            _tx_slots[slot]["session"].stop()
+    occ = _tx_slots.get(slot)
+    if occ:
+        occ["stop"].set()
+        if occ["session"]:
+            occ["session"].stop()
     return {"stopped": True}
 
 
