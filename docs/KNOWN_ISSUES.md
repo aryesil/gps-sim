@@ -534,3 +534,32 @@ today only because the one test that would catch them is skipped for a missing b
 Fix C1 and C2, close I1/I2 before touching hardware, then build the binary and let the
 integration test actually run — the branch is close, but nothing in it has yet been
 tested against a real signal.
+
+---
+
+## Post-build run (2026-09-04, commit 08dc56d)
+
+`gps-sdr-sim` cloned + built; app boots (`/api/health` all green bar libiio; `/`
+and `/static/*` serve). Ran the full generate → inspect → fix chain against the
+real `brdc0010.22n` (2022-01-01, ships with gps-sdr-sim), RX Istanbul, 12 s int8.
+
+**Validated:**
+- `/api/preview` geometry matches gps-sdr-sim's own az/el/range printout (G05
+  235.2°/25.6°, G13 303.6°/74.2°, …).
+- Inspector vs expected on all 12 sats: **code-phase err < 0.16 chip** (spec
+  0.5), **Doppler err < 25 Hz** (spec 50). C1 (leap) and C2 (parabolic Doppler)
+  fixes confirmed on real data.
+
+**New findings:**
+- **R1 (Important) — `receiver.fix_from_iq` position solve is wrong (~78 km,
+  residual_rms ~78 km)** despite the inspector recovering every code phase to
+  <0.16 chip from the same acquisition. The fault is in the 1 ms integer
+  ambiguity / absolute-range anchoring in `backend/receiver.py:70-78`
+  (`n_ms` rounding against `predicted[ref]`), not in acquisition or geometry.
+  Does not affect the hardware-acceptance path (an external GNSS receiver
+  decodes the SDR output directly; `receiver.py` is only the internal check).
+- **F1 (Important) — `tests/fixtures/brdc_sample.rnx` is rejected by gps-sdr-sim**
+  ("ERROR: Invalid start time", zero ephemerides parsed): it is a single
+  hand-trimmed RINEX-3 epoch. Regenerate it from a real multi-epoch BRDC subset
+  so `tests/test_integration_generate.py` can stop skipping. Until then the
+  integration test only runs against a manually supplied real BRDC.
