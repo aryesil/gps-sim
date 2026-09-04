@@ -151,7 +151,7 @@ function wireChannelActions(id) {
       }),
     });
     const d = await r.json();
-    if (!r.ok) { warn.textContent = 'error: ' + (d.detail || JSON.stringify(d)); return; }
+    if (!r.ok) { warn.textContent = 'error: ' + (d.detail || JSON.stringify(d)); logLine('Channel ' + id + ' preview: ' + (d.detail || JSON.stringify(d)), 'error'); return; }
     st.lastSatellites = d.satellites;
     drawSkyplot(`${id}-skyplot`, d.satellites);
     document.getElementById(`${id}-warnings`).textContent = d.warnings.join(' · ');
