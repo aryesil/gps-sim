@@ -35,7 +35,7 @@ def test_acquire_finds_synthetic_signal():
     code = inspector.ca_code(prn).astype(float)
     n = int(fs * 0.010)
     t = np.arange(n) / fs
-    chips = (t * config.CA_CHIP_HZ + 137.0).astype(int) % 1023
+    chips = (t * config.CA_CHIP_HZ - 137.0).astype(int) % 1023
     fd = 1500.0
     sig = code[chips] * np.exp(1j * 2 * np.pi * fd * t)
     rng = np.random.default_rng(0)
