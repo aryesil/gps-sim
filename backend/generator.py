@@ -6,7 +6,7 @@ import pathlib
 import re
 import subprocess
 
-from backend import config, scenario
+from backend import config, ephemeris, scenario
 
 _TIME_RE = re.compile(r"Time into run\s*=\s*([0-9.]+)")
 
@@ -44,6 +44,12 @@ def run(req: scenario.ScenarioRequest, progress_cb=None, binary: str | None = No
         scenario.write_motion_csv(req, motion_csv)
 
     argv = [b] + scenario.build_args(req, str(out_bin), motion_csv)
+    # gps-sdr-sim's bundled parser only understands RINEX-2 nav (KNOWN_ISSUES
+    # F2); re-serialize whatever RINEX version was resolved into one so it
+    # always gets a file it accepts.
+    nav_path = outdir / "nav.rinex2.n"
+    nav_path.write_text(ephemeris.to_rinex2_nav(ephemeris.parse_rinex(req.rinex_path)))
+    argv[argv.index("-e") + 1] = str(nav_path)
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     for line in proc.stdout:
         frac = parse_progress(line, req.duration_s)

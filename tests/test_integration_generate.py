@@ -11,11 +11,12 @@ pytestmark = [
     pytest.mark.skipif(
         not pathlib.Path(config.GPS_SDR_SIM_BIN).exists(),
         reason="gps-sdr-sim binary not built"),
-    # KNOWN_ISSUES F1: brdc_sample.rnx is a single hand-trimmed RINEX-3 epoch that
-    # gps-sdr-sim rejects ("Invalid start time"). Regenerate it from a real
-    # multi-epoch BRDC subset to make this pass. Runs end-to-end today only
-    # against a manually supplied real BRDC (see KNOWN_ISSUES "Post-build run").
-    pytest.mark.xfail(reason="F1: teaching fixture rejected by gps-sdr-sim", strict=False),
+    # KNOWN_ISSUES F1 (the RINEX-3/"Invalid start time" rejection) is fixed:
+    # generator.run re-serializes to RINEX-2 via ephemeris.to_rinex2_nav and
+    # uses -T. This test still fails under pytest specifically (KNOWN_ISSUES
+    # F3: subprocess exit signal -5, not reproduced running the same argv
+    # outside pytest or via the live /api/generate route).
+    pytest.mark.xfail(reason="F3: generator.run's subprocess crashes only under pytest", strict=False),
 ]
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"

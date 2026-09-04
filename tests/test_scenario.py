@@ -20,8 +20,9 @@ def test_static_args():
     assert a[a.index("-b") + 1] == "16"
     assert a[a.index("-d") + 1] == "30"
     assert a[a.index("-l") + 1] == "41.0,29.0,100.0"
-    # -t is shifted by GPS-UTC leap seconds (gps-sdr-sim -t is GPS timescale)
-    assert a[a.index("-t") + 1] == "2026/09/03,06:00:18"
+    # -T (not -t) is shifted by GPS-UTC leap seconds (gps-sdr-sim -t/-T are
+    # GPS timescale); -T also overwrites the nav file's TOC/TOE to match.
+    assert a[a.index("-T") + 1] == "2026/09/03,06:00:18"
 
 
 def test_ionosphere_disabled_by_default():

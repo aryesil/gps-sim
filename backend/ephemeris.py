@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import gzip
+import math
 import pathlib
 
 import georinex as gr
@@ -23,7 +24,7 @@ _VARMAP = {
     "cuc": "Cuc", "cus": "Cus", "crc": "Crc", "crs": "Crs",
     "cic": "Cic", "cis": "Cis", "af0": "SVclockBias", "af1": "SVclockDrift",
     "af2": "SVclockDriftRate", "tgd": "TGD", "gps_week": "GPSWeek",
-    "health": "health",
+    "health": "health", "iode": "IODE", "iodc": "IODC", "codes_l2": "CodesL2",
 }
 
 
@@ -117,6 +118,47 @@ def parse_rinex(path: str | pathlib.Path) -> dict[int, dict]:
     if not out:
         raise EphemerisUnavailable("no GPS ephemeris in file")
     return out
+
+
+def _rinex2_field(v: float) -> str:
+    """A single 19-char scientific-notation field, gps-sdr-sim's fixed-width
+    RINEX-2 nav parser reads at 19-char offsets and passes straight to atof()
+    (any 'D'/'E' exponent both work)."""
+    if v is None or not math.isfinite(v):
+        v = 0.0
+    return f"{float(v):19.12E}"
+
+
+def to_rinex2_nav(eph_by_prn: dict[int, dict]) -> str:
+    """Serialize a parsed ephemeris dict (as returned by parse_rinex /
+    get_ephemeris) into a RINEX-2 GPS nav file.
+
+    gps-sdr-sim's bundled `readRinexNavAll()` only understands RINEX-2 nav
+    (see KNOWN_ISSUES F2) even though `georinex`/this module parse RINEX-3
+    fine. generator.run uses this to re-serialize whatever RINEX version was
+    resolved into a file gps-sdr-sim can always read, instead of patching or
+    forking gps-sdr-sim's C parser.
+    """
+    f = _rinex2_field
+    lines = [
+        "     2              NAVIGATION DATA                        RINEX VERSION / TYPE".ljust(73),
+        "".ljust(60) + "END OF HEADER".ljust(20),
+    ]
+    for prn in sorted(eph_by_prn):
+        e = eph_by_prn[prn]
+        week = int(e["gps_week"])
+        when = _GPS_EPOCH + dt.timedelta(weeks=week, seconds=e["toc"])
+        epoch = (f"{prn:2d} {when.year % 100:02d} {when.month:02d} {when.day:02d} "
+                 f"{when.hour:02d} {when.minute:02d}{when.second:4.1f}")
+        lines.append(epoch + f(e["af0"]) + f(e["af1"]) + f(e["af2"]))
+        lines.append("   " + f(e.get("iode", 0.0)) + f(e["crs"]) + f(e["delta_n"]) + f(e["m0"]))
+        lines.append("   " + f(e["cuc"]) + f(e["e"]) + f(e["cus"]) + f(e["sqrtA"]))
+        lines.append("   " + f(e["toe"]) + f(e["cic"]) + f(e["omega0"]) + f(e["cis"]))
+        lines.append("   " + f(e["i0"]) + f(e["crc"]) + f(e["omega"]) + f(e["omega_dot"]))
+        lines.append("   " + f(e["idot"]) + f(e.get("codes_l2", 0.0)) + f(week) + f(0.0))
+        lines.append("   " + f(0.0) + f(e.get("health", 0.0)) + f(e["tgd"]) + f(e.get("iodc", 0.0)))
+        lines.append("   " + f(0.0) + f(0.0) + f(0.0) + f(0.0))
+    return "\n".join(lines) + "\n"
 
 
 def get_ephemeris(date: dt.date, download: bool = True) -> dict[int, dict]:

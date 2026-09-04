@@ -1,12 +1,15 @@
 import datetime as dt
 import json
 import os
+import pathlib
 import stat
 import textwrap
 
 import pytest
 
 from backend import generator, scenario
+
+_FIX = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
 
 
 def test_parse_progress_reads_time_line():
@@ -34,9 +37,8 @@ def test_run_creates_output_and_meta(tmp_path, monkeypatch):
     monkeypatch.setattr(generator.config, "OUT_DIR", tmp_path)
     fake = _fake_binary(tmp_path)
     req = scenario.ScenarioRequest(
-        rinex_path=str(tmp_path / "brdc.rnx"), lat=41.0, lon=29.0, alt=100.0,
+        rinex_path=str(_FIX), lat=41.0, lon=29.0, alt=100.0,
         start=dt.datetime(2026, 9, 3, 6, 0, 0), duration_s=10)
-    (tmp_path / "brdc.rnx").write_text("x")
     seen = []
     outdir = generator.run(req, progress_cb=seen.append, binary=fake)
     assert (outdir / "gpssim.bin").stat().st_size == 2000
@@ -52,7 +54,7 @@ def test_run_raises_on_failure(tmp_path, monkeypatch):
     bad.write_text('#!/usr/bin/env bash\necho boom >&2\nexit 3\n')
     bad.chmod(0o755)
     req = scenario.ScenarioRequest(
-        rinex_path="x", lat=1, lon=2, alt=3,
+        rinex_path=str(_FIX), lat=1, lon=2, alt=3,
         start=dt.datetime(2026, 1, 1), duration_s=1)
     with pytest.raises(generator.GeneratorError) as ei:
         generator.run(req, binary=str(bad))
