@@ -29,7 +29,15 @@ OUT_DIR = pathlib.Path(_str("OUT_DIR", str(_ROOT / "out")))
 
 GPS_SDR_SIM_BIN = _str("GPS_SDR_SIM_BIN", str(_ROOT / "gps-sdr-sim" / "gps-sdr-sim"))
 RINEX_MIRRORS = [
-    "https://igs.bkg.bund.de/root_ftp/IGS/BRDC/{yyyy}/{ddd}/BRDC00WRD_R_{yyyy}{ddd}0000_01D_GN.rnx.gz",
+    # BKG serves the combined nav file as "MN" (mixed GNSS nav), not "GN" --
+    # confirmed against the live directory listing; georinex's use="G" filter
+    # picks the GPS records back out of it.
+    "https://igs.bkg.bund.de/root_ftp/IGS/BRDC/{yyyy}/{ddd}/BRDC00WRD_R_{yyyy}{ddd}0000_01D_MN.rnx.gz",
+    # CDDIS requires a NASA Earthdata login; without credentials it returns
+    # a 200 OK HTML login page instead of the file. ephemeris._download's
+    # "RINEX VERSION" content check already rejects that, so this mirror is
+    # a no-op until credentials are configured -- kept as a documented,
+    # harmless fallback attempt.
     "https://cddis.nasa.gov/archive/gnss/data/daily/{yyyy}/brdc/BRDC00IGS_R_{yyyy}{ddd}0000_01D_GN.rnx.gz",
 ]
 
