@@ -27,11 +27,20 @@ internal receiver check all work; only PlutoSDR-class hardware transmit needs
 
 ## Safety
 
-Transmitting in the GPS band over the air is illegal and disrupts real receivers.
-Use a cabled or shielded (Faraday) setup only. When feeding a receiver over
-cable, use low TX gain (-40 to -60 dB) plus 30-60 dB in-line attenuation.
-Transmit is disabled unless `ALLOW_TX=1` and you confirm the isolated setup in
-the UI.
+**Do not transmit RF over the air.** Operation outside an appropriately
+authorized and controlled test environment may violate applicable spectrum
+regulations and can interfere with GNSS receivers.
+
+If RF replay is required, use only an appropriately authorized, fully
+shielded or conducted laboratory setup and follow the applicable regulatory
+and equipment requirements. Use a cabled or shielded (Faraday) setup only.
+When feeding a receiver over cable, use low TX gain (-40 to -60 dB) plus
+30-60 dB in-line attenuation. Transmit is disabled unless `ALLOW_TX=1` and
+you confirm the isolated setup in the UI.
+
+This software is provided for signal-generation and receiver-testing
+purposes. Responsibility for lawful, authorized operation rests entirely
+with the person operating it; the authors accept no liability for misuse.
 
 ## Manual hardware acceptance checklist
 
