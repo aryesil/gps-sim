@@ -239,6 +239,9 @@ function wireChannelActions(id) {
           if (msg.finished) { document.getElementById(`${id}-badge`).textContent = 'Ready'; disableLiveTabs(id); }
         });
         pump();
+      }).catch(() => {
+        document.getElementById(`${id}-badge`).textContent = 'Ready';
+        disableLiveTabs(id);
       });
     })();
   };
