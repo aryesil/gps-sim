@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPS L1 C/A Signal Simulator</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<h1>GPS L1 C/A Signal Simulator</h1>
+<p class="warn">Cabled / shielded setup only. Low TX gain + in-line attenuation.</p>
+
+<section id="panel-map"><h2>1. Location</h2><div id="map"></div>
+  <div id="rx-readout">click the map to set the receiver point</div></section>
+
+<section id="panel-scenario"><h2>2. Scenario</h2>
+  <label>Start UTC <input type="datetime-local" id="start-utc"></label>
+  <label>Duration s <input type="number" id="duration" value="300"></label>
+  <label>Sample rate <select id="rate">
+    <option>2600000</option><option>4000000</option><option>5000000</option><option>8000000</option>
+  </select></label>
+  <label>Format <select id="fmt"><option>int16</option><option>int8</option></select></label>
+  <button id="btn-preview">Preview geometry</button>
+</section>
+
+<section id="panel-constellation"><h2>3. Constellation</h2>
+  <canvas id="skyplot" width="320" height="320"></canvas>
+  <div id="dop"></div><table id="sat-table"></table>
+  <div id="warnings" class="warn"></div>
+</section>
+
+<section id="panel-generate"><h2>4. Generate IQ</h2>
+  <button id="btn-generate">Generate</button>
+  <progress id="gen-progress" max="1" value="0"></progress>
+  <table id="inspect-table"></table>
+  <a id="download-link" hidden>download gpssim.bin</a>
+</section>
+
+<section id="panel-receiver"><h2>5. Receiver check</h2>
+  <button id="btn-receiver">Solve position from IQ</button>
+  <div id="fix-readout"></div>
+</section>
+
+<section id="panel-lnav"><h2>6. LNAV teaching view</h2>
+  <label>PRN <input type="number" id="lnav-prn" value="1"></label>
+  <button id="btn-lnav">Show subframe 1</button>
+  <pre id="lnav-out"></pre>
+</section>
+
+<section id="panel-transmit"><h2>7. Transmit</h2>
+  <label>Device URI <input id="tx-uri" value="ip:192.168.2.1"></label>
+  <label>LO Hz <input id="tx-lo" value="1575420000"></label>
+  <label>TX gain dB <input id="tx-gain" type="number" value="-50"></label>
+  <label><input type="checkbox" id="tx-confirm"> I am on an isolated / cabled setup</label>
+  <label><input type="checkbox" id="tx-dryrun"> dry run (no device)</label>
+  <button id="btn-transmit">Start transmit</button>
+  <button id="btn-transmit-stop">Stop</button>
+  <div id="tx-readout"></div>
+</section>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/static/map.js"></script>
+<script src="/static/skyplot.js"></script>
+<script src="/static/plots.js"></script>
+<script src="/static/transmit.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

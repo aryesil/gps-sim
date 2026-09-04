@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 .venv/
 gps-sdr-sim/
+
+# python build metadata
+*.egg-info/
