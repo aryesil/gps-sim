@@ -1,12 +1,12 @@
 // frontend/skyplot.js
-let _lastSkyEntries = [];   // for click-to-select (positions recomputed on click)
+let _lastSkyEntries = {};   // canvasId -> entries, for click-to-select (positions recomputed on click)
 
 // cn0ByPrn (optional): {prn: metric_db} from the inspect step's acquire()
 // results -- colors each dot by measured signal strength instead of the
 // flat blue used when only geometry (no IQ yet) is available.
-window.drawSkyplot = function (entries, cn0ByPrn) {
-  _lastSkyEntries = entries;
-  const c = document.getElementById('skyplot'), g = c.getContext('2d');
+window.drawSkyplot = function (canvasId, entries, cn0ByPrn) {
+  _lastSkyEntries[canvasId] = entries;
+  const c = document.getElementById(canvasId), g = c.getContext('2d');
   const cx = c.width / 2, cy = c.height / 2, R = Math.min(cx, cy) - 10;
   g.clearRect(0, 0, c.width, c.height);
   g.strokeStyle = '#ccc';
@@ -24,24 +24,29 @@ window.drawSkyplot = function (entries, cn0ByPrn) {
 
 // Click the nearest dot -> fill the LNAV/correlation-curve PRN field, so a
 // user can point at a satellite on the skyplot instead of typing its PRN.
-document.getElementById('skyplot').addEventListener('click', (ev) => {
-  if (!_lastSkyEntries.length) return;
-  const c = ev.target, rect = c.getBoundingClientRect();
-  const cx = c.width / 2, cy = c.height / 2, R = Math.min(cx, cy) - 10;
-  const mx = (ev.clientX - rect.left) * (c.width / rect.width);
-  const my = (ev.clientY - rect.top) * (c.height / rect.height);
-  let best = null, bestD = Infinity;
-  _lastSkyEntries.forEach(e => {
-    const r = R * (1 - e.el_deg / 90), a = (e.az_deg - 90) * Math.PI / 180;
-    const x = cx + r * Math.cos(a), y = cy + r * Math.sin(a);
-    const d = Math.hypot(mx - x, my - y);
-    if (d < bestD) { bestD = d; best = e; }
+// Called once per card (from channels.js's addChannel()) rather than once
+// at module load, since each card gets its own skyplot canvas.
+window.attachSkyplotClickHandler = function (canvasId, prnInputId) {
+  document.getElementById(canvasId).addEventListener('click', (ev) => {
+    const entries = _lastSkyEntries[canvasId];
+    if (!entries || !entries.length) return;
+    const c = ev.target, rect = c.getBoundingClientRect();
+    const cx = c.width / 2, cy = c.height / 2, R = Math.min(cx, cy) - 10;
+    const mx = (ev.clientX - rect.left) * (c.width / rect.width);
+    const my = (ev.clientY - rect.top) * (c.height / rect.height);
+    let best = null, bestD = Infinity;
+    entries.forEach(e => {
+      const r = R * (1 - e.el_deg / 90), a = (e.az_deg - 90) * Math.PI / 180;
+      const x = cx + r * Math.cos(a), y = cy + r * Math.sin(a);
+      const d = Math.hypot(mx - x, my - y);
+      if (d < bestD) { bestD = d; best = e; }
+    });
+    if (best && bestD < 20) {
+      const prnInput = document.getElementById(prnInputId);
+      if (prnInput) prnInput.value = best.prn;
+    }
   });
-  if (best && bestD < 20) {
-    const prnInput = document.getElementById('lnav-prn');
-    if (prnInput) prnInput.value = best.prn;
-  }
-});
+};
 
 // Clamped 0-30 dB metric_db range -> red (weak) to green (strong).
 function _cn0Color(db) {

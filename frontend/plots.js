@@ -1,6 +1,6 @@
 // frontend/plots.js
-window.drawInspectTable = function (rows) {
-  const t = document.getElementById('inspect-table');
+window.drawInspectTable = function (tableId, rows) {
+  const t = document.getElementById(tableId);
   t.innerHTML = '<tr><th>PRN</th><th>exp chip</th><th>meas chip</th><th>Δchip</th>'
     + '<th>exp Hz</th><th>meas Hz</th><th>ΔHz</th><th>dB</th></tr>'
     + rows.map(r => `<tr><td>G${r.prn}</td><td>${r.expected_code_phase_chips.toFixed(2)}</td>`
