@@ -120,6 +120,26 @@ def preview(body: dict):
     return {"satellites": sats, "dop": d, "warnings": warnings}
 
 
+@app.post("/api/preview_track")
+def preview_track(body: dict):
+    # Trajectory playback: same geometry as /api/preview but sampled across
+    # the whole scenario duration so the frontend can scrub through how az/el
+    # change over time at a fixed receiver point (route interpolation is not
+    # replayed here -- this is the satellite side of the picture, not the
+    # receiver's path).
+    start = dt.datetime.fromisoformat(body["start_utc"])
+    eph, eph_src = _resolve_eph(start.date(), body.get("rinex_path"))
+    rx = geometry.llh_to_ecef(body["lat"], body["lon"], body["alt"])
+    duration_s = int(body.get("duration_s", 300))
+    step_s = max(1, int(body.get("step_s", 30)))
+    frames = []
+    for t_off in range(0, duration_s + 1, step_s):
+        tow = _gps_tow(start + dt.timedelta(seconds=t_off))
+        sats = geometry.constellation(eph, rx, tow, body.get("mask_deg", 5.0))
+        frames.append({"t_offset_s": t_off, "satellites": sats})
+    return {"frames": frames, "warnings": [f"ephemeris: {eph_src}"]}
+
+
 @app.post("/api/rinex/upload")
 async def rinex_upload(date: str, file: UploadFile):
     d = dt.date.fromisoformat(date)
@@ -203,6 +223,22 @@ def run_receiver(body: dict):
     return receiver.fix_from_iq(
         outdir / "gpssim.bin", meta["sample_format"], meta["sample_rate"],
         eph, _gps_tow(start), marker_llh=body.get("marker"))
+
+
+@app.get("/api/iqplot")
+def iqplot(outdir: str, n: int = 2000):
+    od = config.OUT_DIR / outdir
+    meta = json.loads((od / "meta.json").read_text())
+    # spectrum() needs a full 4096-sample window (its default nfft) even when
+    # the caller only wants a shorter waveform/constellation preview, or the
+    # PSD gets zero-padded (widened main lobe, misleading plot) whenever n<4096.
+    iq = inspector.read_iq(od / "gpssim.bin", meta["sample_format"],
+                           max_samples=max(n, 4096))
+    freqs, power_db = inspector.spectrum(iq, meta["sample_rate"])
+    return {
+        "i": iq.real[:n].tolist(), "q": iq.imag[:n].tolist(),
+        "spectrum_freq_hz": freqs.tolist(), "spectrum_db": power_db.tolist(),
+    }
 
 
 @app.get("/api/lnav")

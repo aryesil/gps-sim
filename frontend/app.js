@@ -1,5 +1,7 @@
 // frontend/app.js
 let lastOutdir = null;
+let lastSatellites = null;
+let trackFrames = null;
 window.addEventListener('DOMContentLoaded', () => {
   gpsMap.init();
 
@@ -24,6 +26,7 @@ window.addEventListener('DOMContentLoaded', () => {
     catch (e) { warn.textContent = 'server error ' + r.status + ': ' + txt.slice(0, 300); return; }
     if (!r.ok) { warn.textContent = 'error ' + r.status + ': ' + (d.detail || JSON.stringify(d)); return; }
     if (!d.satellites || !d.satellites.length) { warn.textContent = 'no satellites returned'; return; }
+    lastSatellites = d.satellites;
     drawSkyplot(d.satellites);
     const f2 = (x) => (typeof x === 'number' ? x.toFixed(2) : '—');
     document.getElementById('dop').textContent =
@@ -74,6 +77,13 @@ window.addEventListener('DOMContentLoaded', () => {
               lastOutdir = msg.done.outdir;
               warn.textContent = 'IQ ready: ' + msg.done.outdir;
               drawInspectTable(msg.done.inspect);
+              drawCorrelationBars(msg.done.inspect);
+              loadIqPlots(msg.done.outdir);
+              if (lastSatellites) {
+                const cn0 = {};
+                msg.done.inspect.forEach(r => { cn0[r.prn] = r.metric_db; });
+                drawSkyplot(lastSatellites, cn0);
+              }
               const a = document.getElementById('download-link');
               a.href = `/out/${msg.done.outdir}/gpssim.bin`; a.hidden = false;
             }
@@ -110,6 +120,41 @@ window.addEventListener('DOMContentLoaded', () => {
     }
     out.textContent = JSON.stringify(JSON.parse(txt), null, 1);
   };
+
+  document.getElementById('btn-track').onclick = async () => {
+    const ll = gpsMap.latlng(); if (!ll) return alert('pick a point');
+    const su = document.getElementById('start-utc').value;
+    if (!su) return alert('set a start UTC');
+    const warn = document.getElementById('warnings');
+    const r = await fetch('/api/preview_track', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lat: ll.lat, lon: ll.lng, alt: 100, start_utc: su + ':00',
+        duration_s: Number(document.getElementById('duration').value),
+        step_s: Number(document.getElementById('track-step').value) || 30,
+        rinex_path: document.getElementById('rinex-path').value.trim(),
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok) { warn.textContent = 'track error: ' + (d.detail || JSON.stringify(d)); return; }
+    trackFrames = d.frames;
+    const slider = document.getElementById('track-slider');
+    slider.max = trackFrames.length - 1;
+    slider.value = 0;
+    slider.disabled = trackFrames.length < 2;
+    _drawTrackFrame(0);
+  };
+
+  document.getElementById('track-slider').oninput = (ev) => _drawTrackFrame(Number(ev.target.value));
+
+  function _drawTrackFrame(idx) {
+    if (!trackFrames || !trackFrames[idx]) return;
+    const f = trackFrames[idx];
+    lastSatellites = f.satellites;
+    drawSkyplot(f.satellites);
+    document.getElementById('track-readout').textContent =
+      `t+${f.t_offset_s}s -- ${f.satellites.length} visible`;
+  }
 
   document.getElementById('btn-transmit').onclick = () => {
     if (!lastOutdir) return alert('generate first');
