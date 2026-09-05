@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from backend import config, geometry, inspector
+from backend import config, error_budget, geometry, inspector, wls
 
 
 def solve_position(pseudoranges, sat_positions, x0=None) -> dict:
@@ -81,6 +81,35 @@ def fix_from_iq(iq_path, sample_format, sample_rate, eph_by_prn,
         "pdop": geometry.dop(entries, sol["ecef"])["pdop"],
         "residual_rms_m": sol["residual_rms_m"],
     }
+
+    # elevation-weighted least-squares solution + DOP block + a nominal
+    # per-PRN error budget, alongside the legacy unweighted fix above.
+    try:
+        rx_sol = np.array(sol["ecef"])
+        el_by_prn, weights = {}, {}
+        for prn in acq:
+            los = sat_pos[prn] - rx_sol
+            up = rx_sol / np.linalg.norm(rx_sol)
+            el_by_prn[prn] = float(np.degrees(np.arcsin(
+                np.clip((los / np.linalg.norm(los)) @ up, -1, 1))))
+            weights[prn] = wls.elevation_weight(el_by_prn[prn])
+        wsol = wls.solve(pr, {p: sat_pos[p] for p in acq}, weights=weights,
+                         x0=[*approx_rx, 0.0])
+        wlat, wlon, wh = _ecef_to_llh(*wsol["ecef"])
+        out["wls"] = {
+            "llh": [wlat, wlon, wh], "ecef": wsol["ecef"],
+            "clock_bias_s": wsol["clock_bias_s"],
+            "dop": wsol["dop"],
+            "residual_rms_m": wsol["residual_rms_m"],
+            "weighted_residual_rms_m": wsol["weighted_residual_rms_m"],
+            "sigma_horizontal_m": wsol["sigma_horizontal_m"],
+            "sigma_vertical_m": wsol["sigma_vertical_m"],
+        }
+        out["error_budget"] = error_budget.summarize([
+            error_budget.budget_for_prn(p, elevation_deg=el_by_prn[p])
+            for p in sorted(acq)])
+    except (ValueError, np.linalg.LinAlgError):
+        out["wls"] = None
     if marker_llh:
         truth = np.array(geometry.llh_to_ecef(*marker_llh))
         out["error_m"] = float(np.linalg.norm(np.array(sol["ecef"]) - truth))
