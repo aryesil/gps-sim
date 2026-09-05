@@ -120,7 +120,8 @@ section { display: block; }
 .warn { color: var(--warning); font-size: 12px; margin: 0 0 var(--sp-3) 0; }
 .hint { color: var(--text-faint); font-size: 12px; }
 .scenario-lib-row { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); align-items: center; }
-.scenario-lib-row input, .scenario-lib-row select { flex: 1 1 120px; min-width: 0; }
+.scenario-lib-row input { flex: 1 1 100%; min-width: 0; width: auto; }
+.scenario-lib-row select { flex: 1 1 140px; min-width: 0; width: auto; }
 .scenario-lib-row button { flex: 0 0 auto; white-space: nowrap; }
 .timeline-editor { margin: var(--sp-3) 0; padding: var(--sp-3); border: 1px solid var(--border); border-radius: var(--radius); }
 .timeline-editor ul { list-style: none; margin: 0 0 var(--sp-2) 0; padding: 0; font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
