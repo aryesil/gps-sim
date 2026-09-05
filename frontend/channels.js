@@ -52,6 +52,21 @@ window.addChannel = function () {
         </select></label>
         <label>Format <select id="${id}-fmt"><option>int16</option><option>int8</option></select></label>
         <label>RINEX <input id="${id}-rinex-path" value="AUTO" size="26"></label>
+        <label>Ephemeris (analysis)
+          <select id="${id}-eph-mode">
+            <option value="broadcast">Broadcast</option>
+            <option value="precise">Precise (SP3)</option>
+          </select>
+        </label>
+        <div class="hint">analysis only — generated IQ always uses broadcast</div>
+        <details class="precise-panel">
+          <summary>Precise ephemeris (SP3)</summary>
+          <label>SP3 path <input id="${id}-sp3-path" size="26" placeholder="data/precise/…​.sp3"></label>
+          <button id="${id}-sp3-load" type="button">Load</button>
+          <button id="${id}-sp3-compare" type="button">Compare vs broadcast</button>
+          <div id="${id}-sp3-status" class="hint"></div>
+          <div id="${id}-sp3-compare-out" class="hint"></div>
+        </details>
         <div id="${id}-size-estimate" class="hint"></div>
         <div class="scenario-lib-row">
           <input id="${id}-scenario-name" placeholder="scenario name" size="14">
@@ -352,6 +367,7 @@ function wireChannelActions(id) {
         lon: st.map.latlng() ? st.map.latlng().lng : 0,
         alt: 100, start_utc: su + ':00',
         rinex_path: document.getElementById(`${id}-rinex-path`).value.trim(),
+        ephemeris_mode: document.getElementById(`${id}-eph-mode`).value,
       }),
     });
     const d = await r.json();
@@ -361,6 +377,58 @@ function wireChannelActions(id) {
     drawDop(`${id}-dop`, d.dop);
     drawSatTable(`${id}-sat-table`, d.satellites);
     document.getElementById(`${id}-warnings`).textContent = d.warnings.join(' · ');
+  };
+
+  async function _refreshSp3Status() {
+    const el = document.getElementById(`${id}-sp3-status`);
+    try {
+      const s = await (await fetch('/api/precise/status')).json();
+      el.textContent = s.loaded
+        ? `loaded: ${s.source} — ${s.satellites.length} sats, ${s.epochs} epochs, ${s.coverage_start_utc} … ${s.coverage_end_utc}`
+        : 'no SP3 product loaded';
+    } catch (e) { el.textContent = 'status unavailable'; }
+  }
+  _refreshSp3Status();
+
+  document.getElementById(`${id}-sp3-load`).onclick = async () => {
+    const path = document.getElementById(`${id}-sp3-path`).value.trim();
+    if (!path) return alert('set an SP3 path');
+    const el = document.getElementById(`${id}-sp3-status`);
+    el.textContent = 'loading…';
+    const r = await fetch('/api/precise/load', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    const d = await r.json();
+    if (!r.ok) { el.textContent = 'error: ' + (d.detail || JSON.stringify(d)); return; }
+    logLine('Channel ' + id + ' loaded SP3: ' + d.source, 'info');
+    _refreshSp3Status();
+  };
+
+  document.getElementById(`${id}-sp3-compare`).onclick = async () => {
+    const su = document.getElementById(`${id}-start-utc`).value;
+    if (!su) return alert('set a start UTC');
+    const out = document.getElementById(`${id}-sp3-compare-out`);
+    out.textContent = 'comparing…';
+    const r = await fetch('/api/precise/compare', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lat: st.map.latlng() ? st.map.latlng().lat : 0,
+        lon: st.map.latlng() ? st.map.latlng().lng : 0,
+        alt: 100, start_utc: su + ':00',
+        rinex_path: document.getElementById(`${id}-rinex-path`).value.trim(),
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok) { out.textContent = 'error: ' + (d.detail || JSON.stringify(d)); return; }
+    const s = d.summary || {};
+    const head = s.n
+      ? `${s.n} PRN — pos RMS ${s.pos_delta_rms_m.toFixed(1)} m · range RMS ${s.range_delta_rms_m.toFixed(1)} m · Doppler RMS ${s.doppler_delta_rms_hz.toFixed(2)} Hz`
+      : 'no overlapping visible PRNs';
+    const rows = (d.rows || []).map(x =>
+      `PRN ${x.prn}: Δpos ${x.pos_delta_m.toFixed(1)} m, Δrange ${x.range_delta_m.toFixed(1)} m, Δclk ${(x.clock_delta_s * 1e9).toFixed(1)} ns, el ${x.el_deg.toFixed(0)}°`
+    ).join('\n');
+    out.textContent = [head, ...(d.warnings || []), rows].filter(Boolean).join('\n');
   };
 
   document.getElementById(`${id}-btn-generate`).onclick = () => {
