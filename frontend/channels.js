@@ -90,20 +90,45 @@ window.addChannel = function () {
         </div>
         <div class="tab-content" data-tab="status">
           <table id="${id}-inspect-table"></table>
-          <canvas id="${id}-iq-correlation" width="400" height="100"></canvas>
-          <div class="hint">Scrub through the generated file <span id="${id}-iq-scrub-readout"></span></div>
-          <input id="${id}-iq-scrub" type="range" min="0" max="0" value="0" style="width:400px">
-          <canvas id="${id}-iq-waveform" width="400" height="120"></canvas>
-          <div id="${id}-iq-waveform-readout"></div>
-          <canvas id="${id}-iq-constellation" width="180" height="180"></canvas>
-          <canvas id="${id}-iq-spectrum" width="400" height="120"></canvas>
-          <div id="${id}-iq-spectrum-readout"></div>
-          <h4>Live Spectrogram</h4>
-          <canvas id="${id}-spectrogram" width="400" height="120"></canvas>
-          <div class="hint">Fills while this channel is transmitting live -- one column per ~1s segment.</div>
-          <h4>C/N0 Trend<span id="${id}-cn0-readout" class="hint"></span></h4>
-          <canvas id="${id}-cn0-trend" width="400" height="100"></canvas>
-          <div class="hint">Set "Selected PRN" on the Satellites tab before Start to track it live.</div>
+          <div class="iq-inspect">
+            <div class="iq-block">
+              <div class="iq-label">Acquisition metric</div>
+              <canvas id="${id}-iq-correlation" width="760" height="90"></canvas>
+            </div>
+            <div class="iq-block">
+              <div class="iq-label">
+                Waveform scrubber
+                <span id="${id}-iq-scrub-readout" class="iq-readout"></span>
+              </div>
+              <input id="${id}-iq-scrub" type="range" min="0" max="0" value="0" class="iq-scrub">
+              <canvas id="${id}-iq-waveform" width="760" height="120"></canvas>
+              <div id="${id}-iq-waveform-readout" class="iq-readout"></div>
+            </div>
+            <div class="iq-row">
+              <div class="iq-block iq-block-fixed">
+                <div class="iq-label">Constellation</div>
+                <canvas id="${id}-iq-constellation" width="200" height="200"></canvas>
+              </div>
+              <div class="iq-block iq-block-grow">
+                <div class="iq-label">Spectrum</div>
+                <canvas id="${id}-iq-spectrum" width="520" height="200"></canvas>
+                <div id="${id}-iq-spectrum-readout" class="iq-readout"></div>
+              </div>
+            </div>
+            <div class="iq-block">
+              <div class="iq-label">Live spectrogram</div>
+              <canvas id="${id}-spectrogram" width="760" height="120"></canvas>
+              <div class="hint">Fills while this channel is transmitting live — one column per ~1&nbsp;s segment.</div>
+            </div>
+            <div class="iq-block">
+              <div class="iq-label">
+                C/N0 trend
+                <span id="${id}-cn0-readout" class="iq-readout"></span>
+              </div>
+              <canvas id="${id}-cn0-trend" width="760" height="110"></canvas>
+              <div class="hint">Set “Selected PRN” on the Satellites tab before Start to track it live.</div>
+            </div>
+          </div>
         </div>
         <div class="tab-content" data-tab="satellites" hidden>
           <canvas id="${id}-skyplot" width="260" height="260"></canvas>

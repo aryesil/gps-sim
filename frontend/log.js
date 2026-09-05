@@ -99,7 +99,8 @@ window.loadAuditLog = async function () {
     li.className = 'log-audit';
     const t = new Date(ev.ts).toLocaleTimeString();
     const { ts, event, ...rest } = ev;
-    const detail = Object.entries(rest).map(([k, v]) => `${k}=${v}`).join(' ');
+    const detail = Object.entries(rest)
+      .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`).join(' ');
     li.textContent = `[${t}] ${event}${detail ? ' ' + detail : ''}`;
     list.appendChild(li);
   });
