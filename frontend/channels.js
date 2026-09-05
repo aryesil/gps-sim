@@ -65,6 +65,8 @@ window.addChannel = function () {
         <div class="tab-content" data-tab="status">
           <table id="${id}-inspect-table"></table>
           <canvas id="${id}-iq-correlation" width="400" height="100"></canvas>
+          <div class="hint">Scrub through the generated file <span id="${id}-iq-scrub-readout"></span></div>
+          <input id="${id}-iq-scrub" type="range" min="0" max="0" value="0" style="width:400px">
           <canvas id="${id}-iq-waveform" width="400" height="120"></canvas>
           <div id="${id}-iq-waveform-readout"></div>
           <canvas id="${id}-iq-constellation" width="180" height="180"></canvas>
@@ -229,6 +231,7 @@ function wireChannelActions(id) {
               drawInspectTable(`${id}-inspect-table`, msg.done.inspect);
               drawCorrelationBars(`${id}-iq-correlation`, msg.done.inspect);
               loadIqPlots(id, msg.done.outdir);
+              attachIqScrubber(id, msg.done.outdir);
               if (st.lastSatellites) {
                 const cn0 = {}; msg.done.inspect.forEach(r => { cn0[r.prn] = r.metric_db; });
                 drawSkyplot(`${id}-skyplot`, st.lastSatellites, cn0);

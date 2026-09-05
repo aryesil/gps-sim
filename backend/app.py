@@ -255,18 +255,21 @@ def run_receiver(body: dict):
 
 
 @app.get("/api/iqplot")
-def iqplot(outdir: str, n: int = 2000):
+def iqplot(outdir: str, n: int = 2000, offset: int = 0):
     od = config.OUT_DIR / outdir
     meta = json.loads((od / "meta.json").read_text())
+    bin_path = od / "gpssim.bin"
     # spectrum() needs a full 4096-sample window (its default nfft) even when
     # the caller only wants a shorter waveform/constellation preview, or the
     # PSD gets zero-padded (widened main lobe, misleading plot) whenever n<4096.
-    iq = inspector.read_iq(od / "gpssim.bin", meta["sample_format"],
-                           max_samples=max(n, 4096))
+    iq = inspector.read_iq(bin_path, meta["sample_format"],
+                           max_samples=max(n, 4096), offset_samples=max(0, offset))
     freqs, power_db = inspector.spectrum(iq, meta["sample_rate"])
     return {
         "i": iq.real[:n].tolist(), "q": iq.imag[:n].tolist(),
         "spectrum_freq_hz": freqs.tolist(), "spectrum_db": power_db.tolist(),
+        "offset": offset, "sample_rate": meta["sample_rate"],
+        "total_samples": inspector.iq_sample_count(bin_path, meta["sample_format"]),
     }
 
 

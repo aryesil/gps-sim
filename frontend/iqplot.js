@@ -162,11 +162,30 @@ window.pushCn0Sample = function (canvasId, db) {
   if (readout) readout.textContent = ` ${db.toFixed(1)} dB`;
 };
 
-window.loadIqPlots = async function (channelId, outdir) {
-  const r = await fetch(`/api/iqplot?outdir=${outdir}`);
+// Scrubber: after Generate, the whole .bin file exists on disk -- let the
+// user drag a slider across it and re-fetch a 2000-sample window at that
+// offset instead of always looking at sample 0.
+window.loadIqPlots = async function (channelId, outdir, offset) {
+  const r = await fetch(`/api/iqplot?outdir=${outdir}&offset=${offset || 0}`);
   if (!r.ok) return;
   const d = await r.json();
   drawWaveform(`${channelId}-iq-waveform`, d.i, d.q);
   drawConstellation(`${channelId}-iq-constellation`, d.i, d.q);
   drawSpectrum(`${channelId}-iq-spectrum`, d.spectrum_freq_hz, d.spectrum_db);
+
+  const slider = document.getElementById(`${channelId}-iq-scrub`);
+  const readout = document.getElementById(`${channelId}-iq-scrub-readout`);
+  if (slider) {
+    slider.max = Math.max(0, d.total_samples - 2000);
+    slider.value = d.offset;
+  }
+  if (readout) {
+    readout.textContent = `t=${(d.offset / d.sample_rate).toFixed(2)}s / ${(d.total_samples / d.sample_rate).toFixed(2)}s`;
+  }
+};
+
+window.attachIqScrubber = function (channelId, outdir) {
+  const slider = document.getElementById(`${channelId}-iq-scrub`);
+  if (!slider) return;
+  slider.oninput = () => loadIqPlots(channelId, outdir, Number(slider.value));
 };

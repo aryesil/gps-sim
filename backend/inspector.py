@@ -28,12 +28,23 @@ def ca_code(prn: int) -> np.ndarray:
     return out
 
 
-def read_iq(path, sample_format: str, max_samples: int | None = None) -> np.ndarray:
+def read_iq(path, sample_format: str, max_samples: int | None = None,
+            offset_samples: int = 0) -> np.ndarray:
     dtype = np.int8 if sample_format == "int8" else np.int16
+    itemsize = np.dtype(dtype).itemsize
     count = -1 if max_samples is None else 2 * max_samples
-    raw = np.fromfile(path, dtype=dtype, count=count).astype(np.float32)
+    raw = np.fromfile(path, dtype=dtype, count=count,
+                      offset=offset_samples * 2 * itemsize).astype(np.float32)
     raw = raw[: len(raw) - (len(raw) % 2)]
     return (raw[0::2] + 1j * raw[1::2]).astype(np.complex64)
+
+
+def iq_sample_count(path, sample_format: str) -> int:
+    """Total complex-sample count in a gps-sdr-sim .bin file, for a
+    scrubber UI to bound its slider without reading the whole file."""
+    dtype = np.int8 if sample_format == "int8" else np.int16
+    itemsize = np.dtype(dtype).itemsize
+    return path.stat().st_size // (2 * itemsize)
 
 
 def spectrum(iq: np.ndarray, sample_rate: float, nfft: int = 4096):
