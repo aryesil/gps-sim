@@ -80,6 +80,30 @@ class LiveSession:
     def stop(self) -> None:
         self.running = False
 
+    def snapshot(self) -> dict:
+        """Current segment anchor: receiver ECEF and the GPS-time-of-week
+        offset applied to the next segment. Used to check that successive
+        live segments join without a position or timing gap."""
+        with self._lock:
+            ecef = geometry.llh_to_ecef(*self.state.llh)
+            return {"ecef": list(ecef), "llh": list(self.state.llh),
+                    "time_offset_s": float(self.state.time_offset_s)}
+
+
+def segment_boundary_gap(prev: dict, cur: dict) -> dict:
+    """Discontinuity between two consecutive live-segment anchors.
+
+    ``position_gap_m`` -- how far the receiver jumped between segments.
+    ``time_gap_s``     -- change in the GPS-time-of-week offset.
+    A caller enforces its own per-tick limits (e.g. a jog step cap and a
+    max time nudge); this only measures."""
+    p0 = np.array(prev["ecef"], float)
+    p1 = np.array(cur["ecef"], float)
+    return {
+        "position_gap_m": float(np.linalg.norm(p1 - p0)),
+        "time_gap_s": float(cur["time_offset_s"] - prev["time_offset_s"]),
+    }
+
 
 def _ecef_to_llh(x, y, z):
     # Same iterative WGS84 inverse as receiver.py:_ecef_to_llh -- duplicated
