@@ -139,6 +139,25 @@ section { display: block; }
 .impairments-panel summary { cursor: pointer; color: var(--text-faint); }
 .impairments-panel label { display: block; margin-top: 4px; }
 .impairments-panel input[type="number"] { width: 8em; }
+
+.models-panel { margin-top: var(--sp-2); font-size: 12px; }
+.models-panel summary { cursor: pointer; color: var(--text-faint); }
+.models-panel label { display: block; margin-top: 4px; }
+.models-panel input[type="number"] { width: 8em; }
+.models-panel select { margin-left: 4px; }
+#\31 -mdl-summary, [id$="-mdl-summary"] { color: var(--text); margin-top: 6px; }
+
+.compare-out { margin-top: 6px; }
+.compare-cards { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+.compare-card { background: var(--panel, #1b1b1b); border: 1px solid var(--border, #333);
+  border-radius: 6px; padding: 6px 10px; font-size: 12px; }
+.compare-card b { display: block; font-size: 15px; }
+.compare-out canvas { display: block; width: 100%; max-width: 760px; margin: 4px 0;
+  background: var(--panel, #141414); border: 1px solid var(--border, #333); border-radius: 4px; }
+.compare-controls { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 4px 0; }
+.compare-controls button { font-size: 11px; padding: 1px 6px; }
+.compare-controls button.on { outline: 2px solid var(--accent, #6cf); }
+.compare-readout { font-family: monospace; font-size: 11px; color: var(--text-faint); min-height: 1.2em; }
 .scenario-lib-row { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); align-items: center; }
 .scenario-lib-row input { flex: 1 1 100%; min-width: 0; width: auto; }
 .scenario-lib-row select { flex: 1 1 140px; min-width: 0; width: auto; }

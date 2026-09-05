@@ -238,7 +238,13 @@ Precise mode fails explicitly rather than silently degrading:
 `/api/precise/compare` reports, per PRN, the position delta (with
 radial/along/cross components), clock delta, range and pseudorange delta,
 Doppler delta, and elevation, plus an RMS summary — broadcast(realigned)
-minus precise, at one epoch.
+minus precise. With `sweep_s`/`step_s` in the body it repeats the
+comparison across the scenario duration and returns a per-PRN `series`.
+The browser panel sends the sweep automatically and renders it with
+`frontend/compare.js`: summary cards, a per-PRN radial/along/cross bar
+chart, a per-PRN clock-offset bar chart, and an interactive time-sweep
+line chart (per-PRN toggles, metric selector, hover readout) — no text to
+read.
 
 ---
 
@@ -291,9 +297,10 @@ and the Event list: the persistent audit trail merged with the live
 
 1. Run a precise **Preview** for your lat/lon/time — this auto-downloads
    the SP3 product for that epoch. Then **Compare vs broadcast** in the
-   precise panel and read the per-PRN and RMS position/range/Doppler
-   deltas — how far a *broadcast*-mode recording's geometry sits from the
-   precise reference. (Load a specific SP3 by path first only to pin one.)
+   precise panel — the result is charted (radial/along/cross bars, clock
+   bars, and a time-sweep line chart with per-PRN toggles), showing how
+   far a *broadcast*-mode recording's geometry sits from the precise
+   reference. (Load a specific SP3 by path first only to pin one.)
 
 **Precise-geometry generation**
 
@@ -414,7 +421,7 @@ operator; the authors accept no liability for misuse.
 .venv/bin/pytest -q
 ```
 
-**390 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
+**403 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
 alignment, GPS-time conversions, the SP3 parser and orbit/clock
 interpolation, the broadcast/precise mode selector, the SP3→broadcast
 fit (pure-Kepler recovery to millimetres, SP3-fixture fit, RINEX-2
@@ -460,8 +467,10 @@ A set of software-only checks that do not need hardware or the real
   fitted records reproduce the SP3 *position* track to sub-metre over the
   fit arc, but the clock comes from the SP3 product's coarse clock
   (linearly interpolated) fitted to `af0/af1/af2` — good to a few ns, not
-  a sub-nanosecond source. Iono/tropo/multipath are still absent (that is
-  `gps-sdr-sim`, unchanged).
+  a sub-nanosecond source. Iono/tropo/multipath are not part of the fit;
+  they reach the IQ only through the opt-in channel models (ionosphere via
+  `gps-sdr-sim`'s `-i`, receiver-clock + multipath via the quasi-static
+  `_apply_channel` post-process, troposphere not at all).
 - **The fit arc is 4 h.** Precise generation needs an SP3 product whose
   epochs cover the scenario start ± 2 h; outside that it returns HTTP 422.
 - **GPS L1 C/A only** — single band, single constellation. No GLONASS /
@@ -480,19 +489,48 @@ A set of software-only checks that do not need hardware or the real
 
 ### Optional models (all default-off, all deterministic)
 
-These are library modules with unit + consistency tests. They are **not**
-wired into the `gps-sdr-sim` broadcast path automatically; a caller opts
-in. Enabling one changes the pseudorange/observables it is given, never
-the geometric range or the motion-derived Doppler.
+These are library modules with unit + consistency tests. Every sub-model
+defaults to `off`. When a request enables one it **always** shapes the
+`/api/preview` and truth observables (never the geometric range or the
+motion-derived Doppler); whether it also alters the generated **IQ** is a
+separate opt-in — see *Channel models in the IQ* below.
 
 | Module | Model | Notes / assumptions |
 |---|---|---|
 | `backend/atmosphere.py` | Klobuchar iono (L1), Saastamoinen tropo | Broadcast-grade. Saastamoinen uses a `1/sin(el)` mapping, good to a few cm above ~15° — not Niell/VMF1. |
 | `backend/receiver_clock.py` | Receiver clock offset: bias + drift + drift-rate polynomial, optional sawtooth | Distinct from satellite clock and propagation delay; adds a common `c·offset` to simultaneous pseudoranges and a common `−f_L1·drift` carrier offset. No RNG. |
 | `backend/multipath.py` | Specular: direct + N reflections (delay, amplitude<1, phase, Doppler) | `channel_taps()` for convolving clean IQ; `tracking_bias()` is a closed-form narrow-correlator DLL/Costas approximation, **not** a substitute for filtering the IQ. |
+| `backend/channel_models.py` | Glue: parses the three request dicts, applies them to the preview/truth observables, produces the UI summary | The three model modules stay standalone; this is the only place that binds them to a request. |
 | `backend/impairments.py` | RF impairment layer over complex IQ: CFO, sample-clock ppm, phase noise, I/Q imbalance, DC offset, AWGN (SNR or noise power), clipping, requantisation | All randomness from one seeded `default_rng`; `(config, seed, input) → output` is bit-for-bit reproducible. Wired into `generator.run` via `ScenarioRequest.impairments` (default `None`); the clean file is kept as `gpssim.clean.bin`. Reachable from the browser UI via the per-channel *RF impairments (advanced)* panel (collapsed and opt-in; an untouched panel leaves the `/api/generate` body unchanged). |
 | `backend/wls.py` | Elevation-weighted least-squares fix + GDOP/PDOP/HDOP/VDOP/TDOP + formal covariance | Standalone; the legacy unweighted `receiver.solve_position` is unchanged. |
 | `backend/error_budget.py` | Per-PRN 1-σ range error budget, RSS to a UERE | Nominal figures are **documentation-grade, not a calibration** of this simulator. |
+
+All four sub-models are reachable from the browser: the per-channel
+**Propagation & receiver models (advanced)** panel (collapsed, opt-in)
+feeds `atmosphere` / `receiver_clock` / `multipath` and a `models_to_iq`
+flag into `/api/preview` and `/api/generate`. An untouched panel adds
+nothing to either request. `/api/preview` returns a `channel_models`
+summary (per-epoch iono/tropo metres, receiver-clock offset, multipath
+bias) that the panel renders under the controls.
+
+#### Channel models in the IQ
+
+By default the models are **truth-only** — the generated `gpssim.bin` is
+byte-identical to a run without them. Ticking *Also apply these models to
+the generated IQ* (`models_to_iq=true`) turns on:
+
+- **Ionosphere** — `atmosphere.ionosphere == "klobuchar"` keeps
+  gps-sdr-sim's own broadcast Klobuchar enabled (drops its `-i`
+  suppression flag), so the delay is in the IQ via the generator, not a
+  post-process.
+- **Receiver clock + multipath** — `generator._apply_channel` runs a
+  *quasi-static* post-process on the composite signal (evaluated once at
+  mid-scenario): a common receiver-clock time/carrier offset and a
+  specular-multipath FIR. It runs before the RF-impairment stage; the
+  pre-channel file is kept as `gpssim.prechannel.bin` and a report lands
+  in `meta.json`'s `provenance.channel_models`. A large clock drift or a
+  non-zero reflection Doppler is only approximated, and **tropospheric
+  delay is never injected into the IQ** — the report flags this.
 
 ### Reproducibility
 

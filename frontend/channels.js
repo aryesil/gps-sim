@@ -84,6 +84,36 @@ window.addChannel = function () {
           <label>Clip fraction <input id="${id}-imp-clip" type="number" value="0" min="0" max="1" step="0.001"></label>
           <label>Quantizer bits <input id="${id}-imp-bits" type="number" value="0" min="0" max="16"></label>
         </details>
+        <details class="models-panel">
+          <summary>Propagation &amp; receiver models (advanced)</summary>
+          <div class="hint">Deterministic, RNG-free. These always shape the Preview / truth observables. They alter the generated <em>IQ</em> only when "apply to IQ" is ticked: ionosphere then rides gps-sdr-sim's own broadcast Klobuchar, and a quasi-static receiver-clock + multipath channel is convolved onto the composite signal (clean copy kept as gpssim.prechannel.bin). Troposphere stays truth-only. All "off" = no change.</div>
+          <label>Ionosphere <select id="${id}-mdl-iono">
+            <option value="off">off</option><option value="klobuchar">klobuchar</option>
+          </select></label>
+          <label>Troposphere <select id="${id}-mdl-tropo">
+            <option value="off">off</option><option value="saastamoinen">saastamoinen</option>
+          </select></label>
+          <label>Receiver clock <select id="${id}-mdl-rxclk">
+            <option value="off">off</option><option value="poly">poly</option>
+          </select></label>
+          <label>· bias s <input id="${id}-mdl-rxclk-bias" type="number" value="0" step="1e-7"></label>
+          <label>· drift s/s <input id="${id}-mdl-rxclk-drift" type="number" value="0" step="1e-10"></label>
+          <label>· drift rate s/s² <input id="${id}-mdl-rxclk-driftrate" type="number" value="0" step="1e-13"></label>
+          <label>· sawtooth amp s <input id="${id}-mdl-rxclk-sawamp" type="number" value="0" min="0" step="1e-9"></label>
+          <label>· sawtooth period s <input id="${id}-mdl-rxclk-sawper" type="number" value="0" min="0"></label>
+          <label>Multipath <select id="${id}-mdl-mp">
+            <option value="off">off</option><option value="specular">specular</option>
+          </select></label>
+          <div class="hint">Reflections — a row counts only when amplitude &gt; 0 (0 ≤ amp &lt; 1).</div>
+          <label>· #1 excess delay m <input id="${id}-mdl-mp1-delay" type="number" value="0" min="0"></label>
+          <label>· #1 amplitude <input id="${id}-mdl-mp1-amp" type="number" value="0" min="0" max="0.999" step="0.01"></label>
+          <label>· #1 phase rad <input id="${id}-mdl-mp1-phase" type="number" value="3.14159" step="0.01"></label>
+          <label>· #2 excess delay m <input id="${id}-mdl-mp2-delay" type="number" value="0" min="0"></label>
+          <label>· #2 amplitude <input id="${id}-mdl-mp2-amp" type="number" value="0" min="0" max="0.999" step="0.01"></label>
+          <label>· #2 phase rad <input id="${id}-mdl-mp2-phase" type="number" value="3.14159" step="0.01"></label>
+          <label><input type="checkbox" id="${id}-mdl-to-iq"> Also apply these models to the generated IQ</label>
+          <div id="${id}-mdl-summary" class="hint"></div>
+        </details>
         <div id="${id}-size-estimate" class="hint"></div>
         <div class="scenario-lib-row">
           <input id="${id}-scenario-name" placeholder="scenario name" size="14">
@@ -385,6 +415,7 @@ function wireChannelActions(id) {
         alt: 100, start_utc: su + ':00',
         rinex_path: document.getElementById(`${id}-rinex-path`).value.trim(),
         ephemeris_mode: document.getElementById(`${id}-eph-mode`).value,
+        ...(_channelModelsBody() || {}),
       }),
     });
     const d = await r.json();
@@ -393,6 +424,7 @@ function wireChannelActions(id) {
     drawSkyplot(`${id}-skyplot`, d.satellites);
     drawDop(`${id}-dop`, d.dop);
     drawSatTable(`${id}-sat-table`, d.satellites);
+    _renderModelSummary(d.channel_models);
     document.getElementById(`${id}-warnings`).textContent = d.warnings.join(' · ');
   };
 
@@ -426,7 +458,12 @@ function wireChannelActions(id) {
     const su = document.getElementById(`${id}-start-utc`).value;
     if (!su) return alert('set a start UTC');
     const out = document.getElementById(`${id}-sp3-compare-out`);
+    out.className = 'compare-out';
     out.textContent = 'comparing…';
+    // Sweep across the scenario duration so the result is a curve, not a
+    // single-epoch snapshot; ~20 steps, at least 60 s apart.
+    const dur = Math.max(0, Number(document.getElementById(`${id}-duration`).value) || 0);
+    const step = Math.max(60, Math.round(dur / 20) || 60);
     const r = await fetch('/api/precise/compare', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -434,18 +471,12 @@ function wireChannelActions(id) {
         lon: st.map.latlng() ? st.map.latlng().lng : 0,
         alt: 100, start_utc: su + ':00',
         rinex_path: document.getElementById(`${id}-rinex-path`).value.trim(),
+        sweep_s: dur, step_s: step,
       }),
     });
     const d = await r.json();
     if (!r.ok) { out.textContent = 'error: ' + (d.detail || JSON.stringify(d)); return; }
-    const s = d.summary || {};
-    const head = s.n
-      ? `${s.n} PRN — pos RMS ${s.pos_delta_rms_m.toFixed(1)} m · range RMS ${s.range_delta_rms_m.toFixed(1)} m · Doppler RMS ${s.doppler_delta_rms_hz.toFixed(2)} Hz`
-      : 'no overlapping visible PRNs';
-    const rows = (d.rows || []).map(x =>
-      `PRN ${x.prn}: Δpos ${x.pos_delta_m.toFixed(1)} m, Δrange ${x.range_delta_m.toFixed(1)} m, Δclk ${(x.clock_delta_s * 1e9).toFixed(1)} ns, el ${x.el_deg.toFixed(0)}°`
-    ).join('\n');
-    out.textContent = [head, ...(d.warnings || []), rows].filter(Boolean).join('\n');
+    renderCompare(`${id}-sp3-compare-out`, d);
   };
 
   // Fold the advanced RF-impairment panel into an `impairments` object only
@@ -474,6 +505,55 @@ function wireChannelActions(id) {
     return imp;
   }
 
+  // Fold the propagation / receiver-model panel into the request body.
+  // Every sub-model defaults to "off"; the whole object is omitted when
+  // nothing is enabled, so an untouched panel leaves the request as it was.
+  function _channelModelsBody() {
+    const val = (sfx) => document.getElementById(`${id}-mdl-${sfx}`).value;
+    const num = (sfx) => Number(document.getElementById(`${id}-mdl-${sfx}`).value) || 0;
+    const out = {};
+    const iono = val('iono'), tropo = val('tropo');
+    if (iono !== 'off' || tropo !== 'off') out.atmosphere = { ionosphere: iono, troposphere: tropo };
+    if (val('rxclk') === 'poly') {
+      out.receiver_clock = {
+        model: 'poly',
+        bias_s: num('rxclk-bias'),
+        drift_s_per_s: num('rxclk-drift'),
+        drift_rate_s_per_s2: num('rxclk-driftrate'),
+        sawtooth_amp_s: num('rxclk-sawamp'),
+        sawtooth_period_s: num('rxclk-sawper'),
+      };
+    }
+    if (val('mp') === 'specular') {
+      const refs = [];
+      for (const k of ['mp1', 'mp2']) {
+        const amp = num(`${k}-amp`);
+        if (amp > 0) refs.push({
+          excess_delay_m: num(`${k}-delay`), amplitude: amp, phase_rad: num(`${k}-phase`),
+        });
+      }
+      if (refs.length) out.multipath = { model: 'specular', reflections: refs };
+    }
+    if (Object.keys(out).length === 0) return null;
+    out.models_to_iq = document.getElementById(`${id}-mdl-to-iq`).checked;
+    return out;
+  }
+
+  function _renderModelSummary(cm) {
+    const el = document.getElementById(`${id}-mdl-summary`);
+    if (!cm || !cm.any_enabled) { el.textContent = ''; return; }
+    const bits = [];
+    if (cm.ionosphere_model && cm.ionosphere_model !== 'off')
+      bits.push(`iono ${cm.ionosphere_model} ≈ ${(cm.ionosphere_delay_m || 0).toFixed(2)} m @ ${cm.atmosphere_sample_el_deg}° el`);
+    if (cm.troposphere_model && cm.troposphere_model !== 'off')
+      bits.push(`tropo ${cm.troposphere_model} ≈ ${(cm.troposphere_delay_m || 0).toFixed(2)} m (truth only)`);
+    if (cm.receiver_clock_model && cm.receiver_clock_model !== 'off')
+      bits.push(`rx clock ${(cm.receiver_clock_offset_s * 1e6).toFixed(3)} µs = ${cm.receiver_clock_range_bias_m.toFixed(1)} m, ${cm.receiver_clock_carrier_offset_hz.toFixed(2)} Hz`);
+    if (cm.multipath_model && cm.multipath_model !== 'off')
+      bits.push(`multipath ${cm.multipath_n_reflections} refl → code ${cm.multipath_code_bias_m.toFixed(2)} m, carrier ${cm.multipath_carrier_bias_m.toFixed(3)} m`);
+    el.textContent = 'applied: ' + bits.join('  ·  ');
+  }
+
   document.getElementById(`${id}-btn-generate`).onclick = () => {
     const su = document.getElementById(`${id}-start-utc`).value;
     if (!su) return alert('set a start UTC');
@@ -490,6 +570,8 @@ function wireChannelActions(id) {
     if (st.route) body.route = st.route;
     const _imp = _impairmentsBody();
     if (_imp) { body.impairments = _imp; body.random_seed = _imp.seed; }
+    const _mdl = _channelModelsBody();
+    if (_mdl) Object.assign(body, _mdl);
     fetch('/api/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

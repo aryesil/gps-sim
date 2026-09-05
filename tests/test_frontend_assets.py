@@ -7,7 +7,8 @@ F = pathlib.Path(__file__).parent.parent / "frontend"
 # top-level onclick assignment threw on every page load. The backend
 # /api/transmit endpoint is unaffected.
 _SCRIPTS = ["pages.js", "map.js", "skyplot.js", "plots.js", "iqplot.js",
-            "channels.js", "live.js", "trajectory.js", "log.js", "app.js"]
+            "compare.js", "channels.js", "live.js", "trajectory.js", "log.js",
+            "app.js"]
 
 
 def test_all_frontend_files_present_and_wired():
@@ -70,3 +71,33 @@ def test_channel_card_requires_confirmation_checkbox():
     assert '${id}-tx-confirm' in js
     assert 'confirm_isolated: document.getElementById(`${id}-tx-confirm`).checked' in js
     assert 'confirm_isolated: true' not in js
+
+
+def test_channel_models_panel_present_and_opt_in():
+    """The propagation / receiver-model panel must exist, default every
+    sub-model to 'off', and fold into the request body only when something
+    is enabled (untouched panel -> _channelModelsBody() returns null)."""
+    js = (F / "channels.js").read_text()
+    assert 'class="models-panel"' in js
+    for sfx in ("iono", "tropo", "rxclk", "rxclk-bias", "rxclk-drift",
+                "mp", "mp1-delay", "mp1-amp", "mp1-phase", "to-iq"):
+        assert f'${{id}}-mdl-{sfx}' in js, sfx
+    assert 'if (Object.keys(out).length === 0) return null;' in js
+    assert 'out.models_to_iq =' in js
+    # wired into both preview and generate
+    assert '...(_channelModelsBody() || {})' in js
+    assert 'const _mdl = _channelModelsBody();' in js
+    assert '_renderModelSummary(d.channel_models)' in js
+
+
+def test_compare_is_visualised_not_dumped_as_text():
+    """The SP3-vs-broadcast compare must render through compare.js
+    (canvas charts), not by writing raw lines into a <div>."""
+    cmp = (F / "compare.js").read_text()
+    assert 'window.renderCompare' in cmp
+    assert "getContext('2d')" in cmp
+    js = (F / "channels.js").read_text()
+    assert 'renderCompare(`${id}-sp3-compare-out`, d)' in js
+    # the sweep is requested so the chart is a curve over time
+    assert 'sweep_s: dur' in js
+    assert (F / "index.html").read_text().count("compare.js?v=") == 1

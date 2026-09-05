@@ -709,47 +709,67 @@ def precise_compare(body: dict):
         fallback_to_broadcast=bool(body.get("fallback_to_broadcast")))
 
     mask = body.get("mask_deg", 5.0)
-    rows = []
     import numpy as _np
-    for prn, src in state_map.items():
-        if not callable(src):
-            continue  # PRN fell back to broadcast -- nothing precise to compare
-        b_pos, b_vel, _tof_b, b_clk = geometry.solve_transmit_time(eph_aligned[prn], rx, tow)
-        p_pos, p_vel, _tof_p, p_clk = geometry.solve_transmit_time(src, rx, tow)
-        b_obs = geometry.observables(eph_aligned[prn], rx, tow)
-        if b_obs["el_deg"] < mask:
-            continue
-        p_obs = geometry.observables(src, rx, tow)
-        dpos = _np.asarray(p_pos) - _np.asarray(b_pos)
-        radial = _np.asarray(b_pos) / _np.linalg.norm(b_pos)
-        along = _np.asarray(b_vel) / _np.linalg.norm(b_vel)
-        cross = _np.cross(radial, along)
-        rows.append({
-            "prn": prn,
-            "pos_delta_m": float(_np.linalg.norm(dpos)),
-            "pos_delta_radial_m": float(dpos @ radial),
-            "pos_delta_along_m": float(dpos @ along),
-            "pos_delta_cross_m": float(dpos @ cross),
-            "clock_delta_s": float(p_clk - b_clk),
-            "range_delta_m": float(p_obs["geo_range_m"] - b_obs["geo_range_m"]),
-            "pseudorange_delta_m": float(p_obs["pseudorange_m"] - b_obs["pseudorange_m"]),
-            "doppler_delta_hz": float(p_obs["carrier_doppler_hz"] - b_obs["carrier_doppler_hz"]),
-            "el_deg": float(b_obs["el_deg"]),
-        })
-    rows.sort(key=lambda r: -r["el_deg"])
-    summary = {}
-    if rows:
-        summary = {
-            "n": len(rows),
-            "pos_delta_rms_m": float(_np.sqrt(_np.mean([r["pos_delta_m"] ** 2 for r in rows]))),
-            "range_delta_rms_m": float(_np.sqrt(_np.mean([r["range_delta_m"] ** 2 for r in rows]))),
-            "doppler_delta_rms_hz": float(_np.sqrt(_np.mean([r["doppler_delta_hz"] ** 2 for r in rows]))),
+
+    def _rows_at(tow_e):
+        out = []
+        for prn, src in state_map.items():
+            if not callable(src):
+                continue  # PRN fell back to broadcast -- nothing precise to compare
+            b_pos, b_vel, _tb, b_clk = geometry.solve_transmit_time(eph_aligned[prn], rx, tow_e)
+            p_pos, p_vel, _tp, p_clk = geometry.solve_transmit_time(src, rx, tow_e)
+            b_obs = geometry.observables(eph_aligned[prn], rx, tow_e)
+            if b_obs["el_deg"] < mask:
+                continue
+            p_obs = geometry.observables(src, rx, tow_e)
+            dpos = _np.asarray(p_pos) - _np.asarray(b_pos)
+            radial = _np.asarray(b_pos) / _np.linalg.norm(b_pos)
+            along = _np.asarray(b_vel) / _np.linalg.norm(b_vel)
+            cross = _np.cross(radial, along)
+            out.append({
+                "prn": prn,
+                "pos_delta_m": float(_np.linalg.norm(dpos)),
+                "pos_delta_radial_m": float(dpos @ radial),
+                "pos_delta_along_m": float(dpos @ along),
+                "pos_delta_cross_m": float(dpos @ cross),
+                "clock_delta_s": float(p_clk - b_clk),
+                "range_delta_m": float(p_obs["geo_range_m"] - b_obs["geo_range_m"]),
+                "pseudorange_delta_m": float(p_obs["pseudorange_m"] - b_obs["pseudorange_m"]),
+                "doppler_delta_hz": float(p_obs["carrier_doppler_hz"] - b_obs["carrier_doppler_hz"]),
+                "el_deg": float(b_obs["el_deg"]),
+            })
+        return out
+
+    def _summary(rws):
+        if not rws:
+            return {}
+        return {
+            "n": len(rws),
+            "pos_delta_rms_m": float(_np.sqrt(_np.mean([r["pos_delta_m"] ** 2 for r in rws]))),
+            "range_delta_rms_m": float(_np.sqrt(_np.mean([r["range_delta_m"] ** 2 for r in rws]))),
+            "doppler_delta_rms_hz": float(_np.sqrt(_np.mean([r["doppler_delta_hz"] ** 2 for r in rws]))),
         }
+
+    rows = _rows_at(tow)
+    rows.sort(key=lambda r: -r["el_deg"])
+
+    # Optional time sweep: same comparison at t = 0, step, .. sweep_s past
+    # the start, so the frontend can draw the error as a curve rather than
+    # a single-epoch snapshot.
+    series = {}
+    sweep_s = int(body.get("sweep_s", 0) or 0)
+    step_s = max(1, int(body.get("step_s", 300) or 300))
+    if sweep_s > 0:
+        for t_off in range(0, sweep_s + 1, step_s):
+            for r in _rows_at(tow + t_off):
+                series.setdefault(str(r["prn"]), []).append({"t_offset_s": t_off, **r})
+
     return {
         "epoch_utc": start.isoformat(), "broadcast_source": eph_src,
         "precise_source": _precise_provider.product.source,
         "note": "IQ generation uses the broadcast column; precise is the reference.",
-        "warnings": warnings, "rows": rows, "summary": summary,
+        "warnings": warnings, "rows": rows, "summary": _summary(rows),
+        "series": series, "sweep_s": sweep_s, "step_s": step_s if sweep_s else 0,
     }
 
 

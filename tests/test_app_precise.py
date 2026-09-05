@@ -75,6 +75,28 @@ def test_compare_at_toe_shows_small_bias_only():
         assert abs(row["clock_delta_s"]) < 1e-4
 
 
+def test_compare_time_sweep_returns_per_prn_series():
+    body = {**RX, "start_utc": TOE_UTC, "rinex_path": BRDC,
+            "sweep_s": 600, "step_s": 300}
+    j = client.post("/api/precise/compare", json=body).json()
+    assert j["sweep_s"] == 600 and j["step_s"] == 300
+    assert j["series"], j
+    # every point carries the full breakdown, and t offsets are a subset of
+    # the sweep grid (a PRN may drop below the mask partway through)
+    grid = {0, 300, 600}
+    full = [pts for pts in j["series"].values()
+            if {p["t_offset_s"] for p in pts} == grid]
+    assert full, j["series"]
+    for p in full[0]:
+        assert "pos_delta_m" in p and "pos_delta_radial_m" in p and "el_deg" in p
+
+
+def test_compare_without_sweep_has_empty_series():
+    body = {**RX, "start_utc": TOE_UTC, "rinex_path": BRDC}
+    j = client.post("/api/precise/compare", json=body).json()
+    assert j["series"] == {} and j["sweep_s"] == 0
+
+
 def test_compare_off_toe_exposes_realignment_error():
     body = {**RX, "start_utc": "2026-08-28T15:30:00", "rinex_path": BRDC}
     j = client.post("/api/precise/compare", json=body).json()
