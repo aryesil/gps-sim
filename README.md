@@ -326,7 +326,8 @@ key in `X-API-Key`; a transmit *stop* never does.
 | Presets | `POST/GET/GET /api/trajectory/save|list|load`, `POST/GET/GET /api/scenario/save|list|load` (saves are *operator*) |
 | Observability | `GET /api/audit`, `WS /ws/events` |
 
-Full request/response bodies, roles, and error codes: **[`docs/API.md`](docs/API.md)**.
+Full request/response bodies, roles, and error codes are documented inline
+in `backend/app.py` route handlers.
 
 ---
 
