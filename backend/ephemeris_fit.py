@@ -157,6 +157,70 @@ def _fit_clock(sow: np.ndarray, clk: np.ndarray, toe: float) -> tuple:
     return float(coef[0]), float(coef[1]), float(coef[2]), resid
 
 
+def evaluate_fit(eph: dict, state_fn, epoch: GPSTime, *,
+                 window_s: float = DEFAULT_WINDOW_S,
+                 n_dense: int = 241,
+                 clock_terms=None) -> dict:
+    """Dense, independent post-fit residual analysis.
+
+    The optimiser in :func:`fit_satellite` minimises ``_model_positions``
+    (its own vectorised Kepler copy) at 97 sample points. This function is
+    the *separate* validator the audit requires: it propagates the fitted
+    record with :func:`geometry.sat_state` -- the exact production path that
+    feeds ``gps-sdr-sim`` and the receiver -- at ``n_dense`` points across
+    the arc (offset from the fit grid), and reports the 3D error plus its
+    radial / along-track / cross-track decomposition in the precise orbit
+    frame.
+
+    A fit is only trustworthy if it is small *here*, not merely where the
+    optimiser looked.
+    """
+    toe = float(epoch.sow)
+    half = window_s / 2.0
+    # half a step in from each end, so the dense grid never coincides with
+    # the fit grid's sample points.
+    step = window_s / n_dense
+    sow = toe - half + step / 2.0 + step * np.arange(n_dense)
+
+    d3 = np.empty(n_dense)
+    rac = np.empty((n_dense, 3))
+    clk_err = np.empty(n_dense)
+    for k, s in enumerate(sow):
+        p_true, v_true, c_true = state_fn(float(s))
+        p_true = np.asarray(p_true, float)
+        v_true = np.asarray(v_true, float)
+        p_fit, _, c_fit = geometry.sat_state(eph, float(s))
+        dv = np.asarray(p_fit, float) - p_true
+        d3[k] = float(np.linalg.norm(dv))
+        r_hat = p_true / np.linalg.norm(p_true)
+        c_vec = np.cross(p_true, v_true)
+        c_hat = c_vec / np.linalg.norm(c_vec)
+        a_hat = np.cross(c_hat, r_hat)
+        rac[k] = (dv @ r_hat, dv @ a_hat, dv @ c_hat)
+        clk_err[k] = c_fit - c_true
+
+    def _stats(a):
+        a = np.abs(a)
+        return {
+            "mean": float(a.mean()), "rms": float(np.sqrt(np.mean(a ** 2))),
+            "max": float(a.max()),
+            "p50": float(np.percentile(a, 50)),
+            "p95": float(np.percentile(a, 95)),
+            "p99": float(np.percentile(a, 99)),
+        }
+
+    return {
+        "n_dense": int(n_dense), "window_s": float(window_s),
+        "pos_3d_m": _stats(d3),
+        "radial_m": _stats(rac[:, 0]),
+        "along_track_m": _stats(rac[:, 1]),
+        "cross_track_m": _stats(rac[:, 2]),
+        "clock_s": _stats(clk_err),
+        "range_impact_m": _stats(rac[:, 0]),          # radial ~ line-of-sight range error
+        "pseudorange_impact_m": _stats(rac[:, 0] - config.C * clk_err),
+    }
+
+
 def fit_satellite(state_fn, epoch: GPSTime, *, prn: int, source: str,
                   window_s: float = DEFAULT_WINDOW_S,
                   n_samples: int = DEFAULT_SAMPLES,
@@ -253,10 +317,6 @@ def fit_satellite(state_fn, epoch: GPSTime, *, prn: int, source: str,
     pos_resid = np.linalg.norm(r.reshape(-1, 3), axis=1)
     max_pos = float(pos_resid.max())
     rms_pos = float(np.sqrt(np.mean(pos_resid ** 2)))
-    if strict and max_pos > pos_tol_m:
-        raise EphemerisFitError(
-            f"PRN {prn}: precise->broadcast fit residual {max_pos:.2f} m "
-            f"exceeds tolerance {pos_tol_m:.2f} m over +/-{window_s / 2:.0f} s")
 
     # geometry.sat_state re-adds the relativistic eccentricity term from the
     # fitted orbit, so fit the clock polynomial to the precise bias with
@@ -275,11 +335,32 @@ def fit_satellite(state_fn, epoch: GPSTime, *, prn: int, source: str,
         "tgd": 0.0, "iode": 0.0, "iodc": 0.0, "health": 0.0,
         "codes_l2": 0.0,
     })
+
+    # Independent dense post-fit validation with the production propagator.
+    dense = evaluate_fit(eph, state_fn, epoch, window_s=window_s)
+    dense_max = dense["pos_3d_m"]["max"]
+
+    # The gate is the dense max (production path over the whole arc), not the
+    # optimiser's residual at its own 97 points -- a fit that is small only
+    # where the optimiser looked is not trustworthy.
+    if strict and dense_max > pos_tol_m:
+        raise EphemerisFitError(
+            f"PRN {prn}: precise->broadcast fit rejected -- dense post-fit "
+            f"3D residual max = {dense_max:.2f} m (optimiser grid max "
+            f"{max_pos:.2f} m), configured threshold = {pos_tol_m:.2f} m, "
+            f"fit interval = +/-{window_s / 2:.0f} s, source = {source}")
+
     eph["_fit"] = {
         "source": source, "prn": prn,
         "window_s": float(window_s), "n_samples": int(n_samples),
-        "max_pos_resid_m": max_pos, "rms_pos_resid_m": rms_pos,
+        "pos_tol_m": float(pos_tol_m),
+        "optimiser_grid_max_pos_resid_m": max_pos,
+        "optimiser_grid_rms_pos_resid_m": rms_pos,
         "max_clock_resid_s": clk_resid,
+        # dense, production-path residual analysis:
+        "max_pos_resid_m": dense_max,
+        "rms_pos_resid_m": dense["pos_3d_m"]["rms"],
+        "dense": dense,
     }
     return eph
 

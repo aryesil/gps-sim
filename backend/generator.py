@@ -7,7 +7,7 @@ import pathlib
 import re
 import subprocess
 
-from backend import config, ephemeris, scenario
+from backend import config, ephemeris, provenance as prov, scenario
 
 _TIME_RE = re.compile(r"Time into run\s*=\s*([0-9.]+)")
 
@@ -92,13 +92,37 @@ def run(req: scenario.ScenarioRequest, progress_cb=None, binary: str | None = No
     if progress_cb:
         progress_cb(1.0)
 
+    ephemeris_mode = "precise" if req.nav_override is not None else "broadcast"
+    provenance = {
+        "scenario_hash": prov.scenario_hash(req),
+        "generator_version": prov.git_revision(),
+        "gps_sdr_sim_version": binary_version(b),
+        "rinex_sha256": prov.sha256_file(req.rinex_path) if req.rinex_path else None,
+        "nav_sha256": prov.sha256_file(nav_path),
+        "random_seed": getattr(req, "random_seed", None),
+    }
+    if req.nav_override is not None:
+        fits = [e["_fit"] for e in req.nav_override.values() if "_fit" in e]
+        srcs = {f.get("source") for f in fits}
+        provenance["precise"] = {
+            "sp3_source": next(iter(srcs)) if len(srcs) == 1 else sorted(map(str, srcs)),
+            "fit_prns": sorted(req.nav_override),
+            "fit_method": "damped Levenberg-Marquardt on 15 broadcast params, "
+                          "dense post-fit validation with geometry.sat_state",
+            "fit_tolerance_m": fits[0]["pos_tol_m"] if fits else None,
+            "worst_dense_pos_resid_m": max((f["max_pos_resid_m"] for f in fits),
+                                           default=None),
+            "fallback_used": False,
+        }
+
     meta = {
         "config": {
             "lat": req.lat, "lon": req.lon, "alt": req.alt,
             "start_utc": req.start.isoformat(), "duration_s": req.duration_s,
             "rinex_path": req.rinex_path, "route": req.route,
-            "ephemeris_mode": "precise" if req.nav_override is not None else "broadcast",
+            "ephemeris_mode": ephemeris_mode,
         },
+        "provenance": provenance,
         "precise_fit": ([e["_fit"] for e in req.nav_override.values() if "_fit" in e]
                         if req.nav_override is not None else None),
         "argv": argv,
