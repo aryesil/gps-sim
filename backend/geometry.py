@@ -120,10 +120,17 @@ def _enu(rx_ecef):
     return e, n, u
 
 
-def observables(eph, rx_ecef, t_rx: float, rx_vel=(0.0, 0.0, 0.0)) -> dict:
+def observables(eph, rx_ecef, t_rx: float, rx_vel=(0.0, 0.0, 0.0),
+                atmo_delay_fn=None) -> dict:
     """``eph`` is a broadcast-ephemeris dict or a ``state_fn`` (see
     ``as_state_fn``). Everything downstream -- az/el, geometric range,
-    Doppler, pseudorange, code phase -- is identical for both."""
+    Doppler, pseudorange, code phase -- is identical for both.
+
+    ``atmo_delay_fn``, when given, is ``f(az_rad, el_rad) -> extra one-way
+    path delay in metres`` (see ``backend.atmosphere``). It is added to the
+    pseudorange and code phase exactly once; ``geo_range_m`` and the
+    Doppler stay geometric. Legacy callers pass nothing and are unaffected.
+    """
     rx = np.asarray(rx_ecef, float)
     pos, vel, tof, clk = solve_transmit_time(eph, rx, t_rx)
     los_vec = pos - rx
@@ -135,12 +142,17 @@ def observables(eph, rx_ecef, t_rx: float, rx_vel=(0.0, 0.0, 0.0)) -> dict:
     v_rel = vel - np.asarray(rx_vel, float)
     fd = -config.L1_HZ * (v_rel @ los) / config.C
     pr = geo - config.C * clk
+    atmo_m = 0.0
+    if atmo_delay_fn is not None:
+        atmo_m = float(atmo_delay_fn(np.radians(az), np.radians(el)))
+        pr += atmo_m
     code_phase = (pr / config.C * config.CA_CHIP_HZ) % config.CA_CODE_LEN
     return {
         "az_deg": float(az), "el_deg": float(el), "geo_range_m": geo,
         "pseudorange_m": float(pr), "code_phase_chips": float(code_phase),
         "carrier_doppler_hz": float(fd),
         "code_doppler_hz": float(fd * config.CA_CHIP_HZ / config.L1_HZ),
+        "atmo_delay_m": atmo_m,
         "_los": los.tolist(),
     }
 
