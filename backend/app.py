@@ -405,6 +405,20 @@ def _tee_spectrogram(chunks, sample_rate: float, on_row, track_prn: int | None =
         yield chunk
 
 
+def _apply_timeline_step(session: live.LiveSession, step: dict) -> None:
+    """Run one scheduled timeline step against a live session -- the exact
+    same jog()/shift_time() a manual /api/live/jog or /api/live/time_shift
+    call would use, just triggered by elapsed time instead of an operator
+    click."""
+    action = step["action"]
+    if action == "jog":
+        session.jog(step["direction"], float(step["distance_m"]))
+    elif action == "time_shift":
+        session.shift_time(step["field"], float(step["delta"]))
+    else:
+        raise ValueError(f"unknown timeline action {action!r}")
+
+
 @app.post("/api/live/start")
 def live_start(body: dict):
     if not config.ALLOW_TX or not body.get("confirm_isolated"):
@@ -430,6 +444,7 @@ def live_start(body: dict):
 
     max_duration_s = body.get("max_duration_s")
     max_duration_s = float(max_duration_s) if max_duration_s else None
+    timeline = sorted(body.get("timeline") or [], key=lambda s: s["at_s"])
 
     def events():
         try:
@@ -455,12 +470,23 @@ def live_start(body: dict):
                            progress_cb=cb, cancel=_tx_slots[slot]["stop"],
                            chunk_source=chunk_source))
             th.start()
+            timeline_idx = 0
             while th.is_alive() or q:
                 while q:
                     yield f"data: {json.dumps({**q.pop(0), 'slot': slot})}\n\n"
+                elapsed = time.monotonic() - started
+                while timeline_idx < len(timeline) and timeline[timeline_idx]["at_s"] <= elapsed:
+                    step = timeline[timeline_idx]
+                    try:
+                        _apply_timeline_step(session, step)
+                        audit.log_event("timeline_step", slot=slot, step=step)
+                        yield f"data: {json.dumps({'timeline_step': step, 'slot': slot})}\n\n"
+                    except Exception as e:
+                        audit.log_event("timeline_step_error", slot=slot, step=step, error=str(e))
+                    timeline_idx += 1
                 if _tx_slots[slot]["stop"].is_set():
                     break
-                if max_duration_s is not None and time.monotonic() - started >= max_duration_s:
+                if max_duration_s is not None and elapsed >= max_duration_s:
                     _tx_slots[slot]["stop"].set()  # fail-safe: auto-stop after max_duration_s
                     audit.log_event("auto_stop_timeout", slot=slot, max_duration_s=max_duration_s)
                     break

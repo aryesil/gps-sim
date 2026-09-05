@@ -10,7 +10,7 @@ window.addChannel = function () {
     return null;
   }
   const id = 'ch' + (++_channelCount);
-  _channels[id] = { lastOutdir: null, lastSatellites: null, trackFrames: null, txSlot: null };
+  _channels[id] = { lastOutdir: null, lastSatellites: null, trackFrames: null, txSlot: null, timeline: [] };
 
   const card = document.createElement('div');
   card.className = 'channel-card';
@@ -59,6 +59,21 @@ window.addChannel = function () {
       <button id="${id}-btn-preview">Preview geometry</button>
       <button id="${id}-btn-generate" class="btn-primary">Generate</button>
       <progress id="${id}-gen-progress" max="1" value="0"></progress>
+    </div>
+    <div class="timeline-editor">
+      <h4>Timeline (scheduled during live transmit)</h4>
+      <ul id="${id}-timeline-list"></ul>
+      <div class="timeline-add-row">
+        <label>at t+ <input id="${id}-tl-at" type="number" value="0" min="0" size="4">s</label>
+        <select id="${id}-tl-action">
+          <option value="jog">jog</option>
+          <option value="time_shift">time_shift</option>
+        </select>
+        <input id="${id}-tl-arg1" placeholder="direction / field" size="14" value="north">
+        <input id="${id}-tl-arg2" type="number" placeholder="distance_m / delta" value="10" size="8">
+        <button id="${id}-tl-add">Add step</button>
+      </div>
+      <div class="hint">Runs only while a live transmit is active on this channel (Start).</div>
     </div>
     <div class="channel-columns">
       <div class="col-panel">
@@ -224,6 +239,35 @@ function wireChannelActions(id) {
     logLine(`Channel ${id}: loaded scenario "${name}"`, 'info');
   };
 
+  function _renderTimeline() {
+    const list = document.getElementById(`${id}-timeline-list`);
+    list.innerHTML = '';
+    st.timeline.forEach((step, i) => {
+      const li = document.createElement('li');
+      const desc = step.action === 'jog'
+        ? `jog ${step.direction} ${step.distance_m}m`
+        : `time_shift ${step.field} ${step.delta >= 0 ? '+' : ''}${step.delta}`;
+      li.textContent = `t+${step.at_s}s: ${desc} `;
+      const rm = document.createElement('button');
+      rm.textContent = 'x';
+      rm.onclick = () => { st.timeline.splice(i, 1); _renderTimeline(); };
+      li.appendChild(rm);
+      list.appendChild(li);
+    });
+  }
+
+  document.getElementById(`${id}-tl-add`).onclick = () => {
+    const at_s = Number(document.getElementById(`${id}-tl-at`).value);
+    const action = document.getElementById(`${id}-tl-action`).value;
+    const arg1 = document.getElementById(`${id}-tl-arg1`).value.trim();
+    const arg2 = Number(document.getElementById(`${id}-tl-arg2`).value);
+    const step = action === 'jog'
+      ? { at_s, action, direction: arg1, distance_m: arg2 }
+      : { at_s, action, field: arg1, delta: arg2 };
+    st.timeline.push(step);
+    _renderTimeline();
+  };
+
   document.getElementById(`${id}-btn-preview`).onclick = async () => {
     const su = document.getElementById(`${id}-start-utc`).value;
     if (!su) return alert('set a start UTC');
@@ -334,6 +378,7 @@ function wireChannelActions(id) {
     if (prnInput && prnInput.value) body.track_prn = Number(prnInput.value);
     const maxDurInput = document.getElementById(`${id}-max-duration`);
     if (maxDurInput && maxDurInput.value) body.max_duration_s = Number(maxDurInput.value);
+    if (st.timeline.length) body.timeline = st.timeline;
     const r = await fetch('/api/live/start', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
@@ -364,6 +409,7 @@ function wireChannelActions(id) {
           if (msg.slot && !channelState(id).txSlot) enableLiveTabs(id, msg.slot);
           if (msg.spectrogram_db) pushSpectrogramColumn(`${id}-spectrogram`, msg.spectrogram_db);
           if (msg.cn0_db !== undefined) pushCn0Sample(`${id}-cn0-trend`, msg.cn0_db);
+          if (msg.timeline_step) logLine(`Channel ${id} timeline: ${JSON.stringify(msg.timeline_step)}`, 'info');
           if (msg.finished) { badge.textContent = 'STOPPED'; badge.classList.remove('badge-live'); disableLiveTabs(id); }
         });
         pump();

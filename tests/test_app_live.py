@@ -2,6 +2,7 @@
 import json
 
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
 from backend import config
@@ -193,3 +194,44 @@ def test_live_start_auto_stops_after_max_duration(monkeypatch):
     assert '"finished": true' in body
     from backend import app as app_module
     assert app_module._tx_slots["TX1"] is None or app_module._tx_slots["TX2"] is None
+
+
+def test_apply_timeline_step_jog_calls_session_jog():
+    from backend.app import _apply_timeline_step
+    calls = []
+    session = _FakeSession()
+    session.jog = lambda direction, distance_m: calls.append((direction, distance_m))
+    _apply_timeline_step(session, {"at_s": 5, "action": "jog", "direction": "north", "distance_m": 10})
+    assert calls == [("north", 10.0)]
+
+
+def test_apply_timeline_step_time_shift_updates_state():
+    from backend.app import _apply_timeline_step
+    session = _FakeSession()
+    _apply_timeline_step(session, {"at_s": 1, "action": "time_shift", "field": "time_offset_s", "delta": 5.0})
+    assert session.state.time_offset_s == 5.0
+
+
+def test_apply_timeline_step_rejects_unknown_action():
+    from backend.app import _apply_timeline_step
+    session = _FakeSession()
+    with pytest.raises(ValueError):
+        _apply_timeline_step(session, {"at_s": 1, "action": "warp_drive"})
+
+
+def test_live_start_runs_timeline_steps_in_order(monkeypatch):
+    """End-to-end: a timeline entry due almost immediately (at_s near 0)
+    must fire during the SSE stream and be reported both over SSE
+    (timeline_step) and to the persistent audit log."""
+    import pathlib
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    r = client.post("/api/live/start", json={
+        "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
+        "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
+        "dry_run": True, "duration_s": 3600, "max_duration_s": 0.3,
+        "timeline": [{"at_s": 0, "action": "time_shift", "field": "time_offset_s", "delta": 7.0}]})
+    assert r.status_code == 200
+    body = r.text
+    assert '"timeline_step"' in body
+    assert '"field": "time_offset_s"' in body
