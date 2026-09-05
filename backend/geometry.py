@@ -81,12 +81,30 @@ def _rotate_z(v: np.ndarray, theta: float) -> np.ndarray:
     return np.array([c * v[0] + s * v[1], -s * v[0] + c * v[1], v[2]])
 
 
-def solve_transmit_time(eph: dict, rx_ecef, t_rx: float):
+def as_state_fn(eph):
+    """Normalise a per-satellite state source into ``f(t_gps) -> (pos, vel, clk)``.
+
+    ``eph`` may be a parsed broadcast-ephemeris dict (the historical
+    argument -- propagated with the Kepler model in this module) or an
+    already-built callable, e.g. from
+    ``precise.PreciseEphemerisProvider.state_fn`` (Strategy D). Callers that
+    only ever pass dicts are unaffected.
+    """
+    if callable(eph):
+        def f(t_gps: float):
+            pos, vel, clk = eph(t_gps)
+            return np.asarray(pos, float), np.asarray(vel, float), float(clk)
+        return f
+    return lambda t_gps: sat_state(eph, t_gps)
+
+
+def solve_transmit_time(eph, rx_ecef, t_rx: float):
     rx = np.asarray(rx_ecef, float)
+    state_fn = as_state_fn(eph)
     tof = 0.075
     for _ in range(8):
         t_tx = t_rx - tof
-        pos, vel, clk = sat_state(eph, t_tx)
+        pos, vel, clk = state_fn(t_tx)
         pos_rot = _rotate_z(pos, config.OMEGA_E_DOT * tof)
         tof = np.linalg.norm(pos_rot - rx) / config.C
     return pos_rot, vel, float(tof), float(clk)
@@ -102,7 +120,10 @@ def _enu(rx_ecef):
     return e, n, u
 
 
-def observables(eph: dict, rx_ecef, t_rx: float, rx_vel=(0.0, 0.0, 0.0)) -> dict:
+def observables(eph, rx_ecef, t_rx: float, rx_vel=(0.0, 0.0, 0.0)) -> dict:
+    """``eph`` is a broadcast-ephemeris dict or a ``state_fn`` (see
+    ``as_state_fn``). Everything downstream -- az/el, geometric range,
+    Doppler, pseudorange, code phase -- is identical for both."""
     rx = np.asarray(rx_ecef, float)
     pos, vel, tof, clk = solve_transmit_time(eph, rx, t_rx)
     los_vec = pos - rx
@@ -124,8 +145,10 @@ def observables(eph: dict, rx_ecef, t_rx: float, rx_vel=(0.0, 0.0, 0.0)) -> dict
     }
 
 
-def constellation(eph_by_prn: dict[int, dict], rx_ecef, t_rx: float,
+def constellation(eph_by_prn: dict, rx_ecef, t_rx: float,
                   mask_deg: float = 5.0) -> list[dict]:
+    """``eph_by_prn`` maps PRN -> broadcast dict or state_fn (see
+    ``as_state_fn``); mixing the two across PRNs is allowed."""
     out = []
     for prn in sorted(eph_by_prn):
         o = observables(eph_by_prn[prn], rx_ecef, t_rx)

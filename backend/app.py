@@ -18,7 +18,9 @@ from fastapi.staticfiles import StaticFiles
 
 from backend import (config, ephemeris, geometry, scenario, generator,
                      inspector, receiver, lnav_display, transmit, live, trajectory, audit,
-                     scenario_lib, recording, receiver_feed, auth, ws_hub, device)
+                     scenario_lib, recording, receiver_feed, auth, ws_hub, device,
+                     precise, ephemeris_source)
+from backend.gpstime import GPSTime
 
 @contextlib.asynccontextmanager
 async def _lifespan(app: FastAPI):
@@ -58,6 +60,23 @@ def _eph_unavailable(request: Request, exc: ephemeris.EphemerisUnavailable):
         status_code=503,
         content={"detail": f"ephemeris unavailable: {exc}. "
                            "Put a local RINEX path in the RINEX field instead of AUTO."})
+
+
+@app.exception_handler(ephemeris_source.EphemerisModeError)
+def _eph_mode_error(request: Request, exc: ephemeris_source.EphemerisModeError):
+    # Invalid mode, or 'precise' asked for with no usable precise data for
+    # the epoch. Never silently served as broadcast (Phase 7).
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
+@app.exception_handler(precise.PreciseProductError)
+def _precise_error(request: Request, exc: precise.PreciseProductError):
+    return JSONResponse(status_code=422, content={"detail": f"precise ephemeris: {exc}"})
+
+
+# One process-wide precise (SP3) product, loaded on demand via
+# /api/precise/load. Analysis only -- it never reaches signal generation.
+_precise_provider = precise.PreciseEphemerisProvider()
 _FRONT = pathlib.Path(__file__).resolve().parent.parent / "frontend"
 # TX1/TX2 -- the PlutoSDR's two real simultaneous outputs (KNOWN hardware
 # fact, not an arbitrary cap). Each slot holds {"stop": Event, "session":
@@ -154,11 +173,25 @@ def preview(body: dict):
     tow = _gps_tow(start)
     eph, eph_src = _resolve_eph(date, body.get("rinex_path"))
     rx = geometry.llh_to_ecef(body["lat"], body["lon"], body["alt"])
-    sats = geometry.constellation(eph, rx, tow, body.get("mask_deg", 5.0))
+
+    # Ephemeris mode for the *geometry preview only*. 'precise' uses the
+    # loaded SP3 product (analysis); the generated IQ is still broadcast.
+    mode = ephemeris_source.normalise_mode(body.get("ephemeris_mode"))
+    mode_warnings: list[str] = []
+    eph_for_geo = eph
+    if mode == "precise":
+        week_t, sow_t = ephemeris.gps_week_and_sow(
+            start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S))
+        eph_for_geo, mode_warnings = ephemeris_source.build_state_fns(
+            mode, sorted(eph), GPSTime(week_t, sow_t), eph,
+            provider=_precise_provider, on_missing="skip",
+            fallback_to_broadcast=bool(body.get("fallback_to_broadcast")))
+
+    sats = geometry.constellation(eph_for_geo, rx, tow, body.get("mask_deg", 5.0))
     d = geometry.dop(sats, rx)
     pdop_raw = d["pdop"]
     d = {k: _finite(v) for k, v in d.items()}
-    warnings = [f"ephemeris: {eph_src}"]
+    warnings = mode_warnings or [f"ephemeris: {eph_src}"]
     if len(sats) < 4:
         warnings.append("fewer than 4 visible satellites — no hardware fix")
     if math.isfinite(pdop_raw) and pdop_raw > 10:
@@ -440,6 +473,106 @@ def device_disconnect(body: dict, request: Request):
 @app.get("/api/device/status")
 def device_status():
     return {"devices": device.status()}
+
+
+# --- Precise ephemeris (analysis only -- see docs/precise-ephemeris-design.md) ---
+
+@app.get("/api/precise/status")
+def precise_status():
+    """What SP3 product, if any, is loaded, and its coverage."""
+    return _precise_provider.status()
+
+
+@app.post("/api/precise/load")
+def precise_load(body: dict, request: Request):
+    """Load a local SP3 file by path (operator). Downloads are only
+    attempted when `download` is set AND PRECISE_SP3_MIRRORS is configured."""
+    auth.require_operator(request)
+    path = body.get("path")
+    if body.get("download") and not path:
+        dl = body["download"] if isinstance(body["download"], dict) else {}
+        try:
+            path = precise.download_sp3(int(dl["gps_week"]), int(dl["dow"]),
+                                        config.PRECISE_DIR, config.PRECISE_SP3_MIRRORS)
+        except (KeyError, ValueError) as e:
+            raise HTTPException(400, f"bad download spec: {e}")
+    if not path:
+        raise HTTPException(400, "provide {\"path\": \"...\"} to a local SP3 file")
+    if not pathlib.Path(path).is_file():
+        raise HTTPException(404, f"no such SP3 file: {path}")
+    _precise_provider.load(path)
+    st = _precise_provider.status()
+    audit.log_event("precise_load", source=st.get("source"),
+                    satellites=st.get("satellites"), epochs=st.get("epochs"))
+    return st
+
+
+@app.post("/api/precise/compare")
+def precise_compare(body: dict):
+    """Per-PRN broadcast(realigned)-vs-precise state comparison at one epoch.
+
+    'broadcast' here is the *aligned* ephemeris generator.run actually hands
+    to gps-sdr-sim, so the deltas answer 'how far is the ephemeris that
+    drives the IQ from the precise reference'."""
+    if not _precise_provider.loaded:
+        raise HTTPException(409, "no precise product loaded -- POST /api/precise/load first")
+    start = dt.datetime.fromisoformat(body["start_utc"])
+    rx = geometry.llh_to_ecef(body["lat"], body["lon"], body["alt"])
+    tow = _gps_tow(start)
+    eph, eph_src = _resolve_eph(start.date(), body.get("rinex_path"))
+    gps_start = start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
+    week, sow = ephemeris.gps_week_and_sow(gps_start)
+    eph_aligned = ephemeris.align_epochs(eph, week, sow)
+
+    prns = sorted(eph_aligned)
+    state_map, warnings = ephemeris_source.build_state_fns(
+        "precise", prns, GPSTime(week, sow), eph_aligned,
+        provider=_precise_provider, on_missing="skip",
+        fallback_to_broadcast=bool(body.get("fallback_to_broadcast")))
+
+    mask = body.get("mask_deg", 5.0)
+    rows = []
+    import numpy as _np
+    for prn, src in state_map.items():
+        if not callable(src):
+            continue  # PRN fell back to broadcast -- nothing precise to compare
+        b_pos, b_vel, _tof_b, b_clk = geometry.solve_transmit_time(eph_aligned[prn], rx, tow)
+        p_pos, p_vel, _tof_p, p_clk = geometry.solve_transmit_time(src, rx, tow)
+        b_obs = geometry.observables(eph_aligned[prn], rx, tow)
+        if b_obs["el_deg"] < mask:
+            continue
+        p_obs = geometry.observables(src, rx, tow)
+        dpos = _np.asarray(p_pos) - _np.asarray(b_pos)
+        radial = _np.asarray(b_pos) / _np.linalg.norm(b_pos)
+        along = _np.asarray(b_vel) / _np.linalg.norm(b_vel)
+        cross = _np.cross(radial, along)
+        rows.append({
+            "prn": prn,
+            "pos_delta_m": float(_np.linalg.norm(dpos)),
+            "pos_delta_radial_m": float(dpos @ radial),
+            "pos_delta_along_m": float(dpos @ along),
+            "pos_delta_cross_m": float(dpos @ cross),
+            "clock_delta_s": float(p_clk - b_clk),
+            "range_delta_m": float(p_obs["geo_range_m"] - b_obs["geo_range_m"]),
+            "pseudorange_delta_m": float(p_obs["pseudorange_m"] - b_obs["pseudorange_m"]),
+            "doppler_delta_hz": float(p_obs["carrier_doppler_hz"] - b_obs["carrier_doppler_hz"]),
+            "el_deg": float(b_obs["el_deg"]),
+        })
+    rows.sort(key=lambda r: -r["el_deg"])
+    summary = {}
+    if rows:
+        summary = {
+            "n": len(rows),
+            "pos_delta_rms_m": float(_np.sqrt(_np.mean([r["pos_delta_m"] ** 2 for r in rows]))),
+            "range_delta_rms_m": float(_np.sqrt(_np.mean([r["range_delta_m"] ** 2 for r in rows]))),
+            "doppler_delta_rms_hz": float(_np.sqrt(_np.mean([r["doppler_delta_hz"] ** 2 for r in rows]))),
+        }
+    return {
+        "epoch_utc": start.isoformat(), "broadcast_source": eph_src,
+        "precise_source": _precise_provider.product.source,
+        "note": "IQ generation uses the broadcast column; precise is the reference.",
+        "warnings": warnings, "rows": rows, "summary": summary,
+    }
 
 
 def _tee_spectrogram(chunks, sample_rate: float, on_row, track_prn: int | None = None,

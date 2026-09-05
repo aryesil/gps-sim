@@ -42,6 +42,13 @@ RINEX_MIRRORS = [
     "https://cddis.nasa.gov/archive/gnss/data/daily/{yyyy}/brdc/BRDC00IGS_R_{yyyy}{ddd}0000_01D_GN.rnx.gz",
 ]
 
+# Precise-ephemeris analysis subsystem (backend/precise.py). SP3 products
+# are loaded from a local path by default; PRECISE_SP3_MIRRORS is empty
+# unless the operator opts in to best-effort downloads. {gpsweek}/{dow}
+# and {yyyy}/{doy} are both offered for the two common IGS naming schemes.
+PRECISE_DIR = pathlib.Path(_str("PRECISE_DIR", str(DATA_DIR / "precise")))
+PRECISE_SP3_MIRRORS = [m.strip() for m in _str("PRECISE_SP3_MIRRORS", "").split(",") if m.strip()]
+
 ALLOW_TX = _flag("ALLOW_TX", False)
 DEVICE_URI = _str("DEVICE_URI", "ip:192.168.2.1")
 DEFAULT_SAMPLE_RATE = _float("DEFAULT_SAMPLE_RATE", 2.6e6)
@@ -66,3 +73,4 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 (DATA_DIR / "rinex").mkdir(parents=True, exist_ok=True)
+PRECISE_DIR.mkdir(parents=True, exist_ok=True)

@@ -65,6 +65,31 @@ def test_constellation_matches_golden():
         assert abs(a["code_phase_chips"] - b["code_phase_chips"]) < 1e-3
 
 
+def test_as_state_fn_accepts_callable_and_matches_dict_path():
+    eph = ephemeris.parse_rinex(FIXDIR / "brdc_sample.rnx")
+    e = eph[sorted(eph)[0]]
+    rx = geometry.llh_to_ecef(*RX_LLH)
+
+    def state_fn(t_gps):
+        return geometry.sat_state(e, t_gps)      # same numbers, callable shape
+
+    obs_dict = geometry.observables(e, rx, T_RX)
+    obs_call = geometry.observables(state_fn, rx, T_RX)
+    assert obs_call["geo_range_m"] == pytest.approx(obs_dict["geo_range_m"], abs=1e-6)
+    assert obs_call["carrier_doppler_hz"] == pytest.approx(
+        obs_dict["carrier_doppler_hz"], abs=1e-6)
+
+
+def test_solve_transmit_time_callable_path():
+    eph = ephemeris.parse_rinex(FIXDIR / "brdc_sample.rnx")
+    e = eph[sorted(eph)[0]]
+    rx = geometry.llh_to_ecef(*RX_LLH)
+    a = geometry.solve_transmit_time(e, rx, T_RX)
+    b = geometry.solve_transmit_time(lambda t: geometry.sat_state(e, t), rx, T_RX)
+    assert np.allclose(a[0], b[0], atol=1e-3)     # rotated position
+    assert a[2] == pytest.approx(b[2], abs=1e-9)  # time of flight
+
+
 def test_dop_small_case():
     # four unit LOS directions, tetrahedral-ish; DOP finite and > 1
     entries = [

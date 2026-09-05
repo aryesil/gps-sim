@@ -39,7 +39,10 @@ async def _broadcast_async(payload: dict) -> None:
     dead = []
     for ws in list(_clients):
         try:
-            await ws.send_json(payload)
+            # A wedged or cross-loop client socket must never stall
+            # delivery to the other operators (or the audit call that
+            # triggered this) -- bound every send and drop on timeout.
+            await asyncio.wait_for(ws.send_json(payload), timeout=2.0)
         except Exception:
             dead.append(ws)
     for ws in dead:

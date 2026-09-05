@@ -13,6 +13,13 @@ def test_constants_have_expected_values():
     assert cfg.DEFAULT_SAMPLE_RATE == 2.6e6
 
 
+def test_precise_defaults():
+    cfg = importlib.import_module("backend.config")
+    assert cfg.PRECISE_DIR == cfg.DATA_DIR / "precise"
+    assert cfg.PRECISE_DIR.is_dir()
+    assert cfg.PRECISE_SP3_MIRRORS == []      # downloads opt-in only
+
+
 def test_env_override(monkeypatch):
     monkeypatch.setenv("ALLOW_TX", "1")
     monkeypatch.setenv("DEVICE_URI", "ip:10.0.0.5")
