@@ -4,7 +4,7 @@ import ctypes
 import pathlib
 import sys
 
-ABI_VERSION = 6
+ABI_VERSION = 7
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"

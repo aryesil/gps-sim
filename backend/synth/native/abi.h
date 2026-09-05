@@ -32,6 +32,12 @@ void synth_debug_carrier(double freq_hz, double fs, int n, float *iq_interleaved
 // mode: 0=Zero (always +1), 1=KnownFrame (repeats bits[0..nbits-1]).
 void synth_debug_nav(int mode, const int8_t *bits, int nbits,
                      double fs, int n, int8_t *out);
+// Debug shim: zeroes iq[0..2*n-1], then synthesizes a single satellite
+// (gain 1, nav mode Zero) into it via mix_block from absolute sample 0.
+// iq holds I,Q,I,Q,... interleaved (2*n floats).
+void synth_debug_one_sv(const int8_t *code, double code_rate, double code_phase0,
+                        double code_doppler, double carrier_freq, double fs,
+                        int n, float *iq);
 #ifdef __cplusplus
 }
 #endif
