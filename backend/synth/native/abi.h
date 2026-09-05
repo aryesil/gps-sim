@@ -12,6 +12,18 @@ void synth_constants(double *out, int n);
 // (1..32). Chip bit 0 -> +1, 1 -> -1. Returns 0 on success, -1 on bad prn /
 // n < 1023 / null out.
 int synth_ca_code(int prn, int8_t *out, int n);
+// Broadcast Keplerian ephemeris: 21 doubles, layout frozen. `_pad` keeps the
+// struct an even number of doubles; set it to 0.0.
+typedef struct {
+    double sqrtA, e, m0, delta_n, omega, omega0, omega_dot;
+    double i0, idot, cuc, cus, crc, crs, cic, cis;
+    double toe, toc, af0, af1, af2, _pad;
+} KeplerEph;
+// Propagate `e` to `t_gps` (GPS seconds of week). Writes ECEF position (m) to
+// pos3[0..2], ECEF velocity (m/s, 0.5 s central difference on the orbit plane)
+// to vel3[0..2], and the SV clock correction (s) to clk1[0].
+void synth_sat_state(const KeplerEph *e, double t_gps,
+                     double *pos3, double *vel3, double *clk1);
 #ifdef __cplusplus
 }
 #endif

@@ -4,13 +4,29 @@ import ctypes
 import pathlib
 import sys
 
-ABI_VERSION = 3
+ABI_VERSION = 4
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
 _BUILD_HINT = f"make -C backend/synth/native   # produces {LIB_PATH.name}"
 
 _CACHED: ctypes.CDLL | None = None
+
+c_double = ctypes.c_double
+
+
+class KeplerEph(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_double) for name in (
+        "sqrtA e m0 delta_n omega omega0 omega_dot i0 idot cuc cus crc crs "
+        "cic cis toe toc af0 af1 af2 _pad".split())]
+
+
+def _bind_sat_state(lib: ctypes.CDLL) -> None:
+    lib.synth_sat_state.restype = None
+    lib.synth_sat_state.argtypes = [ctypes.POINTER(KeplerEph), ctypes.c_double,
+                                    ctypes.POINTER(ctypes.c_double),
+                                    ctypes.POINTER(ctypes.c_double),
+                                    ctypes.POINTER(ctypes.c_double)]
 
 
 class NativeEngineUnavailable(RuntimeError):
@@ -34,6 +50,7 @@ def load_lib() -> ctypes.CDLL:
     if got != ABI_VERSION:
         raise NativeEngineUnavailable(
             f"ABI mismatch: library reports {got}, code expects {ABI_VERSION}. Rebuild:\n    {_BUILD_HINT}")
+    _bind_sat_state(lib)
     _CACHED = lib
     return lib
 
