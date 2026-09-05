@@ -431,7 +431,9 @@ def download_sp3(gps_week: int, dow: int, cache_dir, mirrors: list[str]) -> str:
     (config.PRECISE_SP3_MIRRORS). Mirror templates may use any of
     ``{gpsweek}`` / ``{gps_week}`` (4-digit GPS week), ``{dow}`` (day of
     week 0-6), ``{yyyy}`` (calendar year), ``{doy}`` (3-digit day of year)
-    and ``{wwwwd}`` (GPS week + dow, the legacy short-name stem).
+    ``{wwwwd}`` (GPS week + dow, the legacy short-name stem) and ``{hh}``
+    (ultra-rapid solution hour, always ``"00"`` here -- the 00:00 IGU
+    solution's 2-day span covers the whole GPS day).
 
     The default list ships anonymous, no-login IGS mirrors (BKG, IGN); a
     download is still only performed when the caller explicitly asks for
@@ -445,16 +447,31 @@ def download_sp3(gps_week: int, dow: int, cache_dir, mirrors: list[str]) -> str:
     _d = _dt.date(1980, 1, 6) + _dt.timedelta(days=gps_week * 7 + dow)
     _doy = _d.timetuple().tm_yday
     _fmt = dict(gpsweek=gps_week, gps_week=gps_week, dow=dow,
-                yyyy=_d.year, doy=f"{_doy:03d}", wwwwd=f"{gps_week:04d}{dow}")
+                yyyy=_d.year, doy=f"{_doy:03d}", wwwwd=f"{gps_week:04d}{dow}",
+                hh="00")
 
     if not mirrors:
         raise PreciseProductError(
             "SP3 download requested but PRECISE_SP3_MIRRORS is not configured")
     cache = _pl.Path(cache_dir)
     cache.mkdir(parents=True, exist_ok=True)
-    dest = cache / f"IGS_{gps_week:04d}_{dow}.sp3"
-    if dest.is_file() and dest.stat().st_size > 0:
-        return str(dest)
+
+    def _tier(s: str) -> str:
+        s = s.upper()
+        if "FIN" in s or "_R_" in s:
+            return "FIN"
+        if "ULT" in s or "IGU" in s:
+            return "ULT"
+        return "RAP"
+
+    stem = f"IGS_{gps_week:04d}_{dow}"
+    # Serve the best already-cached tier for this day (final > rapid >
+    # ultra-rapid); the legacy un-tagged name counts as rapid-grade.
+    for tag in ("FIN", "RAP", "ULT"):
+        for name in (f"{stem}_{tag}.sp3",) + (("%s.sp3" % stem,) if tag == "RAP" else ()):
+            p = cache / name
+            if p.is_file() and p.stat().st_size > 0:
+                return str(p)
 
     import gzip as _gz
 
@@ -475,6 +492,7 @@ def download_sp3(gps_week: int, dow: int, cache_dir, mirrors: list[str]) -> str:
         if not data[:2] in (b"#c", b"#d", b"#a", b"#b"):
             last = f"{url}: not an SP3 file"
             continue
+        dest = cache / f"{stem}_{_tier(url)}.sp3"
         dest.write_bytes(data)
         return str(dest)
     raise PreciseProductError(f"all SP3 mirrors failed ({last})")

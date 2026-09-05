@@ -324,8 +324,13 @@ def _ensure_precise_loaded(start: dt.datetime, fallback: bool) -> list[str]:
     audit.log_event("precise_autoload", source=st.get("source"),
                     satellites=st.get("satellites"), epochs=st.get("epochs"),
                     gps_week=week, dow=dow, days=",".join(got))
+    src = st.get("source") or ""
     warns = [f"precise: auto-downloaded SP3 for GPS week {week} "
              f"day(s) {','.join(got)}"]
+    if "ULT" in src:
+        warns.append("precise: only an ultra-rapid (IGU) product was available "
+                     "for this epoch; its predicted portion is less accurate "
+                     "than rapid/final orbits")
     lo, hi = _precise_provider.product.coverage_seconds
     if not (lo + 9000.0 <= t_want <= hi - 9000.0):
         warns.append("precise: start is near an SP3 coverage edge; "

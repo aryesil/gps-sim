@@ -48,8 +48,11 @@ RINEX_MIRRORS = [
 # only performed when the operator explicitly requests one (the
 # /api/precise/load "download" field). Set the env var to override the
 # list, or to "" to disable SP3 downloads entirely. Templates may use
-# {gpsweek}/{gps_week}, {dow}, {yyyy}, {doy}, {wwwwd}. Rapid products
-# (~17 h latency) are tried before final (~12 d latency).
+# {gpsweek}/{gps_week}, {dow}, {yyyy}, {doy}, {wwwwd}, {hh} (ultra-rapid
+# solution hour, defaults to "00"). Tried in order, first hit wins:
+# rapid (~17 h latency, final-grade orbits) -> final (~12 d, best) ->
+# ultra-rapid (IGU, ~3-9 h, 2-day file whose second half is *predicted*)
+# as the last resort for epochs too recent for rapid/final.
 _DEFAULT_SP3_MIRRORS = (
     "https://igs.bkg.bund.de/root_ftp/IGS/products/{gpsweek}/"
     "IGS0OPSRAP_{yyyy}{doy}0000_01D_15M_ORB.SP3.gz,"
@@ -58,7 +61,11 @@ _DEFAULT_SP3_MIRRORS = (
     "https://igs.bkg.bund.de/root_ftp/IGS/products/{gpsweek}/"
     "IGS0OPSFIN_{yyyy}{doy}0000_01D_15M_ORB.SP3.gz,"
     "https://igs.ign.fr/pub/igs/products/{gpsweek}/"
-    "IGS0OPSFIN_{yyyy}{doy}0000_01D_15M_ORB.SP3.gz"
+    "IGS0OPSFIN_{yyyy}{doy}0000_01D_15M_ORB.SP3.gz,"
+    "https://igs.bkg.bund.de/root_ftp/IGS/products/{gpsweek}/"
+    "IGS0OPSULT_{yyyy}{doy}{hh}00_02D_15M_ORB.SP3.gz,"
+    "https://igs.ign.fr/pub/igs/products/{gpsweek}/"
+    "IGS0OPSULT_{yyyy}{doy}{hh}00_02D_15M_ORB.SP3.gz"
 )
 PRECISE_DIR = pathlib.Path(_str("PRECISE_DIR", str(DATA_DIR / "precise")))
 PRECISE_SP3_MIRRORS = [m.strip() for m in

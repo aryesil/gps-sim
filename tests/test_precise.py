@@ -216,3 +216,36 @@ def test_merge_sp3_single_passthrough():
     from backend.precise import merge_sp3, parse_sp3
     a = parse_sp3(SP3)
     assert merge_sp3([a]) is a
+
+
+def test_download_sp3_ultra_rapid_templating_and_cache_tiering(tmp_path, monkeypatch):
+    from backend import precise as _p
+
+    raw = SP3.read_bytes()
+    seen = []
+
+    class _Resp:
+        def __init__(self, body): self.content = body
+        def raise_for_status(self): pass
+
+    import requests as _rq
+
+    def _fake_get(url, timeout=0):
+        seen.append(url)
+        if "IGS0OPSULT" not in url:            # only ultra-rapid exists
+            raise _rq.RequestException("404")
+        return _Resp(raw)
+
+    monkeypatch.setattr(_rq, "get", _fake_get)
+    mirrors = [
+        "https://x/{gpsweek}/IGS0OPSRAP_{yyyy}{doy}0000_01D_15M_ORB.SP3.gz",
+        "https://x/{gpsweek}/IGS0OPSULT_{yyyy}{doy}{hh}00_02D_15M_ORB.SP3.gz",
+    ]
+    out = _p.download_sp3(WEEK, 4, tmp_path, mirrors)
+    assert seen[-1].endswith("0000_02D_15M_ORB.SP3.gz")   # {hh} -> "00"
+    assert pathlib.Path(out).name == f"IGS_{WEEK:04d}_4_ULT.sp3"
+
+    # a manually cached final product for the same day wins over the ULT cache
+    (tmp_path / f"IGS_{WEEK:04d}_4_FIN.sp3").write_bytes(raw)
+    again = _p.download_sp3(WEEK, 4, tmp_path, mirrors)
+    assert pathlib.Path(again).name == f"IGS_{WEEK:04d}_4_FIN.sp3"

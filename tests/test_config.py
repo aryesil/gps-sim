@@ -22,8 +22,13 @@ def test_precise_defaults():
     assert len(cfg.PRECISE_SP3_MIRRORS) >= 2
     assert all(m.startswith("https://") for m in cfg.PRECISE_SP3_MIRRORS)
     assert all("cddis" not in m for m in cfg.PRECISE_SP3_MIRRORS)  # needs Earthdata login
-    assert any("RAP" in m for m in cfg.PRECISE_SP3_MIRRORS)       # rapid tried first
-    assert cfg.PRECISE_SP3_MIRRORS[0].index("RAP") > -1
+    assert any("RAP" in m for m in cfg.PRECISE_SP3_MIRRORS)       # rapid
+    assert any("FIN" in m for m in cfg.PRECISE_SP3_MIRRORS)       # final
+    assert any("ULT" in m for m in cfg.PRECISE_SP3_MIRRORS)       # ultra-rapid
+    assert "RAP" in cfg.PRECISE_SP3_MIRRORS[0]                    # rapid tried first
+    # ultra-rapid is the last-resort tier
+    tags = [t for m in cfg.PRECISE_SP3_MIRRORS for t in ("RAP", "FIN", "ULT") if t in m]
+    assert tags.index("RAP") < tags.index("FIN") < tags.index("ULT")
 
 
 def test_precise_sp3_mirrors_env_can_disable(monkeypatch):

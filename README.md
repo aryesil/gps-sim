@@ -212,9 +212,12 @@ Set with `ephemeris_mode` on `/api/generate`, `/api/live/start`, and
 
 When precise mode is requested and no loaded SP3 product covers the start
 time, the server auto-downloads the best free IGS product for that GPS day
-*and the day either side* (`PRECISE_SP3_MIRRORS`, rapid tried before
-final), merges them, and loads the result — no file to place, no button
-to press. The three-day merge matters because a single one-day SP3 file
+*and the day either side* (`PRECISE_SP3_MIRRORS`: rapid → final →
+ultra-rapid), merges them, and loads the result — no file to place, no
+button to press. Ultra-rapid (IGU) is only reached for epochs too recent
+for rapid/final; its second day is *predicted*, so a warning is added.
+
+The three-day merge matters because a single one-day SP3 file
 cannot supply a centred ~11-point interpolation window when the start
 sits within ~3 h of its 00:00/24:00 edge (the fit arc is `toe ± 2 h`). If
 a neighbour day is not published yet the run still proceeds, with a
@@ -358,7 +361,7 @@ All via environment variables (see `backend/config.py`).
 | `OUT_DIR` | `./out` | Generated IQ + `meta.json`, recordings. Served at `/out`. |
 | `LOG_DIR` | `./logs` | `audit.jsonl`. |
 | `PRECISE_DIR` | `./data/precise` | SP3 product cache / load directory. |
-| `PRECISE_SP3_MIRRORS` | free BKG + IGN rapid/final SP3 (anonymous) | Comma-separated SP3 download URL templates (`{gpsweek}`/`{gps_week}`/`{dow}`/`{yyyy}`/`{doy}`/`{wwwwd}`). Used both by an explicit `POST /api/precise/load` with `download` and by the automatic fetch on the precise `/api/preview` and `/api/generate` paths. Set to `""` to disable all SP3 downloads. |
+| `PRECISE_SP3_MIRRORS` | free BKG + IGN rapid → final → ultra-rapid SP3 (anonymous) | Comma-separated SP3 URL templates (`{gpsweek}`/`{gps_week}`/`{dow}`/`{yyyy}`/`{doy}`/`{wwwwd}`/`{hh}`). Tried in order, first hit wins: rapid (final-grade orbits, ~17 h latency) → final (best, ~12 d) → ultra-rapid (IGU, ~3–9 h, 2-day file whose second half is *predicted*) as the last resort for very recent epochs. Used by an explicit `POST /api/precise/load` with `download` and by the auto-fetch on the precise `/api/preview` and `/api/generate` paths. Cached per day and tier (`IGS_wwww_d_{RAP,FIN,ULT}.sp3`); delete the file to force a refresh. Set to `""` to disable all downloads. |
 | `GPS_SDR_SIM_BIN` | `./gps-sdr-sim/gps-sdr-sim` | Path to the built binary. |
 | `API_KEYS_JSON` | `""` | JSON `{"<key>": "operator"｜"viewer"}`. Empty ⇒ auth disabled. |
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | uvicorn bind (via `run_server.sh`). |
@@ -411,7 +414,7 @@ operator; the authors accept no liability for misuse.
 .venv/bin/pytest -q
 ```
 
-**389 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
+**390 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
 alignment, GPS-time conversions, the SP3 parser and orbit/clock
 interpolation, the broadcast/precise mode selector, the SP3→broadcast
 fit (pure-Kepler recovery to millimetres, SP3-fixture fit, RINEX-2
