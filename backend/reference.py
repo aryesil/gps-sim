@@ -144,6 +144,45 @@ def _sagnac(pos: np.ndarray, theta: float) -> np.ndarray:
     return np.array([c * pos[0] + s * pos[1], -s * pos[0] + c * pos[1], pos[2]])
 
 
+def sp3_interp_state(rows, t_seconds: float, order: int = 10) -> dict:
+    """Independent SP3 orbit/clock interpolation for cross-checking
+    :meth:`precise.PreciseEphemerisProvider.get_state`.
+
+    ``rows`` is the per-PRN list of ``(t, x, y, z, clk)`` tuples that
+    :class:`precise.SP3Product` stores. This uses a least-squares
+    polynomial fit (``numpy.polynomial``) over a centred window with the
+    abscissa shifted to zero, and differentiates the fitted polynomial
+    for velocity -- a different numerical route than the exact Neville
+    tableau in ``precise``. Clock is linearly interpolated between the
+    two bracketing epochs (SP3 clocks are not smooth enough to
+    polynomial-fit).
+    """
+    import bisect
+    from numpy.polynomial import polynomial as P
+
+    ts = [r[0] for r in rows]
+    lo, hi = ts[0], ts[-1]
+    if t_seconds < lo or t_seconds > hi:
+        raise ValueError("epoch outside SP3 coverage")
+    want = min(order + 1, len(rows))
+    j = max(0, min(bisect.bisect_right(ts, t_seconds) - 1, len(rows) - 2))
+    start = max(0, min(j - want // 2 + 1, len(rows) - want))
+    win = rows[start:start + want]
+    x = np.array([r[0] - t_seconds for r in win])
+    out_pos, out_vel = [], []
+    for k in (1, 2, 3):
+        c = P.polyfit(x, np.array([r[k] for r in win]), want - 1)
+        out_pos.append(float(P.polyval(0.0, c)))
+        out_vel.append(float(P.polyval(0.0, P.polyder(c))))
+    # linear clock
+    cj = max(0, min(bisect.bisect_right(ts, t_seconds) - 1, len(rows) - 2))
+    (t0, *_, c0), (t1, *_, c1) = rows[cj], rows[cj + 1]
+    frac = (t_seconds - t0) / (t1 - t0) if t1 != t0 else 0.0
+    clk = c0 + frac * (c1 - c0)
+    return {"pos": np.array(out_pos), "vel": np.array(out_vel),
+            "clock": float(clk), "window": (win[0][0], win[-1][0])}
+
+
 def solve_transmit_time(eph: dict, rx_ecef, t_rx: float, iters: int = 15) -> dict:
     """Light-time + Sagnac solution, written independently of
     :func:`geometry.solve_transmit_time`.
