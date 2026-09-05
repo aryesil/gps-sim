@@ -421,7 +421,7 @@ operator; the authors accept no liability for misuse.
 .venv/bin/pytest -q
 ```
 
-**403 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
+**404 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
 alignment, GPS-time conversions, the SP3 parser and orbit/clock
 interpolation, the broadcast/precise mode selector, the SP3→broadcast
 fit (pure-Kepler recovery to millimetres, SP3-fixture fit, RINEX-2

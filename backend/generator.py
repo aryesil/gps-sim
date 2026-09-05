@@ -98,19 +98,18 @@ def _write_iq(iq, out_bin: pathlib.Path, sample_format: str) -> None:
 
 
 def _frac_delay(iq, shift_samples: float):
-    """Delay ``iq`` by ``shift_samples`` (>=0) with linear interpolation.
-    Samples shifted in from before the start are zero."""
+    """Shift ``iq`` by ``shift_samples`` with linear interpolation. Positive
+    delays, negative advances; samples shifted in past either end are zero."""
     import numpy as np
-    if shift_samples <= 0:
+    if shift_samples == 0:
         return iq.copy()
-    i = int(np.floor(shift_samples))
-    f = float(shift_samples - i)
     n = len(iq)
+    src = np.arange(n, dtype=np.float64) - shift_samples
+    i = np.floor(src).astype(np.int64)
+    f = src - i
     out = np.zeros(n, dtype=iq.dtype)
-    if i < n:
-        out[i:] = (1.0 - f) * iq[: n - i]
-    if i + 1 < n:
-        out[i + 1:] += f * iq[: n - i - 1]
+    ok = (i >= 0) & (i + 1 < n)
+    out[ok] = (1.0 - f[ok]) * iq[i[ok]] + f[ok] * iq[i[ok] + 1]
     return out
 
 
@@ -148,7 +147,7 @@ def _apply_channel(req: scenario.ScenarioRequest, out_bin: pathlib.Path) -> dict
     # the receiver-clock phase.
     acc = np.zeros(len(iq), dtype=np.complex64)
     for delay_s, gain in taps:
-        acc += gain * _frac_delay(iq, (delay_s + max(off_s, 0.0)) * fs)
+        acc += gain * _frac_delay(iq, (delay_s + off_s) * fs)
     rot = np.exp(-1j * ((2.0 * np.pi * config.L1_HZ * off_s) % (2.0 * np.pi)))
     acc *= rot
     # keep the composite level comparable to the input

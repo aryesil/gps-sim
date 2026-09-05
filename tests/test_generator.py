@@ -144,3 +144,12 @@ def test_channel_models_to_iq_writes_prechannel_and_report(tmp_path, monkeypatch
     rep = json.loads((outdir / "meta.json").read_text())["provenance"]["channel_models"]
     assert rep["multipath"]["n_reflections"] == 1
     assert rep["receiver_clock"]["range_bias_m"] != 0.0
+
+
+def test_frac_delay_handles_advance_and_delay():
+    import numpy as np
+    x = np.arange(10, dtype=np.complex64)
+    d = generator._frac_delay(x, 2.0)
+    assert d[0] == 0 and d[2] == 0 and d[5] == 3
+    a = generator._frac_delay(x, -2.0)
+    assert a[0] == 2 and a[6] == 8 and a[8] == 0
