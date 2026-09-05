@@ -4,7 +4,7 @@ import ctypes
 import pathlib
 import sys
 
-ABI_VERSION = 1
+ABI_VERSION = 2
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
@@ -36,3 +36,14 @@ def load_lib() -> ctypes.CDLL:
             f"ABI mismatch: library reports {got}, code expects {ABI_VERSION}. Rebuild:\n    {_BUILD_HINT}")
     _CACHED = lib
     return lib
+
+
+def native_constants() -> dict[str, float]:
+    lib = load_lib()
+    lib.synth_constants.restype = None
+    lib.synth_constants.argtypes = [ctypes.POINTER(ctypes.c_double), ctypes.c_int]
+    buf = (ctypes.c_double * 9)()
+    lib.synth_constants(buf, 9)
+    keys = ["l1_hz", "ca_chip_hz", "ca_code_len", "nav_bit_hz", "mu",
+            "omega_e_dot", "c", "f_rel", "gps_utc_leap"]
+    return dict(zip(keys, list(buf)))
