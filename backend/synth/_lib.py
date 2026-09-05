@@ -4,7 +4,7 @@ import ctypes
 import pathlib
 import sys
 
-ABI_VERSION = 7
+ABI_VERSION = 8
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
@@ -19,6 +19,46 @@ class KeplerEph(ctypes.Structure):
     _fields_ = [(name, ctypes.c_double) for name in (
         "sqrtA e m0 delta_n omega omega0 omega_dot i0 idot cuc cus crc crs "
         "cic cis toe toc af0 af1 af2 _pad".split())]
+
+
+class SvSpec(ctypes.Structure):
+    # Field order MUST match `SvSpec` in native/abi.h exactly.
+    _fields_ = [
+        ("code", ctypes.POINTER(ctypes.c_int8)),
+        ("carrier_freq_hz", ctypes.c_double),
+        ("carrier_phase0_rad", ctypes.c_double),
+        ("code_phase0_chips", ctypes.c_double),
+        ("code_doppler_hz", ctypes.c_double),
+        ("nav_mode", ctypes.c_int),
+        ("nav_bits", ctypes.POINTER(ctypes.c_int8)),
+        ("nav_nbits", ctypes.c_int),
+        ("gain", ctypes.c_float),
+    ]
+
+
+class RunSpec(ctypes.Structure):
+    # Field order MUST match `RunSpec` in native/abi.h exactly.
+    _fields_ = [
+        ("fs", ctypes.c_double),
+        ("quant", ctypes.c_int),
+        ("dither", ctypes.c_int),
+        ("total_samples", ctypes.c_uint64),
+        ("block_samples", ctypes.c_int),
+        ("nthreads", ctypes.c_int),
+    ]
+
+
+_PROGRESS_CB = ctypes.CFUNCTYPE(None, ctypes.c_double, ctypes.c_void_p)
+
+
+def _bind_run(lib: ctypes.CDLL) -> None:
+    lib.synth_run.restype = ctypes.c_int
+    lib.synth_run.argtypes = [
+        ctypes.c_char_p, ctypes.POINTER(RunSpec), ctypes.POINTER(SvSpec),
+        ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
+    lib.synth_ca_code.restype = ctypes.c_int
+    lib.synth_ca_code.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_int8),
+                                  ctypes.c_int]
 
 
 def _bind_sat_state(lib: ctypes.CDLL) -> None:
@@ -51,6 +91,7 @@ def load_lib() -> ctypes.CDLL:
         raise NativeEngineUnavailable(
             f"ABI mismatch: library reports {got}, code expects {ABI_VERSION}. Rebuild:\n    {_BUILD_HINT}")
     _bind_sat_state(lib)
+    _bind_run(lib)
     _CACHED = lib
     return lib
 

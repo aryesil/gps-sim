@@ -24,9 +24,18 @@ void mix_block(const SvChannel *svs, int nsv, double fs,
         const double chip_rate = sv.code_rate_hz + sv.code_doppler_hz;
         const double g = sv.gain;
         const int L = sv.code_len;
+        // Code-phase convention: geometry.observables reports the epoch delay
+        // rho/c in chips, and inspector.acquire / inspector.compare treat that
+        // value as the correlation lag directly (gps-sdr-sim convention). The
+        // correlation lag is the complement of the chip index seeded at
+        // sample 0, so seed L - (code_phase0_chips mod L) here.
+        double eff = std::fmod(sv.code_phase0_chips, static_cast<double>(L));
+        if (eff < 0) eff += L;
+        eff = L - eff;
+        if (eff >= L) eff -= L;
         for (int k = 0; k < n; ++k) {
             double t = abs_t0 + k * dt;
-            double cp = sv.code_phase0_chips + chip_rate * (t - abs_t0);
+            double cp = eff + chip_rate * (t - abs_t0);
             long ci = static_cast<long>(cp) % L;
             if (ci < 0) ci += L;
             float chip = static_cast<float>(sv.code[ci]);

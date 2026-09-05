@@ -38,6 +38,35 @@ void synth_debug_nav(int mode, const int8_t *bits, int nbits,
 void synth_debug_one_sv(const int8_t *code, double code_rate, double code_phase0,
                         double code_doppler, double carrier_freq, double fs,
                         int n, float *iq);
+// Per-SV channel spec for a full run. `code` points at 1023 int8 values in
+// {-1,+1}, owned by the caller for the whole synth_run call. Field order is
+// frozen -- _lib.py mirrors it exactly.
+typedef struct {
+    const int8_t *code;        // 1023 int8, owned by caller
+    double carrier_freq_hz;    // L1 + carrier Doppler at t=0
+    double carrier_phase0_rad;
+    double code_phase0_chips;
+    double code_doppler_hz;    // constant over the run (Phase 1 approximation)
+    int    nav_mode;           // 0 zero, 1 known_frame
+    const int8_t *nav_bits;    // may be NULL when nav_mode == 0
+    int    nav_nbits;
+    float  gain;               // static per-SV gain
+} SvSpec;
+// Whole-run spec. Field order frozen -- _lib.py mirrors it exactly.
+typedef struct {
+    double   fs;
+    int      quant;            // 0 int8, 1 int12, 2 int16
+    int      dither;           // 0/1 (reserved, unused in Phase 1)
+    uint64_t total_samples;
+    int      block_samples;    // e.g. 65536
+    int      nthreads;         // 0 = hardware_concurrency
+} RunSpec;
+// Streams interleaved I,Q samples to `path` (int8 or int16 words per `quant`).
+// Calls progress(fraction, user) after every block when non-NULL.
+// Returns 0 on success, negative on error.
+int synth_run(const char *path, const RunSpec *rs,
+              const SvSpec *svs, int nsv,
+              void (*progress)(double, void *), void *user);
 #ifdef __cplusplus
 }
 #endif
