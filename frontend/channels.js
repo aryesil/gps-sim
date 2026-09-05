@@ -34,14 +34,13 @@ window.addChannel = function () {
         <label>LO Hz <input id="${id}-lo" value="1575420000"></label>
         <label>TX gain dB <input id="${id}-gain" type="number" value="-50"></label>
         <label><input type="checkbox" id="${id}-tx-dryrun"> Dry run (no RF)</label>
-        <label>Auto-stop after (s) <input type="number" id="${id}-max-duration" placeholder="none" min="1"></label>
+        <label>Auto-stop after (s) <input type="number" id="${id}-max-duration" placeholder="none" min="1"><span class="info" title="Fail-safe: leave blank to run until stopped manually. The isolated-setup confirmation is done by typing TRANSMIT at Start.">i</span></label>
         <label><input type="checkbox" id="${id}-record"> Record this session</label>
         <div class="scenario-lib-row">
           <select id="${id}-replay-select"><option value="">Replay recording…</option></select>
           <button id="${id}-replay-play">Play</button>
         </div>
         <input type="checkbox" id="${id}-tx-confirm" hidden>
-        <div class="hint">Isolated setup confirmed by typing TRANSMIT at Start. Auto-stop is a fail-safe: leave blank to run until stopped manually.</div>
       </div>
       <div class="col-sim">
         <h4>Simulation Config</h4>
@@ -57,21 +56,18 @@ window.addChannel = function () {
             <option value="broadcast">Broadcast (realigned)</option>
             <option value="precise">Precise (SP3-fitted)</option>
           </select>
+          <span class="info" title="precise: SP3 orbit/clock fitted into the broadcast records that drive generation. Preview/Generate auto-download the best free IGS product (rapid, then final) for the Start UTC — no file to place. Rapid lags ~17 h, final ~12 d; very recent epochs may have no product yet.">i</span>
         </label>
-        <div class="hint">precise: SP3 orbit/clock fitted into the broadcast records that drive generation. Preview/Generate auto-download the best free IGS product (rapid, then final) for the Start UTC — no file to place. Rapid lags ~17 h, final ~12 d; very recent epochs may have no product yet.</div>
         <details class="precise-panel">
-          <summary>Precise ephemeris (SP3) — optional manual override</summary>
+          <summary>Precise ephemeris (SP3) — optional manual override <span class="info" title="Only needed to pin a specific local SP3 instead of the auto-downloaded one.">i</span></summary>
           <label>SP3 path <input id="${id}-sp3-path" size="26" placeholder="(leave blank — auto-downloaded)"></label>
           <button id="${id}-sp3-load" type="button">Load this file</button>
           <button id="${id}-sp3-compare" type="button">Compare vs broadcast</button>
-          <div class="hint">Only needed to pin a specific local SP3 instead of the auto-downloaded one.</div>
           <div id="${id}-sp3-status" class="hint"></div>
-          <div id="${id}-sp3-compare-out" class="hint"></div>
         </details>
         <details class="impairments-panel">
-          <summary>RF impairments (advanced)</summary>
+          <summary>RF impairments (advanced) <span class="info" title="Deterministic, seeded. Post-processes the gps-sdr-sim output; a clean copy is kept as gpssim.clean.bin. All-zero fields = no-op.">i</span></summary>
           <label><input type="checkbox" id="${id}-imp-enabled"> Apply impairments to generated IQ</label>
-          <div class="hint">Deterministic, seeded. Post-processes the gps-sdr-sim output; a clean copy is kept as gpssim.clean.bin. All-zero fields = no-op.</div>
           <label>Seed <input id="${id}-imp-seed" type="number" value="0"></label>
           <label>Carrier freq offset Hz <input id="${id}-imp-cfo" type="number" value="0"></label>
           <label>Sample-rate error ppm <input id="${id}-imp-ppm" type="number" value="0"></label>
@@ -85,8 +81,7 @@ window.addChannel = function () {
           <label>Quantizer bits <input id="${id}-imp-bits" type="number" value="0" min="0" max="16"></label>
         </details>
         <details class="models-panel">
-          <summary>Propagation &amp; receiver models (advanced)</summary>
-          <div class="hint">Deterministic, RNG-free. These always shape the Preview / truth observables. They alter the generated <em>IQ</em> only when "apply to IQ" is ticked: ionosphere then rides gps-sdr-sim's own broadcast Klobuchar, and a quasi-static receiver-clock + multipath channel is convolved onto the composite signal (clean copy kept as gpssim.prechannel.bin). Troposphere stays truth-only. All "off" = no change.</div>
+          <summary>Propagation &amp; receiver models (advanced) <span class="info" title="Deterministic, RNG-free. These always shape the Preview / truth observables. They alter the generated IQ only when 'apply to IQ' is ticked: ionosphere then rides gps-sdr-sim's own broadcast Klobuchar, and a quasi-static receiver-clock + multipath channel is convolved onto the composite signal (clean copy kept as gpssim.prechannel.bin). Troposphere stays truth-only. All 'off' = no change.">i</span></summary>
           <label>Ionosphere <select id="${id}-mdl-iono">
             <option value="off">off</option><option value="klobuchar">klobuchar</option>
           </select></label>
@@ -103,8 +98,7 @@ window.addChannel = function () {
           <label>· sawtooth period s <input id="${id}-mdl-rxclk-sawper" type="number" value="0" min="0"></label>
           <label>Multipath <select id="${id}-mdl-mp">
             <option value="off">off</option><option value="specular">specular</option>
-          </select></label>
-          <div class="hint">Reflections — a row counts only when amplitude &gt; 0 (0 ≤ amp &lt; 1).</div>
+          </select><span class="info" title="Reflections — a row counts only when amplitude > 0 (0 ≤ amp < 1).">i</span></label>
           <label>· #1 excess delay m <input id="${id}-mdl-mp1-delay" type="number" value="0" min="0"></label>
           <label>· #1 amplitude <input id="${id}-mdl-mp1-amp" type="number" value="0" min="0" max="0.999" step="0.01"></label>
           <label>· #1 phase rad <input id="${id}-mdl-mp1-phase" type="number" value="3.14159" step="0.01"></label>
@@ -126,13 +120,17 @@ window.addChannel = function () {
         <div id="${id}-map"></div>
       </div>
     </div>
+    <div class="compare-region" id="${id}-compare-region" hidden>
+      <h4>Ephemeris comparison — broadcast vs precise</h4>
+      <div id="${id}-sp3-compare-out" class="compare-out"></div>
+    </div>
     <div class="channel-actions">
       <button id="${id}-btn-preview">Preview geometry</button>
       <button id="${id}-btn-generate" class="btn-primary">Generate</button>
       <progress id="${id}-gen-progress" max="1" value="0"></progress>
     </div>
     <div class="timeline-editor">
-      <h4>Timeline (scheduled during live transmit)</h4>
+      <h4>Timeline (scheduled during live transmit) <span class="info" title="Runs only while a live transmit is active on this channel (Start).">i</span></h4>
       <ul id="${id}-timeline-list"></ul>
       <div class="timeline-add-row">
         <label>at t+ <input id="${id}-tl-at" type="number" value="0" min="0" size="4">s</label>
@@ -144,7 +142,6 @@ window.addChannel = function () {
         <input id="${id}-tl-arg2" type="number" placeholder="distance_m / delta" value="10" size="8">
         <button id="${id}-tl-add">Add step</button>
       </div>
-      <div class="hint">Runs only while a live transmit is active on this channel (Start).</div>
     </div>
     <div class="channel-columns">
       <div class="col-panel">
@@ -182,17 +179,16 @@ window.addChannel = function () {
               </div>
             </div>
             <div class="iq-block">
-              <div class="iq-label">Live spectrogram</div>
+              <div class="iq-label">Live spectrogram <span class="info" title="Fills while this channel is transmitting live — one column per ~1 s segment.">i</span></div>
               <canvas id="${id}-spectrogram" width="760" height="120"></canvas>
-              <div class="hint">Fills while this channel is transmitting live — one column per ~1&nbsp;s segment.</div>
             </div>
             <div class="iq-block">
               <div class="iq-label">
                 C/N0 trend
+                <span class="info" title="Set 'Selected PRN' on the Satellites tab before Start to track it live.">i</span>
                 <span id="${id}-cn0-readout" class="iq-readout"></span>
               </div>
               <canvas id="${id}-cn0-trend" width="760" height="110"></canvas>
-              <div class="hint">Set “Selected PRN” on the Satellites tab before Start to track it live.</div>
             </div>
           </div>
         </div>
@@ -458,6 +454,7 @@ function wireChannelActions(id) {
     const su = document.getElementById(`${id}-start-utc`).value;
     if (!su) return alert('set a start UTC');
     const out = document.getElementById(`${id}-sp3-compare-out`);
+    document.getElementById(`${id}-compare-region`).hidden = false;
     out.className = 'compare-out';
     out.textContent = 'comparing…';
     // Sweep across the scenario duration so the result is a curve, not a

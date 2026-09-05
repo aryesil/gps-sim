@@ -155,19 +155,57 @@
     };
   }
 
+  // C/A code chip length in metres (c / 1.023 MHz) -- the receiver's
+  // ranging quantum, a concrete yardstick for "how big is this error".
+  const CHIP_M = 293.0522;
+
+  // Plain-language verdict for a range-error RMS, in metres.
+  function verdict(rangeRms) {
+    if (rangeRms < 1) return ['excellent',
+      'Broadcast ephemeris is already almost identical to the precise reference here — switching this channel to precise mode barely changes the simulated ranges.'];
+    if (rangeRms < 5) return ['good',
+      'Broadcast ephemeris is close to precise. Precise mode tightens each satellite range by a few metres.'];
+    if (rangeRms < 20) return ['marginal',
+      'Broadcast ephemeris is drifting from precise. Precise mode is worth using for this scenario.'];
+    return ['poor',
+      'Broadcast ephemeris is well off the precise reference at this epoch. Use precise mode.'];
+  }
+
+  function panel(grid, label, wide) {
+    const p = el('div', 'compare-panel' + (wide ? ' wide' : ''));
+    if (label) p.appendChild(el('div', 'compare-panel-label', label));
+    grid.appendChild(p);
+    return p;
+  }
+
   window.renderCompare = function (containerId, d) {
     const root = document.getElementById(containerId);
     root.innerHTML = '';
     root.className = 'compare-out';
 
+    const s = d.summary || {};
+
+    // --- headline: what the numbers mean, in plain language ----------
+    if (s.n) {
+      const rangeRms = s.range_delta_rms_m;
+      const pctChip = rangeRms / CHIP_M * 100;
+      const [grade, sentence] = verdict(rangeRms);
+
+      const verdictEl = el('div', 'compare-verdict compare-verdict-' + grade);
+      verdictEl.appendChild(el('b', null,
+        `Broadcast ranges sit ~${rangeRms.toFixed(1)} m off precise` +
+        `  (≈ ${pctChip.toFixed(1)}% of one GPS code chip)`));
+      verdictEl.appendChild(el('div', null, sentence));
+      root.appendChild(verdictEl);
+    }
+
     const cards = el('div', 'compare-cards');
     root.appendChild(cards);
-    const s = d.summary || {};
     if (s.n) {
-      card(cards, 'PRNs compared', s.n);
-      card(cards, 'position RMS', s.pos_delta_rms_m.toFixed(2) + ' m');
-      card(cards, 'range RMS', s.range_delta_rms_m.toFixed(2) + ' m');
-      card(cards, 'Doppler RMS', s.doppler_delta_rms_hz.toFixed(3) + ' Hz');
+      card(cards, 'satellites compared', s.n);
+      card(cards, 'range error (typical)', s.range_delta_rms_m.toFixed(1) + ' m');
+      card(cards, 'orbit position error', s.pos_delta_rms_m.toFixed(1) + ' m');
+      card(cards, 'speed (Doppler) error', s.doppler_delta_rms_hz.toFixed(2) + ' Hz');
     } else {
       cards.appendChild(el('div', 'compare-card', 'no overlapping visible PRNs'));
     }
@@ -177,40 +215,44 @@
     (d.warnings || []).forEach(w => root.appendChild(el('div', 'hint', '⚠ ' + w)));
     if (d.note) root.appendChild(el('div', 'hint', d.note));
 
+    // --- charts laid out side by side in a responsive grid ----------
+    const grid = el('div', 'compare-grid');
+    root.appendChild(grid);
+
     const rows = (d.rows || []).slice().sort((a, b) => a.prn - b.prn);
     if (rows.length) {
       const prns = rows.map(r => r.prn);
-      root.appendChild(el('div', 'hint', 'Per-PRN position error, broadcast − precise, decomposed:'));
-      const racC = el('canvas'); racC.width = 760; racC.height = 150;
-      root.appendChild(racC);
+      const racP = panel(grid, 'Per-PRN position error, broadcast − precise (radial / along / cross)');
+      const racC = el('canvas'); racC.width = 760; racC.height = 160;
+      racP.appendChild(racC);
       drawGroupedBars(racC, prns, [
         { label: 'radial', color: '#6cf', values: rows.map(r => r.pos_delta_radial_m) },
         { label: 'along', color: '#fc6', values: rows.map(r => r.pos_delta_along_m) },
         { label: 'cross', color: '#9f9', values: rows.map(r => r.pos_delta_cross_m) },
       ], { symmetric: true, unit: 'm' });
 
-      root.appendChild(el('div', 'hint', 'Per-PRN clock-offset difference:'));
-      const clkC = el('canvas'); clkC.width = 760; clkC.height = 110;
-      root.appendChild(clkC);
+      const clkP = panel(grid, 'Per-PRN clock-offset difference');
+      const clkC = el('canvas'); clkC.width = 760; clkC.height = 160;
+      clkP.appendChild(clkC);
       drawGroupedBars(clkC, prns, [
         { label: 'Δclock', color: '#c9f', values: rows.map(r => r.clock_delta_s * 1e9) },
       ], { symmetric: true, unit: 'ns' });
     }
 
-    // --- optional time sweep ----------------------------------------
+    // --- optional time sweep -------------------------------------------
     const series = {};
     Object.keys(d.series || {}).forEach(p => {
       series[p] = d.series[p].map(pt => ({ ...pt, clock_delta_ns: pt.clock_delta_s * 1e9 }));
     });
     if (Object.keys(series).length) {
-      root.appendChild(el('div', 'hint',
-        `Time sweep — same comparison every ${d.step_s}s out to ${d.sweep_s}s:`));
+      const swP = panel(grid,
+        `Time sweep — same comparison every ${d.step_s}s out to ${d.sweep_s}s`, true);
       const ctrls = el('div', 'compare-controls');
-      root.appendChild(ctrls);
+      swP.appendChild(ctrls);
       const tsC = el('canvas'); tsC.width = 760; tsC.height = 220;
-      root.appendChild(tsC);
+      swP.appendChild(tsC);
       const readout = el('div', 'compare-readout');
-      root.appendChild(readout);
+      swP.appendChild(readout);
 
       const prnsOn = {};
       Object.keys(series).forEach(p => { prnsOn[p] = true; });

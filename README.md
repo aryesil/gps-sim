@@ -241,10 +241,13 @@ Doppler delta, and elevation, plus an RMS summary — broadcast(realigned)
 minus precise. With `sweep_s`/`step_s` in the body it repeats the
 comparison across the scenario duration and returns a per-PRN `series`.
 The browser panel sends the sweep automatically and renders it with
-`frontend/compare.js`: summary cards, a per-PRN radial/along/cross bar
-chart, a per-PRN clock-offset bar chart, and an interactive time-sweep
-line chart (per-PRN toggles, metric selector, hover readout) — no text to
-read.
+`frontend/compare.js` in a dedicated full-width region below the config
+row (not squeezed into the narrow sim column): a plain-language verdict
+("broadcast ranges sit ~N m off precise, ≈ X% of one GPS code chip") plus
+a colour-graded recommendation, summary cards, and — in a responsive grid
+— a per-PRN radial/along/cross bar chart, a per-PRN clock-offset bar
+chart, and an interactive time-sweep line chart (per-PRN toggles, metric
+selector, hover readout). No RMS jargon and no text to scroll.
 
 ---
 
@@ -421,7 +424,7 @@ operator; the authors accept no liability for misuse.
 .venv/bin/pytest -q
 ```
 
-**404 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
+**406 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
 alignment, GPS-time conversions, the SP3 parser and orbit/clock
 interpolation, the broadcast/precise mode selector, the SP3→broadcast
 fit (pure-Kepler recovery to millimetres, SP3-fixture fit, RINEX-2

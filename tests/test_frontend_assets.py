@@ -101,3 +101,38 @@ def test_compare_is_visualised_not_dumped_as_text():
     # the sweep is requested so the chart is a curve over time
     assert 'sweep_s: dur' in js
     assert (F / "index.html").read_text().count("compare.js?v=") == 1
+
+
+def test_compare_output_relocated_to_full_width_region_with_plain_language():
+    """The compare result no longer stretches the narrow sim column: it
+    renders in a dedicated full-width region below .channel-top, its charts
+    lay out in a responsive grid, and the RMS jargon is replaced by a
+    plain-language verdict plus a percentage."""
+    js = (F / "channels.js").read_text()
+    cmp = (F / "compare.js").read_text()
+    css = (F / "style.css").read_text()
+    assert 'id="${id}-compare-region"' in js
+    assert 'document.getElementById(`${id}-compare-region`).hidden = false;' in js
+    reg = js.index('id="${id}-compare-region"')
+    assert reg > js.index('class="channel-top"')
+    assert reg < js.index('id="${id}-sp3-compare-out"')          # out lives in the region
+    assert '.compare-region' in css and '.compare-grid' in css
+    assert 'compare-verdict' in cmp
+    assert '% of one GPS code chip' in cmp
+    assert "'position RMS'" not in cmp and "'range RMS'" not in cmp
+
+
+def test_long_help_paragraphs_replaced_by_hover_info_icons():
+    """Verbose <div class="hint"> blurbs sitting under form selects are
+    gone; a small hover-tooltip marker carries the same text with no
+    layout footprint."""
+    js = (F / "channels.js").read_text()
+    css = (F / "style.css").read_text()
+    assert 'class="info" title=' in js
+    assert js.count('class="info"') >= 6
+    assert '.info {' in css
+    assert '<div class="hint">precise: SP3' not in js
+    assert '<div class="hint">Deterministic, seeded' not in js
+    assert '<div class="hint">Reflections' not in js
+    # the auto-download explanation survives, now inside a tooltip
+    assert 'auto-download' in js.lower()
