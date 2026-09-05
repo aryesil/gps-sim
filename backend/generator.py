@@ -7,7 +7,10 @@ import pathlib
 import re
 import subprocess
 
-from backend import config, ephemeris, provenance as prov, scenario
+from backend import (config, ephemeris, impairments as imp, inspector,
+                     iq_integrity, provenance as prov, scenario)
+
+_INTEGRITY_MAX_SAMPLES = 2_000_000
 
 _TIME_RE = re.compile(r"Time into run\s*=\s*([0-9.]+)")
 
@@ -74,6 +77,39 @@ def _run_gps_sdr_sim(argv: list[str], duration_s: float, progress_cb=None) -> No
         raise GeneratorError(f"gps-sdr-sim exit {proc.returncode}: {tail}")
 
 
+def _apply_impairments(req: scenario.ScenarioRequest, out_bin: pathlib.Path) -> dict | None:
+    """Deterministically post-process the generated .bin in place when
+    req.impairments is set. The clean file is preserved next to it as
+    gpssim.clean.bin. Returns the impairment report, or None when nothing
+    was requested (the .bin is then untouched)."""
+    cfg = imp.ImpairmentConfig.from_dict(req.impairments)
+    if req.random_seed is not None and not req.impairments:
+        return None
+    if req.random_seed is not None:
+        cfg = dataclasses.replace(cfg, seed=req.random_seed)
+    if not cfg.enabled:
+        return None
+
+    import numpy as np
+
+    dtype = np.int8 if req.sample_format == "int8" else np.int16
+    fs = 127.0 if req.sample_format == "int8" else 32767.0
+    raw = np.fromfile(out_bin, dtype=dtype)
+    raw = raw[: len(raw) - (len(raw) % 2)]
+    iq = (raw[0::2].astype(np.float32) + 1j * raw[1::2].astype(np.float32))
+
+    out, report = imp.apply(iq, req.sample_rate, cfg)
+
+    clean = out_bin.with_name("gpssim.clean.bin")
+    out_bin.replace(clean)
+    inter = np.empty(2 * len(out), dtype=dtype)
+    inter[0::2] = np.clip(np.round(out.real), -fs, fs)
+    inter[1::2] = np.clip(np.round(out.imag), -fs, fs)
+    inter.tofile(out_bin)
+    report["clean_output"] = "gpssim.clean.bin"
+    return report
+
+
 def run(req: scenario.ScenarioRequest, progress_cb=None, binary: str | None = None) -> pathlib.Path:
     b = binary or config.GPS_SDR_SIM_BIN
     outdir = config.OUT_DIR / dt.datetime.utcnow().strftime("%Y%m%dT%H%M%S%f")
@@ -92,6 +128,16 @@ def run(req: scenario.ScenarioRequest, progress_cb=None, binary: str | None = No
     if progress_cb:
         progress_cb(1.0)
 
+    impairment_report = _apply_impairments(req, out_bin)
+
+    integrity = None
+    try:
+        integrity = iq_integrity.validate_file(
+            out_bin, req.sample_format, req.sample_rate,
+            expected_duration_s=None, max_samples=_INTEGRITY_MAX_SAMPLES)
+    except (OSError, ValueError):
+        integrity = {"ok": None, "problems": ["integrity check could not run"]}
+
     ephemeris_mode = "precise" if req.nav_override is not None else "broadcast"
     provenance = {
         "scenario_hash": prov.scenario_hash(req),
@@ -100,6 +146,7 @@ def run(req: scenario.ScenarioRequest, progress_cb=None, binary: str | None = No
         "rinex_sha256": prov.sha256_file(req.rinex_path) if req.rinex_path else None,
         "nav_sha256": prov.sha256_file(nav_path),
         "random_seed": getattr(req, "random_seed", None),
+        "impairments": impairment_report,
     }
     if req.nav_override is not None:
         fits = [e["_fit"] for e in req.nav_override.values() if "_fit" in e]
@@ -131,6 +178,7 @@ def run(req: scenario.ScenarioRequest, progress_cb=None, binary: str | None = No
         "sample_format": req.sample_format,
         "created_utc": dt.datetime.utcnow().isoformat(),
         "output": "gpssim.bin",
+        "iq_integrity": integrity,
     }
     (outdir / "meta.json").write_text(json.dumps(meta, indent=2))
     return outdir

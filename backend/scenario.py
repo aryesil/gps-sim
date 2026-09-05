@@ -23,6 +23,13 @@ class ScenarioRequest:
     # gps-sdr-sim reads, with NO toc/toe realignment. Used for precise
     # (SP3-fitted) generation -- the records already carry a real toe.
     nav_override: dict | None = None
+    # Optional deterministic post-processing of the generated IQ. When set,
+    # this dict is parsed by backend.impairments.ImpairmentConfig.from_dict
+    # and applied to gpssim.bin after generation; the clean file is kept as
+    # gpssim.clean.bin. Default None == no post-processing, byte-identical
+    # output to before.
+    impairments: dict | None = None
+    random_seed: int | None = None
 
 
 def _bytes_per_sample(fmt: str) -> int:
