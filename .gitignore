@@ -10,3 +10,6 @@ gps-sdr-sim/
 .DS_Store
 docs/
 logs/
+
+# reference screenshots, not part of the app
+Example-sim/
