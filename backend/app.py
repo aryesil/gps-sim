@@ -287,21 +287,50 @@ def _ensure_precise_loaded(start: dt.datetime, fallback: bool) -> list[str]:
             "and PRECISE_SP3_MIRRORS is empty (load one via /api/precise/load)")
 
     dow = int(sow // 86400)
-    try:
-        path = precise.download_sp3(week, dow, config.PRECISE_DIR,
-                                    config.PRECISE_SP3_MIRRORS)
-        _precise_provider.load(path)
-    except (precise.PreciseProductError, OSError) as e:
+    # Fetch the day before and after as well and merge: a one-day SP3 file
+    # cannot supply a centred ~11-point interpolation window when the start
+    # sits within ~3 h of its 00:00 / 24:00 edge (the fit arc is toe +/- 2 h
+    # and the window needs several more samples beyond that).
+    days = []
+    for d in (dow - 1, dow, dow + 1):
+        w, dd = week, d
+        if dd < 0:
+            w, dd = week - 1, 6
+        elif dd > 6:
+            w, dd = week + 1, 0
+        days.append((w, dd))
+
+    products, got, central_ok = [], [], False
+    for w, dd in days:
+        try:
+            p = precise.download_sp3(w, dd, config.PRECISE_DIR,
+                                     config.PRECISE_SP3_MIRRORS)
+            products.append(precise.parse_sp3(pathlib.Path(p)))
+            got.append(f"{w}:{dd}")
+            if (w, dd) == (week, dow):
+                central_ok = True
+        except (precise.PreciseProductError, OSError):
+            continue  # a neighbour day may simply not be published yet
+
+    if not central_ok:
+        msg = (f"precise: could not obtain an SP3 product for {start.date()} "
+               f"(GPS week {week} day {dow})")
         if fallback:
-            return [f"precise: SP3 auto-download failed ({e}); used broadcast"]
-        raise ephemeris_source.EphemerisModeError(
-            f"precise: could not obtain an SP3 product for {start.date()} ({e})")
+            return [msg + "; used broadcast"]
+        raise ephemeris_source.EphemerisModeError(msg)
+
+    _precise_provider.set_product(precise.merge_sp3(products))
     st = _precise_provider.status()
     audit.log_event("precise_autoload", source=st.get("source"),
                     satellites=st.get("satellites"), epochs=st.get("epochs"),
-                    gps_week=week, dow=dow)
-    return [f"precise: auto-downloaded SP3 {st.get('source')} "
-            f"(GPS week {week} day {dow})"]
+                    gps_week=week, dow=dow, days=",".join(got))
+    warns = [f"precise: auto-downloaded SP3 for GPS week {week} "
+             f"day(s) {','.join(got)}"]
+    lo, hi = _precise_provider.product.coverage_seconds
+    if not (lo + 9000.0 <= t_want <= hi - 9000.0):
+        warns.append("precise: start is near an SP3 coverage edge; "
+                     "interpolation window may be off-centre")
+    return warns
 
 
 def _precise_nav_override(body: dict, start: dt.datetime):
@@ -329,6 +358,15 @@ def _precise_nav_override(body: dict, start: dt.datetime):
     try:
         eph, warns = ephemeris_fit.build_precise_broadcast(
             _precise_provider, prns, GPSTime(week, sow), strict=not fallback)
+    except precise.InterpolationWindowError:
+        # merged SP3 still cannot centre the window (a neighbour day was not
+        # published yet); accept an off-centre window with a warning rather
+        # than fail the whole run.
+        eph, warns = ephemeris_fit.build_precise_broadcast(
+            _precise_provider, prns, GPSTime(week, sow), strict=not fallback,
+            allow_boundary=True)
+        warns = ["precise: SP3 window is off-centre near a coverage edge "
+                 "(orbit interpolation slightly degraded)"] + warns
     except (ephemeris_fit.EphemerisFitError, precise.PreciseProductError) as e:
         if fallback:
             return None, [f"precise generation unavailable ({e}); used broadcast"]

@@ -55,15 +55,17 @@ def test_precise_auto_downloads_sp3_for_start_utc(no_sp3, monkeypatch):
     """With nothing loaded, precise mode fetches the right IGS product for
     the requested Start UTC (no manual path, no button) and builds the
     fitted nav from it."""
-    calls = {}
+    calls = []
 
     def fake_dl(week, dow, cache_dir, mirrors):
-        calls["wk_dow"] = (week, dow)
+        calls.append((week, dow))
         return SP3
 
     monkeypatch.setattr(app_mod.precise, "download_sp3", fake_dl)
     ov, warns = app_mod._precise_nav_override({"ephemeris_mode": "precise"}, START)
-    assert calls["wk_dow"][0] == 2433                     # GPS week of 2026-08-28
+    # central day + the day either side are fetched and merged
+    assert len(calls) == 3
+    assert any(w == 2433 for w, _ in calls)               # GPS week of 2026-08-28
     assert set(ov) == set(range(1, 11))
     assert any("auto-downloaded" in w.lower() for w in warns)
     app_mod._precise_provider._sp3 = None

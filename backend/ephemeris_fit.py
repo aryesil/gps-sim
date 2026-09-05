@@ -369,7 +369,8 @@ def build_precise_broadcast(provider, prns, epoch: GPSTime, *,
                             window_s: float = DEFAULT_WINDOW_S,
                             n_samples: int = DEFAULT_SAMPLES,
                             pos_tol_m: float = DEFAULT_POS_TOL_M,
-                            strict: bool = True) -> tuple[dict, list]:
+                            strict: bool = True,
+                            allow_boundary: bool = False) -> tuple[dict, list]:
     """Fit every requested PRN present in the loaded precise product.
 
     PRNs absent from the product are skipped and named in the returned
@@ -384,7 +385,8 @@ def build_precise_broadcast(provider, prns, epoch: GPSTime, *,
         if prn not in have:
             warnings.append(f"PRN {prn} absent from precise product; omitted")
             continue
-        state_fn = provider.state_fn(prn, week=epoch.week)
+        state_fn = provider.state_fn(prn, week=epoch.week,
+                                     allow_boundary=allow_boundary)
         eph = fit_satellite(state_fn, epoch, prn=prn, source=provider.product.source,
                             window_s=window_s, n_samples=n_samples,
                             pos_tol_m=pos_tol_m, strict=strict)

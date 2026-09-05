@@ -212,9 +212,14 @@ Set with `ephemeris_mode` on `/api/generate`, `/api/live/start`, and
 
 When precise mode is requested and no loaded SP3 product covers the start
 time, the server auto-downloads the best free IGS product for that GPS day
-(`PRECISE_SP3_MIRRORS`, rapid tried before final) and loads it — no file
-to place, no button to press. A manually loaded product covering the epoch
-is reused as-is. Set `PRECISE_SP3_MIRRORS=""` to disable the auto-download.
+*and the day either side* (`PRECISE_SP3_MIRRORS`, rapid tried before
+final), merges them, and loads the result — no file to place, no button
+to press. The three-day merge matters because a single one-day SP3 file
+cannot supply a centred ~11-point interpolation window when the start
+sits within ~3 h of its 00:00/24:00 edge (the fit arc is `toe ± 2 h`). If
+a neighbour day is not published yet the run still proceeds, with a
+warning, on an off-centre window. A manually loaded product covering the
+epoch is reused as-is. Set `PRECISE_SP3_MIRRORS=""` to disable downloads.
 
 Precise mode fails explicitly rather than silently degrading:
 
@@ -406,7 +411,7 @@ operator; the authors accept no liability for misuse.
 .venv/bin/pytest -q
 ```
 
-**387 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
+**389 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
 alignment, GPS-time conversions, the SP3 parser and orbit/clock
 interpolation, the broadcast/precise mode selector, the SP3→broadcast
 fit (pure-Kepler recovery to millimetres, SP3-fixture fit, RINEX-2

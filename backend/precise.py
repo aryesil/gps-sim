@@ -246,6 +246,38 @@ def parse_sp3(text_or_path: str | pathlib.Path, *, source: str | None = None) ->
                       epoch_times=epoch_times)
 
 
+def merge_sp3(products: "list[SP3Product]") -> "SP3Product":
+    """Concatenate several SP3 products (typically consecutive days) into
+    one, so an interpolation window near a single file's edge can still be
+    centred. Rows are unioned per PRN, sorted by epoch, and de-duplicated
+    on the epoch stamp (first product wins a tie). Raises ValueError on an
+    empty list.
+    """
+    products = [p for p in products if p is not None]
+    if not products:
+        raise ValueError("merge_sp3: nothing to merge")
+    if len(products) == 1:
+        return products[0]
+    merged: dict[int, list] = {}
+    for p in products:
+        for prn, rows in p.records.items():
+            merged.setdefault(prn, []).extend(rows)
+    for prn, rows in merged.items():
+        rows.sort(key=lambda r: r[0])
+        deduped, last_t = [], None
+        for r in rows:
+            if last_t is None or r[0] != last_t:
+                deduped.append(r)
+                last_t = r[0]
+        merged[prn] = deduped
+    epoch_times = sorted({t for p in products for t in p.epoch_times})
+    base = min(products, key=lambda p: p.epoch_times[0] if p.epoch_times else 0.0)
+    srcs = "+".join(pathlib.Path(p.source).name for p in products)
+    return SP3Product(source=f"merged({srcs})", gps_week=base.gps_week,
+                      epoch_interval_s=base.epoch_interval_s,
+                      records=merged, epoch_times=epoch_times)
+
+
 class PreciseEphemerisProvider:
     """Serves ``SatelliteState`` from a loaded SP3 product.
 

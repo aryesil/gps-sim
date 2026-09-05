@@ -186,3 +186,33 @@ def test_download_sp3_empty_mirrors_raises(tmp_path):
     from backend.precise import download_sp3, PreciseProductError
     with pytest.raises(PreciseProductError):
         download_sp3(WEEK, 4, tmp_path, [])
+
+
+# --- merge_sp3 ------------------------------------------------------
+def test_merge_sp3_dedupes_and_extends():
+    import dataclasses
+
+    from backend.precise import merge_sp3, parse_sp3
+    a = parse_sp3(SP3)
+    # a synthetic "next day": same tracks shifted +86400 s
+    shift = 86400.0
+    recs = {prn: [(t + shift, x, y, z, c) for (t, x, y, z, c) in rows]
+            for prn, rows in a.records.items()}
+    b = dataclasses.replace(a, source="day2.sp3", records=recs,
+                            epoch_times=[t + shift for t in a.epoch_times])
+
+    same = merge_sp3([a, parse_sp3(SP3)])
+    assert len(same.epoch_times) == len(a.epoch_times)          # exact dupes collapse
+    assert same.satellites() == a.satellites()
+    assert same.source.startswith("merged(")
+
+    joined = merge_sp3([a, b])
+    assert len(joined.epoch_times) == 2 * len(a.epoch_times)
+    lo, hi = joined.coverage_seconds
+    assert hi - lo > a.coverage_seconds[1] - a.coverage_seconds[0]
+
+
+def test_merge_sp3_single_passthrough():
+    from backend.precise import merge_sp3, parse_sp3
+    a = parse_sp3(SP3)
+    assert merge_sp3([a]) is a
