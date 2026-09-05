@@ -26,6 +26,7 @@ GPS_UTC_LEAP_S = 18.0  # GPS - UTC, valid 2017-01-01 .. (update on next leap sec
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
 DATA_DIR = pathlib.Path(_str("DATA_DIR", str(_ROOT / "data")))
 OUT_DIR = pathlib.Path(_str("OUT_DIR", str(_ROOT / "out")))
+LOG_DIR = pathlib.Path(_str("LOG_DIR", str(_ROOT / "logs")))
 
 GPS_SDR_SIM_BIN = _str("GPS_SDR_SIM_BIN", str(_ROOT / "gps-sdr-sim" / "gps-sdr-sim"))
 RINEX_MIRRORS = [
@@ -48,4 +49,5 @@ DEFAULT_FORMAT = _str("DEFAULT_FORMAT", "int16")
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 (DATA_DIR / "rinex").mkdir(parents=True, exist_ok=True)

@@ -22,4 +22,5 @@ window.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.side-icon').forEach(btn => {
     btn.onclick = () => showPage(btn.dataset.page);
   });
+  if (window.loadAuditLog) loadAuditLog();
 });

@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend import (config, ephemeris, geometry, scenario, generator,
-                     inspector, receiver, lnav_display, transmit, live, trajectory)
+                     inspector, receiver, lnav_display, transmit, live, trajectory, audit)
 
 app = FastAPI(title="GPS L1 C/A Signal Simulator")
 
@@ -331,6 +331,8 @@ def start_transmit(body: dict):
 
     def events():
         try:
+            audit.log_event("transmit_start", slot=slot, iq_path=params.iq_path,
+                             dry_run=body.get("dry_run", False), tx_gain_db=params.tx_gain_db)
             q: list = []
             def cb(d):
                 d["fraction"] = (d["samples"] / total_samples) if total_samples else None
@@ -346,6 +348,7 @@ def start_transmit(body: dict):
                     break
                 th.join(timeout=0.2)
             th.join(timeout=2.0)
+            audit.log_event("transmit_finished", slot=slot)
             yield f"data: {json.dumps({'finished': True, 'slot': slot})}\n\n"
         finally:
             _release_tx_slot(slot)
@@ -367,7 +370,13 @@ def stop_transmit(body: dict | None = None):
     occ = _tx_slots.get(slot)
     if occ:
         occ["stop"].set()
+        audit.log_event("manual_stop", slot=slot)
     return {"stopped": True}
+
+
+@app.get("/api/audit")
+def audit_log(limit: int = 200):
+    return {"events": audit.read_events(limit)}
 
 
 def _tee_spectrogram(chunks, sample_rate: float, on_row, track_prn: int | None = None,
@@ -424,6 +433,8 @@ def live_start(body: dict):
     def events():
         try:
             started = time.monotonic()
+            audit.log_event("live_start", slot=slot, lat=body["lat"], lon=body["lon"],
+                             dry_run=body.get("dry_run", False), max_duration_s=max_duration_s)
             q: list = []
             def cb(d):
                 d["fraction"] = None  # unbounded live stream -- no total to divide by
@@ -450,9 +461,11 @@ def live_start(body: dict):
                     break
                 if max_duration_s is not None and time.monotonic() - started >= max_duration_s:
                     _tx_slots[slot]["stop"].set()  # fail-safe: auto-stop after max_duration_s
+                    audit.log_event("auto_stop_timeout", slot=slot, max_duration_s=max_duration_s)
                     break
                 th.join(timeout=0.2)
             th.join(timeout=2.0)
+            audit.log_event("live_finished", slot=slot)
             yield f"data: {json.dumps({'finished': True, 'slot': slot})}\n\n"
         finally:
             _release_tx_slot(slot)
@@ -489,6 +502,7 @@ def live_stop(body: dict):
         occ["stop"].set()
         if occ["session"]:
             occ["session"].stop()
+        audit.log_event("manual_stop", slot=slot)
     return {"stopped": True}
 
 
