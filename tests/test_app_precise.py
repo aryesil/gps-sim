@@ -93,11 +93,15 @@ def test_compare_409_when_no_product_loaded():
 
 
 def test_preview_precise_out_of_coverage_is_422_no_fallback():
+    # The loaded fixture does not cover 2027; the precise path tries to
+    # auto-download the right product, the offline stub makes that fail,
+    # and with no fallback the request is a hard 422 (no silent broadcast).
     r = client.post("/api/preview", json={
         **RX, "start_utc": "2027-01-01T00:00:00", "rinex_path": BRDC,
         "ephemeris_mode": "precise"})
     assert r.status_code == 422
-    assert "coverage" in r.json()["detail"].lower()
+    d = r.json()["detail"].lower()
+    assert "precise" in d and ("sp3" in d or "obtain" in d)
 
 
 def test_preview_precise_in_coverage_reports_precise_source():
@@ -122,4 +126,5 @@ def test_preview_precise_explicit_fallback_when_out_of_coverage():
         **RX, "start_utc": "2027-01-01T00:00:00", "rinex_path": BRDC,
         "ephemeris_mode": "precise", "fallback_to_broadcast": True})
     assert r.status_code == 200
-    assert any("FELL BACK" in w for w in r.json()["warnings"])
+    ws = " ".join(r.json()["warnings"]).lower()
+    assert "broadcast" in ws and ("fell back" in ws or "auto-download failed" in ws)

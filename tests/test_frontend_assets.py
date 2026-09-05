@@ -51,13 +51,15 @@ def test_impairments_panel_present_and_wired():
     assert 'body.impairments = _imp;' in js
 
 
-def test_precise_panel_has_sp3_fetch_button():
-    """The 'Fetch for start UTC' button must post an explicit download
-    request to /api/precise/load with a {gps_week, dow} spec."""
+def test_precise_panel_advertises_auto_download_no_manual_step():
+    """Picking precise mode must not require the operator to place or fetch
+    an SP3 file: the panel says Preview/Generate auto-download it, and the
+    old manual 'fetch' button is gone. The path field stays as an optional
+    override only."""
     js = (F / "channels.js").read_text()
-    assert '${id}-sp3-fetch' in js
-    assert 'download: { gps_week, dow }' in js
-    assert "'/api/precise/load'" in js
+    assert '${id}-sp3-fetch' not in js
+    assert 'auto-download' in js.lower()
+    assert '${id}-sp3-path' in js          # optional manual override kept
 
 
 def test_channel_card_requires_confirmation_checkbox():

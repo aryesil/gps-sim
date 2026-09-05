@@ -180,12 +180,16 @@ def preview(body: dict):
     mode_warnings: list[str] = []
     eph_for_geo = eph
     if mode == "precise":
+        auto_warns = _ensure_precise_loaded(
+            start, bool(body.get("fallback_to_broadcast")))
         week_t, sow_t = ephemeris.gps_week_and_sow(
             start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S))
-        eph_for_geo, mode_warnings = ephemeris_source.build_state_fns(
-            mode, sorted(eph), GPSTime(week_t, sow_t), eph,
-            provider=_precise_provider, on_missing="skip",
-            fallback_to_broadcast=bool(body.get("fallback_to_broadcast")))
+        if _precise_provider.loaded:
+            eph_for_geo, mode_warnings = ephemeris_source.build_state_fns(
+                mode, sorted(eph), GPSTime(week_t, sow_t), eph,
+                provider=_precise_provider, on_missing="skip",
+                fallback_to_broadcast=bool(body.get("fallback_to_broadcast")))
+        mode_warnings = auto_warns + mode_warnings
 
     sats = geometry.constellation(eph_for_geo, rx, tow, body.get("mask_deg", 5.0))
     d = geometry.dop(sats, rx)
@@ -251,6 +255,55 @@ def _resolve_rinex(body: dict, start: dt.datetime) -> str:
         return str(fb)
 
 
+def _ensure_precise_loaded(start: dt.datetime, fallback: bool) -> list[str]:
+    """Make ``_precise_provider`` hold an SP3 product that covers ``start``.
+
+    Called on the ``ephemeris_mode == "precise"`` paths. If nothing is
+    loaded, or the loaded product does not cover the requested epoch, this
+    downloads the best free IGS product for that GPS day
+    (``config.PRECISE_SP3_MIRRORS``: rapid tried before final) and loads
+    it -- so the operator never has to place a file or click "Fetch".
+
+    Returns advisory warnings. Raises ``ephemeris_source.EphemerisModeError``
+    (HTTP 422) when precise data cannot be obtained and ``fallback`` is
+    False. Set ``PRECISE_SP3_MIRRORS=""`` to disable the auto-download.
+    """
+    gps_start = start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
+    week, sow = ephemeris.gps_week_and_sow(gps_start)
+    t_want = GPSTime(week, sow).seconds
+
+    if _precise_provider.loaded:
+        lo, hi = _precise_provider.product.coverage_seconds
+        # keep clear of the interpolation-window edges (~11-point Lagrange
+        # over 15-min epochs); if inside, the loaded product is fine.
+        if lo + 1800.0 <= t_want <= hi - 1800.0:
+            return []
+
+    if not config.PRECISE_SP3_MIRRORS:
+        if fallback:
+            return ["precise: no SP3 for this epoch and downloads are disabled; used broadcast"]
+        raise ephemeris_source.EphemerisModeError(
+            "ephemeris_mode=precise but no SP3 product covers this start time "
+            "and PRECISE_SP3_MIRRORS is empty (load one via /api/precise/load)")
+
+    dow = int(sow // 86400)
+    try:
+        path = precise.download_sp3(week, dow, config.PRECISE_DIR,
+                                    config.PRECISE_SP3_MIRRORS)
+        _precise_provider.load(path)
+    except (precise.PreciseProductError, OSError) as e:
+        if fallback:
+            return [f"precise: SP3 auto-download failed ({e}); used broadcast"]
+        raise ephemeris_source.EphemerisModeError(
+            f"precise: could not obtain an SP3 product for {start.date()} ({e})")
+    st = _precise_provider.status()
+    audit.log_event("precise_autoload", source=st.get("source"),
+                    satellites=st.get("satellites"), epochs=st.get("epochs"),
+                    gps_week=week, dow=dow)
+    return [f"precise: auto-downloaded SP3 {st.get('source')} "
+            f"(GPS week {week} day {dow})"]
+
+
 def _precise_nav_override(body: dict, start: dt.datetime):
     """For ``ephemeris_mode == "precise"``: fit an SP3-backed broadcast
     record set for ``start`` and return ``(eph_dict, warnings)``. The
@@ -266,11 +319,10 @@ def _precise_nav_override(body: dict, start: dt.datetime):
     if mode != "precise":
         return None, []
     fallback = bool(body.get("fallback_to_broadcast"))
+    auto_warns = _ensure_precise_loaded(start, fallback)
     if not _precise_provider.loaded:
-        if fallback:
-            return None, ["precise generation: no SP3 product loaded; used broadcast"]
-        raise ephemeris_source.EphemerisModeError(
-            "ephemeris_mode=precise but no precise (SP3) product is loaded")
+        # fallback path: auto-download disabled or failed, warning already set
+        return None, auto_warns
     gps_start = start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
     week, sow = ephemeris.gps_week_and_sow(gps_start)
     prns = sorted(_precise_provider.satellites())
@@ -281,7 +333,7 @@ def _precise_nav_override(body: dict, start: dt.datetime):
         if fallback:
             return None, [f"precise generation unavailable ({e}); used broadcast"]
         raise ephemeris_source.EphemerisModeError(f"precise generation: {e}")
-    return eph, warns
+    return eph, auto_warns + warns
 
 
 @app.post("/api/generate")

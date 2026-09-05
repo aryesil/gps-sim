@@ -51,6 +51,34 @@ def test_precise_without_product_raises(no_sp3):
         app_mod._precise_nav_override({"ephemeris_mode": "precise"}, START)
 
 
+def test_precise_auto_downloads_sp3_for_start_utc(no_sp3, monkeypatch):
+    """With nothing loaded, precise mode fetches the right IGS product for
+    the requested Start UTC (no manual path, no button) and builds the
+    fitted nav from it."""
+    calls = {}
+
+    def fake_dl(week, dow, cache_dir, mirrors):
+        calls["wk_dow"] = (week, dow)
+        return SP3
+
+    monkeypatch.setattr(app_mod.precise, "download_sp3", fake_dl)
+    ov, warns = app_mod._precise_nav_override({"ephemeris_mode": "precise"}, START)
+    assert calls["wk_dow"][0] == 2433                     # GPS week of 2026-08-28
+    assert set(ov) == set(range(1, 11))
+    assert any("auto-downloaded" in w.lower() for w in warns)
+    app_mod._precise_provider._sp3 = None
+
+
+def test_precise_reuses_loaded_product_without_downloading(with_sp3, monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("must not download when the loaded product covers the epoch")
+
+    monkeypatch.setattr(app_mod.precise, "download_sp3", boom)
+    ov, warns = app_mod._precise_nav_override({"ephemeris_mode": "precise"}, START)
+    assert set(ov) == set(range(1, 11))
+    assert not any("auto-downloaded" in w.lower() for w in warns)
+
+
 def test_precise_without_product_falls_back_when_asked(no_sp3):
     ov, warns = app_mod._precise_nav_override(
         {"ephemeris_mode": "precise", "fallback_to_broadcast": True}, START)

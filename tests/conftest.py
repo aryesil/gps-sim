@@ -56,3 +56,19 @@ def _make_iq(prns=(1, 7, 13, 21), sample_rate=2.6e6, duration_s=0.05,
 @pytest.fixture
 def synth_iq():
     return _make_iq
+
+
+@pytest.fixture(autouse=True)
+def _offline_sp3(monkeypatch):
+    """The suite is offline. Any real SP3 mirror fetch (now that
+    PRECISE_SP3_MIRRORS ships defaults, the precise paths auto-download)
+    fails fast instead of touching the network. Tests that deliberately
+    exercise the fetch path re-patch requests.get or precise.download_sp3
+    themselves, which overrides this within the test body.
+    """
+    import requests
+
+    def _blocked(*a, **k):
+        raise requests.RequestException("network disabled in tests")
+
+    monkeypatch.setattr(requests, "get", _blocked)

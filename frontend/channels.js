@@ -58,14 +58,13 @@ window.addChannel = function () {
             <option value="precise">Precise (SP3-fitted)</option>
           </select>
         </label>
-        <div class="hint">precise: SP3 orbit/clock fitted into the broadcast records that drive generation (needs a loaded SP3 product covering the epoch)</div>
+        <div class="hint">precise: SP3 orbit/clock fitted into the broadcast records that drive generation. Preview/Generate auto-download the best free IGS product (rapid, then final) for the Start UTC — no file to place. Rapid lags ~17 h, final ~12 d; very recent epochs may have no product yet.</div>
         <details class="precise-panel">
-          <summary>Precise ephemeris (SP3)</summary>
-          <label>SP3 path <input id="${id}-sp3-path" size="26" placeholder="data/precise/…​.sp3"></label>
-          <button id="${id}-sp3-load" type="button">Load</button>
-          <button id="${id}-sp3-fetch" type="button">Fetch for start UTC</button>
+          <summary>Precise ephemeris (SP3) — optional manual override</summary>
+          <label>SP3 path <input id="${id}-sp3-path" size="26" placeholder="(leave blank — auto-downloaded)"></label>
+          <button id="${id}-sp3-load" type="button">Load this file</button>
           <button id="${id}-sp3-compare" type="button">Compare vs broadcast</button>
-          <div class="hint">Fetch pulls a free, anonymous IGS product (rapid, then final) for the GPS week/day of the Start UTC. Rapid lags ~17 h; final ~12 d. Very recent epochs may have no product yet.</div>
+          <div class="hint">Only needed to pin a specific local SP3 instead of the auto-downloaded one.</div>
           <div id="${id}-sp3-status" class="hint"></div>
           <div id="${id}-sp3-compare-out" class="hint"></div>
         </details>
@@ -420,27 +419,6 @@ function wireChannelActions(id) {
     const d = await r.json();
     if (!r.ok) { el.textContent = 'error: ' + (d.detail || JSON.stringify(d)); return; }
     logLine('Channel ' + id + ' loaded SP3: ' + d.source, 'info');
-    _refreshSp3Status();
-  };
-
-  document.getElementById(`${id}-sp3-fetch`).onclick = async () => {
-    const su = document.getElementById(`${id}-start-utc`).value;
-    if (!su) return alert('set a start UTC first');
-    // GPS epoch 1980-01-06T00:00:00Z; +18 leap seconds so the day bucket
-    // is right through a UTC midnight. Server picks the actual product file.
-    const gpsMs = Date.parse(su + ':00Z') - Date.parse('1980-01-06T00:00:00Z') + 18000;
-    const days = Math.floor(gpsMs / 86400000);
-    const gps_week = Math.floor(days / 7);
-    const dow = days - gps_week * 7;
-    const el = document.getElementById(`${id}-sp3-status`);
-    el.textContent = `fetching SP3 for GPS week ${gps_week} day ${dow}…`;
-    const r = await fetch('/api/precise/load', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ download: { gps_week, dow } }),
-    });
-    const d = await r.json();
-    if (!r.ok) { el.textContent = 'fetch failed: ' + (d.detail || JSON.stringify(d)); return; }
-    logLine('Channel ' + id + ' fetched SP3: ' + (d.source || ''), 'info');
     _refreshSp3Status();
   };
 

@@ -210,12 +210,19 @@ Set with `ephemeris_mode` on `/api/generate`, `/api/live/start`, and
 | **Precise (SP3), analysis** | `/api/preview`, `/api/precise/compare` | An IGS SP3-c/d orbit/clock product, interpolated (~10th-order Neville for position, analytic derivative for velocity, linear for the coarse SP3 clock). Reports the per-PRN broadcast-vs-precise delta. |
 | **Precise (SP3), generation** | `/api/generate`, `/api/live/start` | `ephemeris_fit.py` least-squares fits the interpolated SP3 track (position over a 4 h arc, `toe` ± 2 h) into a broadcast record set — solving M0, `delta_n`, the rate terms and the six harmonic corrections, plus `af0/af1/af2` against the SP3 clock. The fitted records go to `gps-sdr-sim` with **no realignment**, so the satellite states behind the IQ match the SP3 product to sub-metre. Fit residuals land in `meta.json` (`precise_fit`); a fit that cannot get under ~2 m is an error, not a silent bad nav file. |
 
+When precise mode is requested and no loaded SP3 product covers the start
+time, the server auto-downloads the best free IGS product for that GPS day
+(`PRECISE_SP3_MIRRORS`, rapid tried before final) and loads it — no file
+to place, no button to press. A manually loaded product covering the epoch
+is reused as-is. Set `PRECISE_SP3_MIRRORS=""` to disable the auto-download.
+
 Precise mode fails explicitly rather than silently degrading:
 
-- No SP3 product loaded, epoch outside the product's covered interval, or
-  a fit that will not converge below tolerance → **HTTP 422**, unless the
-  caller passes `fallback_to_broadcast: true` (which then uses broadcast
-  with a warning that names what failed).
+- No SP3 product could be obtained for the epoch (auto-download disabled or
+  failed, none loaded), the epoch is outside a manually loaded product's
+  interval, or a fit that will not converge below tolerance → **HTTP 422**,
+  unless the caller passes `fallback_to_broadcast: true` (which then uses
+  broadcast with a warning that names what failed).
 - A PRN absent from the SP3 product is **omitted and named in `warnings`**,
   never silently replaced with a broadcast value.
 - No extrapolation past the product's edge epochs.
@@ -274,20 +281,21 @@ and the Event list: the persistent audit trail merged with the live
 
 **Quantify ephemeris error**
 
-1. Download an IGS SP3 product covering your scenario epoch.
-2. In the card's precise panel, load it, set the same lat/lon/time, and
-   **Compare vs broadcast**. Read the per-PRN and RMS position/range/Doppler
-   deltas — this is how far a *broadcast*-mode recording's geometry sits
-   from the precise reference.
+1. Run a precise **Preview** for your lat/lon/time — this auto-downloads
+   the SP3 product for that epoch. Then **Compare vs broadcast** in the
+   precise panel and read the per-PRN and RMS position/range/Doppler
+   deltas — how far a *broadcast*-mode recording's geometry sits from the
+   precise reference. (Load a specific SP3 by path first only to pin one.)
 
 **Precise-geometry generation**
 
-1. Load an SP3 product (as above) whose interval covers the scenario
-   epoch ± 2 h.
-2. Set the card's Ephemeris selector to **Precise (SP3-fitted)** and
-   **Generate**. The `done` event and `meta.json` (`precise_fit`) report
-   the per-PRN fit residual; a scenario epoch outside the product's
-   coverage fails with HTTP 422 instead of falling back silently.
+1. Set the card's Ephemeris selector to **Precise (SP3-fitted)** and
+   **Generate**. The SP3 product for the scenario epoch is downloaded and
+   loaded automatically (no file to place); a specific local SP3 loaded by
+   path is used instead if present.
+2. The `done` event and `meta.json` (`precise_fit`) report the per-PRN fit
+   residual; an epoch with no obtainable product, or a fit that will not
+   converge, fails with HTTP 422 instead of falling back silently.
 
 **Cabled hardware replay**
 
@@ -345,7 +353,7 @@ All via environment variables (see `backend/config.py`).
 | `OUT_DIR` | `./out` | Generated IQ + `meta.json`, recordings. Served at `/out`. |
 | `LOG_DIR` | `./logs` | `audit.jsonl`. |
 | `PRECISE_DIR` | `./data/precise` | SP3 product cache / load directory. |
-| `PRECISE_SP3_MIRRORS` | free BKG + IGN rapid/final SP3 (anonymous) | Comma-separated SP3 download URL templates (`{gpsweek}`/`{gps_week}`/`{dow}`/`{yyyy}`/`{doy}`/`{wwwwd}`). A download is only performed on an explicit `POST /api/precise/load` with `download`; set to `""` to disable SP3 downloads entirely. |
+| `PRECISE_SP3_MIRRORS` | free BKG + IGN rapid/final SP3 (anonymous) | Comma-separated SP3 download URL templates (`{gpsweek}`/`{gps_week}`/`{dow}`/`{yyyy}`/`{doy}`/`{wwwwd}`). Used both by an explicit `POST /api/precise/load` with `download` and by the automatic fetch on the precise `/api/preview` and `/api/generate` paths. Set to `""` to disable all SP3 downloads. |
 | `GPS_SDR_SIM_BIN` | `./gps-sdr-sim/gps-sdr-sim` | Path to the built binary. |
 | `API_KEYS_JSON` | `""` | JSON `{"<key>": "operator"｜"viewer"}`. Empty ⇒ auth disabled. |
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | uvicorn bind (via `run_server.sh`). |
@@ -398,7 +406,7 @@ operator; the authors accept no liability for misuse.
 .venv/bin/pytest -q
 ```
 
-**385 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
+**387 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
 alignment, GPS-time conversions, the SP3 parser and orbit/clock
 interpolation, the broadcast/precise mode selector, the SP3→broadcast
 fit (pure-Kepler recovery to millimetres, SP3-fixture fit, RINEX-2
