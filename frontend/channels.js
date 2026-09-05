@@ -30,8 +30,9 @@ window.addChannel = function () {
         <label>LO Hz <input id="${id}-lo" value="1575420000"></label>
         <label>TX gain dB <input id="${id}-gain" type="number" value="-50"></label>
         <label><input type="checkbox" id="${id}-tx-dryrun"> Dry run (no RF)</label>
+        <label>Auto-stop after (s) <input type="number" id="${id}-max-duration" placeholder="none" min="1"></label>
         <input type="checkbox" id="${id}-tx-confirm" hidden>
-        <div class="hint">Isolated setup confirmed by typing TRANSMIT at Start.</div>
+        <div class="hint">Isolated setup confirmed by typing TRANSMIT at Start. Auto-stop is a fail-safe: leave blank to run until stopped manually.</div>
       </div>
       <div class="col-sim">
         <h4>Simulation Config</h4>
@@ -273,6 +274,8 @@ function wireChannelActions(id) {
     };
     const prnInput = document.getElementById(`${id}-lnav-prn`);
     if (prnInput && prnInput.value) body.track_prn = Number(prnInput.value);
+    const maxDurInput = document.getElementById(`${id}-max-duration`);
+    if (maxDurInput && maxDurInput.value) body.max_duration_s = Number(maxDurInput.value);
     const r = await fetch('/api/live/start', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });

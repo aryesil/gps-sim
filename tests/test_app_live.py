@@ -176,3 +176,20 @@ def test_transmit_409_when_both_slots_full(monkeypatch, tmp_path):
     finally:
         app_module._tx_slots["TX1"] = None
         app_module._tx_slots["TX2"] = None
+
+
+def test_live_start_auto_stops_after_max_duration(monkeypatch):
+    """Fail-safe: max_duration_s must end the live SSE stream (and set the
+    slot's stop event) even if nobody calls /api/live/stop."""
+    import pathlib
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    r = client.post("/api/live/start", json={
+        "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
+        "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
+        "dry_run": True, "duration_s": 3600, "max_duration_s": 0.05})
+    assert r.status_code == 200
+    body = r.text
+    assert '"finished": true' in body
+    from backend import app as app_module
+    assert app_module._tx_slots["TX1"] is None or app_module._tx_slots["TX2"] is None

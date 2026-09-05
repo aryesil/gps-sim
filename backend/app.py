@@ -7,6 +7,7 @@ import math
 import pathlib
 import shutil
 import threading
+import time
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -417,8 +418,12 @@ def live_start(body: dict):
         _release_tx_slot(slot)
         raise
 
+    max_duration_s = body.get("max_duration_s")
+    max_duration_s = float(max_duration_s) if max_duration_s else None
+
     def events():
         try:
+            started = time.monotonic()
             q: list = []
             def cb(d):
                 d["fraction"] = None  # unbounded live stream -- no total to divide by
@@ -442,6 +447,9 @@ def live_start(body: dict):
                 while q:
                     yield f"data: {json.dumps({**q.pop(0), 'slot': slot})}\n\n"
                 if _tx_slots[slot]["stop"].is_set():
+                    break
+                if max_duration_s is not None and time.monotonic() - started >= max_duration_s:
+                    _tx_slots[slot]["stop"].set()  # fail-safe: auto-stop after max_duration_s
                     break
                 th.join(timeout=0.2)
             th.join(timeout=2.0)
