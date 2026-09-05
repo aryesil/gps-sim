@@ -12,6 +12,57 @@ window.logLine = function (text, level) {
 // start/stop (manual or fail-safe auto-stop) to disk, so it survives a
 // closed tab or a server restart. This merges that server-side history
 // into the same #log-list the live logLine() calls populate.
+// Real receiver feedback: closed-loop check against backend/receiver_feed.py
+// -- start a UDP/serial NMEA listener and poll its latest parsed fix.
+let _rfPollTimer = null;
+
+async function _pollReceiverFix() {
+  const r = await fetch('/api/receiver/fix');
+  if (!r.ok) return;
+  const d = await r.json();
+  const out = document.getElementById('rf-fix-readout');
+  if (!out) return;
+  if (!d.listening) { out.textContent = 'not listening'; return; }
+  if (!d.fix) { out.textContent = 'listening… no fix yet'; return; }
+  const f = d.fix;
+  out.textContent = f.sentence === 'GGA'
+    ? `GGA fix: lat ${f.lat.toFixed(5)} lon ${f.lon.toFixed(5)} alt ${f.alt_m}m sats ${f.num_sats} hdop ${f.hdop}`
+    : `RMC fix: lat ${f.lat.toFixed(5)} lon ${f.lon.toFixed(5)} ${f.status} speed ${f.speed_knots}kt`;
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  const startBtn = document.getElementById('rf-listen-start');
+  const stopBtn = document.getElementById('rf-listen-stop');
+  if (!startBtn) return;  // panel not present on this page build
+  startBtn.onclick = async () => {
+    const mode = document.getElementById('rf-listen-mode').value;
+    const addr = document.getElementById('rf-listen-addr').value.trim();
+    const body = { mode };
+    if (mode === 'udp') {
+      const [host, port] = addr.split(':');
+      body.host = host || '0.0.0.0';
+      body.port = Number(port);
+    } else {
+      const [device, baud] = addr.split(':');
+      body.device = device;
+      if (baud) body.baud = Number(baud);
+    }
+    const r = await fetch('/api/receiver/listen', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!r.ok) { const d = await r.json(); return alert('listen failed: ' + (d.detail || '')); }
+    logLine(`Receiver feed: listening (${mode}) on ${addr}`, 'info');
+    if (_rfPollTimer) clearInterval(_rfPollTimer);
+    _rfPollTimer = setInterval(_pollReceiverFix, 1000);
+  };
+  stopBtn.onclick = async () => {
+    await fetch('/api/receiver/stop_listen', { method: 'POST' });
+    if (_rfPollTimer) { clearInterval(_rfPollTimer); _rfPollTimer = null; }
+    logLine('Receiver feed: stopped listening', 'info');
+    _pollReceiverFix();
+  };
+});
+
 window.loadAuditLog = async function () {
   const r = await fetch('/api/audit?limit=200');
   if (!r.ok) return;

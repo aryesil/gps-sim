@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend import (config, ephemeris, geometry, scenario, generator,
                      inspector, receiver, lnav_display, transmit, live, trajectory, audit,
-                     scenario_lib, recording)
+                     scenario_lib, recording, receiver_feed)
 
 app = FastAPI(title="GPS L1 C/A Signal Simulator")
 
@@ -533,6 +533,36 @@ def recording_replay(name: str, speed: float = 1.0):
             yield f"data: {json.dumps(row)}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.post("/api/receiver/listen")
+def receiver_listen(body: dict):
+    try:
+        receiver_feed.start_listen(body["mode"], **{k: v for k, v in body.items() if k != "mode"})
+    except (KeyError, ValueError) as e:
+        raise HTTPException(400, str(e))
+    return {"listening": True, "mode": body["mode"]}
+
+
+@app.post("/api/receiver/stop_listen")
+def receiver_stop_listen():
+    receiver_feed.stop_listen()
+    return {"listening": False}
+
+
+@app.get("/api/receiver/fix")
+def receiver_fix_live():
+    return {"listening": receiver_feed.is_listening(), "fix": receiver_feed.latest_fix()}
+
+
+@app.post("/api/receiver/inject")
+def receiver_inject(body: dict):
+    """Feed one NMEA sentence directly, bypassing serial/UDP -- for
+    testing the closed-loop UI without a physical receiver attached."""
+    parsed = receiver_feed.inject(body["sentence"])
+    if parsed is None:
+        raise HTTPException(400, "unrecognized or malformed NMEA sentence")
+    return {"fix": parsed}
 
 
 def _session_for_slot(slot: str) -> live.LiveSession:

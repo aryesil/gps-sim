@@ -5,7 +5,7 @@
 <title>GPS L1 C/A Signal Simulator</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
-<link rel="stylesheet" href="/static/style.css?v=11">
+<link rel="stylesheet" href="/static/style.css?v=12">
 </head>
 <body>
 <div id="rf-status-bar" class="rf-off">RF OUTPUT: OFF</div>
@@ -55,20 +55,33 @@
       <table id="trajectory-table"></table>
     </section>
     <section data-page="log" id="page-log" hidden>
+      <div id="receiver-feed-panel">
+        <h4>Real Receiver Feedback</h4>
+        <div class="scenario-lib-row">
+          <select id="rf-listen-mode">
+            <option value="udp">UDP</option>
+            <option value="serial">Serial</option>
+          </select>
+          <input id="rf-listen-addr" placeholder="host:port or /dev/ttyUSB0:9600" size="24" value="0.0.0.0:29500">
+          <button id="rf-listen-start">Start listening</button>
+          <button id="rf-listen-stop">Stop</button>
+        </div>
+        <div id="rf-fix-readout" class="hint">not listening</div>
+      </div>
       <ul id="log-list"></ul>
     </section>
   </main>
 </div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="/static/pages.js?v=11"></script>
-<script src="/static/map.js?v=11"></script>
-<script src="/static/skyplot.js?v=11"></script>
-<script src="/static/plots.js?v=11"></script>
-<script src="/static/iqplot.js?v=11"></script>
-<script src="/static/channels.js?v=11"></script>
-<script src="/static/live.js?v=11"></script>
-<script src="/static/trajectory.js?v=11"></script>
-<script src="/static/log.js?v=11"></script>
-<script src="/static/app.js?v=11"></script>
+<script src="/static/pages.js?v=12"></script>
+<script src="/static/map.js?v=12"></script>
+<script src="/static/skyplot.js?v=12"></script>
+<script src="/static/plots.js?v=12"></script>
+<script src="/static/iqplot.js?v=12"></script>
+<script src="/static/channels.js?v=12"></script>
+<script src="/static/live.js?v=12"></script>
+<script src="/static/trajectory.js?v=12"></script>
+<script src="/static/log.js?v=12"></script>
+<script src="/static/app.js?v=12"></script>
 </body>
 </html>
