@@ -34,6 +34,23 @@ def test_no_orphaned_transmit_js():
     assert "transmit.js" not in (F / "index.html").read_text()
 
 
+def test_impairments_panel_present_and_wired():
+    """The advanced RF-impairments panel must exist, stay opt-in, and fold
+    into the /api/generate body only when enabled -- so an untouched panel
+    leaves the generate request byte-identical to before it existed."""
+    js = (F / "channels.js").read_text()
+    assert 'class="impairments-panel"' in js
+    assert '${id}-imp-enabled' in js
+    for sfx in ("seed", "cfo", "ppm", "phn", "gain", "iqphase",
+                "dci", "dcq", "snr", "clip", "bits"):
+        assert f'${{id}}-imp-{sfx}' in js, sfx
+    # noise_power must not be exposed (mutually exclusive with snr_db server-side)
+    assert 'noise_power' not in js
+    # opt-in: null unless the enable box is checked, then merged into body
+    assert 'if (!document.getElementById(`${id}-imp-enabled`).checked) return null;' in js
+    assert 'body.impairments = _imp;' in js
+
+
 def test_channel_card_requires_confirmation_checkbox():
     """The README's safety claim ("you confirm the isolated setup in the UI")
     must correspond to a real per-card checkbox whose value is what

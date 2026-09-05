@@ -135,6 +135,10 @@ section { display: block; }
 .precise-panel { margin-top: var(--sp-2); font-size: 12px; }
 .precise-panel summary { cursor: pointer; color: var(--text-faint); }
 .precise-panel .hint { white-space: pre-wrap; }
+.impairments-panel { margin-top: var(--sp-2); font-size: 12px; }
+.impairments-panel summary { cursor: pointer; color: var(--text-faint); }
+.impairments-panel label { display: block; margin-top: 4px; }
+.impairments-panel input[type="number"] { width: 8em; }
 .scenario-lib-row { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); align-items: center; }
 .scenario-lib-row input { flex: 1 1 100%; min-width: 0; width: auto; }
 .scenario-lib-row select { flex: 1 1 140px; min-width: 0; width: auto; }

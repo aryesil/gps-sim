@@ -67,6 +67,22 @@ window.addChannel = function () {
           <div id="${id}-sp3-status" class="hint"></div>
           <div id="${id}-sp3-compare-out" class="hint"></div>
         </details>
+        <details class="impairments-panel">
+          <summary>RF impairments (advanced)</summary>
+          <label><input type="checkbox" id="${id}-imp-enabled"> Apply impairments to generated IQ</label>
+          <div class="hint">Deterministic, seeded. Post-processes the gps-sdr-sim output; a clean copy is kept as gpssim.clean.bin. All-zero fields = no-op.</div>
+          <label>Seed <input id="${id}-imp-seed" type="number" value="0"></label>
+          <label>Carrier freq offset Hz <input id="${id}-imp-cfo" type="number" value="0"></label>
+          <label>Sample-rate error ppm <input id="${id}-imp-ppm" type="number" value="0"></label>
+          <label>Phase noise deg RMS <input id="${id}-imp-phn" type="number" value="0" min="0"></label>
+          <label>I/Q gain imbalance dB <input id="${id}-imp-gain" type="number" value="0"></label>
+          <label>I/Q phase error deg <input id="${id}-imp-iqphase" type="number" value="0"></label>
+          <label>DC offset I <input id="${id}-imp-dci" type="number" value="0"></label>
+          <label>DC offset Q <input id="${id}-imp-dcq" type="number" value="0"></label>
+          <label>Target SNR dB <input id="${id}-imp-snr" type="number" placeholder="none"></label>
+          <label>Clip fraction <input id="${id}-imp-clip" type="number" value="0" min="0" max="1" step="0.001"></label>
+          <label>Quantizer bits <input id="${id}-imp-bits" type="number" value="0" min="0" max="16"></label>
+        </details>
         <div id="${id}-size-estimate" class="hint"></div>
         <div class="scenario-lib-row">
           <input id="${id}-scenario-name" placeholder="scenario name" size="14">
@@ -431,6 +447,32 @@ function wireChannelActions(id) {
     out.textContent = [head, ...(d.warnings || []), rows].filter(Boolean).join('\n');
   };
 
+  // Fold the advanced RF-impairment panel into an `impairments` object only
+  // when the operator ticks the enable box. Untouched panel -> null -> the
+  // /api/generate body is byte-identical to before this panel existed.
+  // The raw AWGN-power knob is deliberately not exposed (it is mutually
+  // exclusive with snr_db server-side); leave the SNR field blank for no AWGN.
+  function _impairmentsBody() {
+    if (!document.getElementById(`${id}-imp-enabled`).checked) return null;
+    const num = (sfx) => Number(document.getElementById(`${id}-imp-${sfx}`).value) || 0;
+    const imp = {
+      enabled_flag: true,
+      seed: num('seed'),
+      cfo_hz: num('cfo'),
+      sample_rate_ppm: num('ppm'),
+      phase_noise_deg_rms: num('phn'),
+      iq_gain_db: num('gain'),
+      iq_phase_deg: num('iqphase'),
+      dc_i: num('dci'),
+      dc_q: num('dcq'),
+      clip_fraction: num('clip'),
+      quant_bits: num('bits'),
+    };
+    const snrRaw = document.getElementById(`${id}-imp-snr`).value.trim();
+    if (snrRaw !== '') imp.snr_db = Number(snrRaw);
+    return imp;
+  }
+
   document.getElementById(`${id}-btn-generate`).onclick = () => {
     const su = document.getElementById(`${id}-start-utc`).value;
     if (!su) return alert('set a start UTC');
@@ -445,6 +487,8 @@ function wireChannelActions(id) {
       ephemeris_mode: document.getElementById(`${id}-eph-mode`).value,
     };
     if (st.route) body.route = st.route;
+    const _imp = _impairmentsBody();
+    if (_imp) { body.impairments = _imp; body.random_seed = _imp.seed; }
     fetch('/api/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
