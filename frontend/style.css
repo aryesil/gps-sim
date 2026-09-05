@@ -159,6 +159,8 @@ section { display: block; }
 /* full-width ephemeris-comparison region (relocated out of the narrow sim column) */
 .compare-region { margin: var(--sp-3) 0; padding: var(--sp-3);
   border: 1px solid var(--border); border-radius: var(--radius); }
+.compare-region-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.compare-region-head h4 { margin: 0; }
 
 .compare-out { margin-top: 6px; }
 .compare-cards { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }

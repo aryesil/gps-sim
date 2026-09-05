@@ -121,7 +121,10 @@ window.addChannel = function () {
       </div>
     </div>
     <div class="compare-region" id="${id}-compare-region" hidden>
-      <h4>Ephemeris comparison — broadcast vs precise</h4>
+      <div class="compare-region-head">
+        <h4>Ephemeris comparison — broadcast vs precise</h4>
+        <button id="${id}-compare-close" type="button">Hide</button>
+      </div>
       <div id="${id}-sp3-compare-out" class="compare-out"></div>
     </div>
     <div class="channel-actions">
@@ -450,29 +453,44 @@ function wireChannelActions(id) {
     _refreshSp3Status();
   };
 
+  document.getElementById(`${id}-compare-close`).onclick = () => {
+    document.getElementById(`${id}-compare-region`).hidden = true;
+  };
+
   document.getElementById(`${id}-sp3-compare`).onclick = async () => {
     const su = document.getElementById(`${id}-start-utc`).value;
     if (!su) return alert('set a start UTC');
     const out = document.getElementById(`${id}-sp3-compare-out`);
-    document.getElementById(`${id}-compare-region`).hidden = false;
-    out.className = 'compare-out';
-    out.textContent = 'comparing…';
+    const region = document.getElementById(`${id}-compare-region`);
     // Sweep across the scenario duration so the result is a curve, not a
     // single-epoch snapshot; ~20 steps, at least 60 s apart.
     const dur = Math.max(0, Number(document.getElementById(`${id}-duration`).value) || 0);
     const step = Math.max(60, Math.round(dur / 20) || 60);
+    const reqBody = {
+      lat: st.map.latlng() ? st.map.latlng().lat : 0,
+      lon: st.map.latlng() ? st.map.latlng().lng : 0,
+      alt: 100, start_utc: su + ':00',
+      rinex_path: document.getElementById(`${id}-rinex-path`).value.trim(),
+      sweep_s: dur, step_s: step,
+    };
+    // Re-open from memory when nothing that affects the result changed.
+    const key = JSON.stringify(reqBody);
+    if (st._cmpKey === key && st._cmpData) {
+      region.hidden = false;
+      renderCompare(`${id}-sp3-compare-out`, st._cmpData);
+      return;
+    }
+    region.hidden = false;
+    out.className = 'compare-out';
+    out.textContent = 'comparing…';
     const r = await fetch('/api/precise/compare', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        lat: st.map.latlng() ? st.map.latlng().lat : 0,
-        lon: st.map.latlng() ? st.map.latlng().lng : 0,
-        alt: 100, start_utc: su + ':00',
-        rinex_path: document.getElementById(`${id}-rinex-path`).value.trim(),
-        sweep_s: dur, step_s: step,
-      }),
+      body: JSON.stringify(reqBody),
     });
     const d = await r.json();
     if (!r.ok) { out.textContent = 'error: ' + (d.detail || JSON.stringify(d)); return; }
+    st._cmpKey = key;
+    st._cmpData = d;
     renderCompare(`${id}-sp3-compare-out`, d);
   };
 

@@ -112,7 +112,7 @@ def test_compare_output_relocated_to_full_width_region_with_plain_language():
     cmp = (F / "compare.js").read_text()
     css = (F / "style.css").read_text()
     assert 'id="${id}-compare-region"' in js
-    assert 'document.getElementById(`${id}-compare-region`).hidden = false;' in js
+    assert 'region.hidden = false;' in js
     reg = js.index('id="${id}-compare-region"')
     assert reg > js.index('class="channel-top"')
     assert reg < js.index('id="${id}-sp3-compare-out"')          # out lives in the region
@@ -120,6 +120,12 @@ def test_compare_output_relocated_to_full_width_region_with_plain_language():
     assert 'compare-verdict' in cmp
     assert '% of one GPS code chip' in cmp
     assert "'position RMS'" not in cmp and "'range RMS'" not in cmp
+    # dismissible, and re-opens from memory when inputs are unchanged
+    assert '${id}-compare-close' in js
+    assert 'document.getElementById(`${id}-compare-region`).hidden = true;' in js
+    assert 'st._cmpKey === key && st._cmpData' in js
+    # charts drawn at display pixel density
+    assert 'setupCanvas' in cmp and 'devicePixelRatio' in cmp
 
 
 def test_long_help_paragraphs_replaced_by_hover_info_icons():

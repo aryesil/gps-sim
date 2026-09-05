@@ -247,7 +247,11 @@ row (not squeezed into the narrow sim column): a plain-language verdict
 a colour-graded recommendation, summary cards, and — in a responsive grid
 — a per-PRN radial/along/cross bar chart, a per-PRN clock-offset bar
 chart, and an interactive time-sweep line chart (per-PRN toggles, metric
-selector, hover readout). No RMS jargon and no text to scroll.
+selector, hover readout). Charts are drawn at the display's pixel density
+and stacked full width. No RMS jargon and no text to scroll. The region
+has a Hide button, and pressing Compare again with the position, time,
+RINEX path and sweep unchanged re-opens the last result from memory
+instead of recomputing.
 
 ---
 
