@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend import (config, ephemeris, geometry, scenario, generator,
                      inspector, receiver, lnav_display, transmit, live, trajectory, audit,
-                     scenario_lib, recording, receiver_feed, auth, ws_hub)
+                     scenario_lib, recording, receiver_feed, auth, ws_hub, device)
 
 @contextlib.asynccontextmanager
 async def _lifespan(app: FastAPI):
@@ -412,6 +412,34 @@ def stop_transmit(request: Request, body: dict | None = None):
 @app.get("/api/audit")
 def audit_log(limit: int = 200):
     return {"events": audit.read_events(limit)}
+
+
+@app.post("/api/device/connect")
+def device_connect(body: dict, request: Request):
+    """Open a standby control link to the SDR -- no RF until a transmit
+    actually starts (backend/device.py)."""
+    auth.require_operator(request)
+    uri = body.get("uri") or config.DEVICE_URI
+    try:
+        entry = device.connect(uri)
+    except device.DeviceError as e:
+        raise HTTPException(502, str(e))
+    audit.log_event("device_connect", uri=uri, info=entry.get("info", {}))
+    return entry
+
+
+@app.post("/api/device/disconnect")
+def device_disconnect(body: dict, request: Request):
+    auth.require_operator(request)
+    uri = body.get("uri") or config.DEVICE_URI
+    device.disconnect(uri)
+    audit.log_event("device_disconnect", uri=uri)
+    return {"uri": uri, "connected": False}
+
+
+@app.get("/api/device/status")
+def device_status():
+    return {"devices": device.status()}
 
 
 def _tee_spectrogram(chunks, sample_rate: float, on_row, track_prn: int | None = None,

@@ -27,6 +27,10 @@ window.addChannel = function () {
       <div class="col-hw">
         <h4>Hardware Config</h4>
         <label>Device URI <input id="${id}-uri" value="ip:192.168.2.1"></label>
+        <div class="device-row">
+          <button id="${id}-dev-connect" class="btn-secondary">Connect</button>
+          <span id="${id}-dev-status" class="dev-status dev-off">not connected</span>
+        </div>
         <label>LO Hz <input id="${id}-lo" value="1575420000"></label>
         <label>TX gain dB <input id="${id}-gain" type="number" value="-50"></label>
         <label><input type="checkbox" id="${id}-tx-dryrun"> Dry run (no RF)</label>
@@ -195,6 +199,7 @@ window.addChannel = function () {
   attachSpectrumHover(`${id}-iq-spectrum`, `${id}-iq-spectrum-readout`);
 
   wireChannelActions(id);   // defined in Step 2
+  if (window.deviceUI) deviceUI.wireChannel(id);
   return id;
 };
 

@@ -47,6 +47,7 @@ window.openConfirmModal = function (onConfirm) {
 window.addEventListener('DOMContentLoaded', () => {
   addChannel();   // start with one channel card
   document.getElementById('btn-add-channel').onclick = () => addChannel();
+  if (window.deviceUI) deviceUI.refreshGlobal();
   // "Start All": each card owns its own start logic (validation, body
   // construction, SSE pump), so fan out to those buttons rather than
   // duplicating it here.
