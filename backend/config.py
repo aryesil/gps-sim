@@ -47,6 +47,21 @@ DEVICE_URI = _str("DEVICE_URI", "ip:192.168.2.1")
 DEFAULT_SAMPLE_RATE = _float("DEFAULT_SAMPLE_RATE", 2.6e6)
 DEFAULT_FORMAT = _str("DEFAULT_FORMAT", "int16")
 
+# Role-based access control: API_KEYS_JSON='{"<key>": "operator"|"viewer"}'.
+# Empty (the default) means auth is disabled entirely -- a single-operator
+# rig with no configured keys behaves exactly as before RBAC existed.
+def _api_keys() -> dict:
+    raw = os.environ.get("API_KEYS_JSON", "")
+    if not raw.strip():
+        return {}
+    import json
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+
+API_KEYS = _api_keys()
+
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)

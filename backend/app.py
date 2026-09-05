@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend import (config, ephemeris, geometry, scenario, generator,
                      inspector, receiver, lnav_display, transmit, live, trajectory, audit,
-                     scenario_lib, recording, receiver_feed)
+                     scenario_lib, recording, receiver_feed, auth)
 
 app = FastAPI(title="GPS L1 C/A Signal Simulator")
 
@@ -308,7 +308,8 @@ def lnav(prn: int, outdir: str):
 
 
 @app.post("/api/transmit")
-def start_transmit(body: dict):
+def start_transmit(body: dict, request: Request):
+    auth.require_operator(request)
     if not config.ALLOW_TX or not body.get("confirm_isolated"):
         raise HTTPException(403, "transmit disabled: needs ALLOW_TX and confirm_isolated")
     slot = _acquire_tx_slot()
@@ -358,7 +359,8 @@ def start_transmit(body: dict):
 
 
 @app.post("/api/transmit/stop")
-def stop_transmit(body: dict | None = None):
+def stop_transmit(request: Request, body: dict | None = None):
+    auth.require_viewer_or_operator(request)  # a stop is safety-positive: any role may issue it
     slot = (body or {}).get("slot")
     if slot is None:
         occupied = [s for s, occ in _tx_slots.items() if occ is not None]
@@ -420,7 +422,8 @@ def _apply_timeline_step(session: live.LiveSession, step: dict) -> None:
 
 
 @app.post("/api/live/start")
-def live_start(body: dict):
+def live_start(body: dict, request: Request):
+    auth.require_operator(request)
     if not config.ALLOW_TX or not body.get("confirm_isolated"):
         raise HTTPException(403, "transmit disabled: needs ALLOW_TX and confirm_isolated")
     slot = _acquire_tx_slot()
@@ -536,7 +539,8 @@ def recording_replay(name: str, speed: float = 1.0):
 
 
 @app.post("/api/receiver/listen")
-def receiver_listen(body: dict):
+def receiver_listen(body: dict, request: Request):
+    auth.require_operator(request)
     try:
         receiver_feed.start_listen(body["mode"], **{k: v for k, v in body.items() if k != "mode"})
     except (KeyError, ValueError) as e:
@@ -545,7 +549,8 @@ def receiver_listen(body: dict):
 
 
 @app.post("/api/receiver/stop_listen")
-def receiver_stop_listen():
+def receiver_stop_listen(request: Request):
+    auth.require_operator(request)
     receiver_feed.stop_listen()
     return {"listening": False}
 
@@ -556,9 +561,10 @@ def receiver_fix_live():
 
 
 @app.post("/api/receiver/inject")
-def receiver_inject(body: dict):
+def receiver_inject(body: dict, request: Request):
     """Feed one NMEA sentence directly, bypassing serial/UDP -- for
     testing the closed-loop UI without a physical receiver attached."""
+    auth.require_operator(request)
     parsed = receiver_feed.inject(body["sentence"])
     if parsed is None:
         raise HTTPException(400, "unrecognized or malformed NMEA sentence")
@@ -573,21 +579,24 @@ def _session_for_slot(slot: str) -> live.LiveSession:
 
 
 @app.post("/api/live/jog")
-def live_jog(body: dict):
+def live_jog(body: dict, request: Request):
+    auth.require_operator(request)
     session = _session_for_slot(body["slot"])
     session.jog(body["direction"], float(body["distance_m"]))
     return {"llh": session.state.llh}
 
 
 @app.post("/api/live/time_shift")
-def live_time_shift(body: dict):
+def live_time_shift(body: dict, request: Request):
+    auth.require_operator(request)
     s = _session_for_slot(body["slot"])
     s.shift_time(body["field"], float(body["delta"]))
     return {"time_offset_s": s.state.time_offset_s}
 
 
 @app.post("/api/live/stop")
-def live_stop(body: dict):
+def live_stop(body: dict, request: Request):
+    auth.require_viewer_or_operator(request)  # a stop is safety-positive: any role may issue it
     slot = body["slot"]
     occ = _tx_slots.get(slot)
     if occ:
@@ -599,7 +608,8 @@ def live_stop(body: dict):
 
 
 @app.post("/api/trajectory/save")
-def trajectory_save(body: dict):
+def trajectory_save(body: dict, request: Request):
+    auth.require_operator(request)
     try:
         trajectory.save(body["name"], body["waypoints"])
     except KeyError as e:
@@ -623,7 +633,8 @@ def trajectory_load(name: str):
 
 
 @app.post("/api/scenario/save")
-def scenario_save(body: dict):
+def scenario_save(body: dict, request: Request):
+    auth.require_operator(request)
     try:
         scenario_lib.save(body["name"], body.get("params", {}))
     except KeyError as e:

@@ -1,4 +1,38 @@
 // frontend/app.js (trimmed)
+
+// RBAC: if the operator has an API key configured (backend/auth.py,
+// disabled by default), attach it as X-API-Key to every request this
+// page makes, rather than threading the header through every fetch()
+// call site individually.
+(function () {
+  let key = null;
+  try { key = localStorage.getItem('gpssim_api_key'); } catch (e) { /* private mode etc */ }
+  if (!key) return;
+  const origFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    init = init || {};
+    init.headers = new Headers(init.headers || {});
+    init.headers.set('X-API-Key', key);
+    return origFetch(input, init);
+  };
+})();
+
+window.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('btn-api-key');
+  if (!btn) return;
+  btn.onclick = () => {
+    let current = '';
+    try { current = localStorage.getItem('gpssim_api_key') || ''; } catch (e) { /* ignore */ }
+    const next = prompt('Operator/viewer API key (leave blank to clear; RBAC is a no-op if the backend has no keys configured):', current);
+    if (next === null) return;
+    try {
+      if (next.trim()) localStorage.setItem('gpssim_api_key', next.trim());
+      else localStorage.removeItem('gpssim_api_key');
+    } catch (e) { /* ignore */ }
+    location.reload();  // simplest way to re-apply the fetch() patch above
+  };
+});
+
 window.openConfirmModal = function (onConfirm) {
   const modal = document.getElementById('confirm-modal');
   const input = document.getElementById('confirm-modal-input');

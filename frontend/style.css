@@ -77,6 +77,11 @@ button.btn-secondary { background: transparent; }
   font-weight: 700;
   letter-spacing: 0.08em;
   font-size: 12px;
+  position: relative;
+}
+#btn-api-key {
+  position: absolute; right: var(--sp-4); top: 50%; transform: translateY(-50%);
+  background: none; border: none; cursor: pointer; font-size: 14px; padding: 0;
 }
 #rf-status-bar.rf-off { background: var(--surface-2); color: var(--text-muted); }
 #rf-status-bar.rf-on {
