@@ -1,3 +1,3 @@
 // backend/synth/native/version.cpp
 #include "abi.h"
-int synth_abi_version(void) { return 5; }
+int synth_abi_version(void) { return 6; }

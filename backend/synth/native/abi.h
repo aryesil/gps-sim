@@ -28,6 +28,10 @@ void synth_sat_state(const KeplerEph *e, double t_gps,
 // unit-amplitude complex carrier at freq_hz for sample rate fs, from a single
 // phase-continuous NCO starting at phase 0.
 void synth_debug_carrier(double freq_hz, double fs, int n, float *iq_interleaved);
+// Debug shim: fills out[0..n-1] with nav symbols ({+1,-1}) at 50 Hz nav-bit rate.
+// mode: 0=Zero (always +1), 1=KnownFrame (repeats bits[0..nbits-1]).
+void synth_debug_nav(int mode, const int8_t *bits, int nbits,
+                     double fs, int n, int8_t *out);
 #ifdef __cplusplus
 }
 #endif
