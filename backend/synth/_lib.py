@@ -4,7 +4,7 @@ import ctypes
 import pathlib
 import sys
 
-ABI_VERSION = 2
+ABI_VERSION = 3
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
@@ -47,3 +47,13 @@ def native_constants() -> dict[str, float]:
     keys = ["l1_hz", "ca_chip_hz", "ca_code_len", "nav_bit_hz", "mu",
             "omega_e_dot", "c", "f_rel", "gps_utc_leap"]
     return dict(zip(keys, list(buf)))
+
+
+def ca_code(prn: int) -> list[int]:
+    lib = load_lib()
+    lib.synth_ca_code.restype = ctypes.c_int
+    lib.synth_ca_code.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_int8), ctypes.c_int]
+    buf = (ctypes.c_int8 * 1023)()
+    if lib.synth_ca_code(prn, buf, 1023) != 0:
+        raise ValueError(f"bad prn {prn}")
+    return list(buf)
