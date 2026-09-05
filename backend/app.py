@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend import (config, ephemeris, geometry, scenario, generator,
                      inspector, receiver, lnav_display, transmit, live, trajectory, audit,
-                     scenario_lib)
+                     scenario_lib, recording)
 
 app = FastAPI(title="GPS L1 C/A Signal Simulator")
 
@@ -445,6 +445,7 @@ def live_start(body: dict):
     max_duration_s = body.get("max_duration_s")
     max_duration_s = float(max_duration_s) if max_duration_s else None
     timeline = sorted(body.get("timeline") or [], key=lambda s: s["at_s"])
+    recorder = recording.RecordingWriter(slot) if body.get("record") else None
 
     def events():
         try:
@@ -470,17 +471,23 @@ def live_start(body: dict):
                            progress_cb=cb, cancel=_tx_slots[slot]["stop"],
                            chunk_source=chunk_source))
             th.start()
+
+            def emit(payload: dict) -> str:
+                if recorder is not None:
+                    recorder.append(payload)
+                return f"data: {json.dumps(payload)}\n\n"
+
             timeline_idx = 0
             while th.is_alive() or q:
                 while q:
-                    yield f"data: {json.dumps({**q.pop(0), 'slot': slot})}\n\n"
+                    yield emit({**q.pop(0), "slot": slot})
                 elapsed = time.monotonic() - started
                 while timeline_idx < len(timeline) and timeline[timeline_idx]["at_s"] <= elapsed:
                     step = timeline[timeline_idx]
                     try:
                         _apply_timeline_step(session, step)
                         audit.log_event("timeline_step", slot=slot, step=step)
-                        yield f"data: {json.dumps({'timeline_step': step, 'slot': slot})}\n\n"
+                        yield emit({"timeline_step": step, "slot": slot})
                     except Exception as e:
                         audit.log_event("timeline_step_error", slot=slot, step=step, error=str(e))
                     timeline_idx += 1
@@ -493,11 +500,39 @@ def live_start(body: dict):
                 th.join(timeout=0.2)
             th.join(timeout=2.0)
             audit.log_event("live_finished", slot=slot)
-            yield f"data: {json.dumps({'finished': True, 'slot': slot})}\n\n"
+            yield emit({"finished": True, "slot": slot})
         finally:
+            if recorder is not None:
+                recorder.close()
+                audit.log_event("recording_saved", slot=slot, name=recorder.name)
             _release_tx_slot(slot)
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+@app.get("/api/recording/list")
+def recording_list():
+    return {"names": recording.list_names()}
+
+
+@app.get("/api/recording/replay")
+def recording_replay(name: str, speed: float = 1.0):
+    try:
+        events_ = recording.read_events(name)
+    except FileNotFoundError:
+        raise HTTPException(404, f"no recording named {name!r}")
+
+    def gen():
+        prev_t = 0.0
+        for row in events_:
+            t = row.pop("t", 0.0)
+            gap = max(0.0, (t - prev_t) / max(speed, 1e-6))
+            if gap:
+                time.sleep(min(gap, 5.0))  # cap so a bad recording can't stall replay
+            prev_t = t
+            yield f"data: {json.dumps(row)}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 def _session_for_slot(slot: str) -> live.LiveSession:

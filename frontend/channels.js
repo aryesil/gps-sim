@@ -31,6 +31,11 @@ window.addChannel = function () {
         <label>TX gain dB <input id="${id}-gain" type="number" value="-50"></label>
         <label><input type="checkbox" id="${id}-tx-dryrun"> Dry run (no RF)</label>
         <label>Auto-stop after (s) <input type="number" id="${id}-max-duration" placeholder="none" min="1"></label>
+        <label><input type="checkbox" id="${id}-record"> Record this session</label>
+        <div class="scenario-lib-row">
+          <select id="${id}-replay-select"><option value="">Replay recording…</option></select>
+          <button id="${id}-replay-play">Play</button>
+        </div>
         <input type="checkbox" id="${id}-tx-confirm" hidden>
         <div class="hint">Isolated setup confirmed by typing TRANSMIT at Start. Auto-stop is a fail-safe: leave blank to run until stopped manually.</div>
       </div>
@@ -197,6 +202,43 @@ function wireChannelActions(id) {
       d.names.map(n => `<option value="${n}">${n}</option>`).join('');
   }
   _refreshScenarioOptions();
+
+  // Session replay: feed a previously recorded session's SSE stream back
+  // through the same spectrogram/C-N0/log renderers a live transmit uses.
+  // Read-only playback -- never touches _tx_slots or the badge/txSlot
+  // live-session state, so it can run even while the channel is idle.
+  async function _refreshReplayOptions() {
+    const sel = document.getElementById(`${id}-replay-select`);
+    const r = await fetch('/api/recording/list');
+    if (!r.ok) return;
+    const d = await r.json();
+    sel.innerHTML = '<option value="">Replay recording…</option>' +
+      d.names.map(n => `<option value="${n}">${n}</option>`).join('');
+  }
+  _refreshReplayOptions();
+
+  document.getElementById(`${id}-replay-play`).onclick = async () => {
+    const name = document.getElementById(`${id}-replay-select`).value;
+    if (!name) return alert('pick a recording to replay first');
+    logLine(`Channel ${id}: replaying "${name}"`, 'info');
+    const r = await fetch(`/api/recording/replay?name=${encodeURIComponent(name)}&speed=1`);
+    if (!r.ok) return alert('replay failed: HTTP ' + r.status);
+    const rd = r.body.getReader(), dec = new TextDecoder();
+    (function pump() {
+      rd.read().then(({ value, done }) => {
+        if (done) return;
+        dec.decode(value).split('\n\n').forEach(chunk => {
+          const line = chunk.replace(/^data: /, '').trim(); if (!line) return;
+          const msg = JSON.parse(line);
+          if (msg.spectrogram_db) pushSpectrogramColumn(`${id}-spectrogram`, msg.spectrogram_db);
+          if (msg.cn0_db !== undefined) pushCn0Sample(`${id}-cn0-trend`, msg.cn0_db);
+          if (msg.timeline_step) logLine(`Channel ${id} replay: ${JSON.stringify(msg.timeline_step)}`, 'info');
+          if (msg.finished) logLine(`Channel ${id}: replay "${name}" finished`, 'info');
+        });
+        pump();
+      }).catch(() => {});
+    })();
+  };
 
   document.getElementById(`${id}-scenario-save`).onclick = async () => {
     const name = document.getElementById(`${id}-scenario-name`).value.trim();
@@ -379,6 +421,7 @@ function wireChannelActions(id) {
     const maxDurInput = document.getElementById(`${id}-max-duration`);
     if (maxDurInput && maxDurInput.value) body.max_duration_s = Number(maxDurInput.value);
     if (st.timeline.length) body.timeline = st.timeline;
+    if (document.getElementById(`${id}-record`).checked) body.record = true;
     const r = await fetch('/api/live/start', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
@@ -410,7 +453,10 @@ function wireChannelActions(id) {
           if (msg.spectrogram_db) pushSpectrogramColumn(`${id}-spectrogram`, msg.spectrogram_db);
           if (msg.cn0_db !== undefined) pushCn0Sample(`${id}-cn0-trend`, msg.cn0_db);
           if (msg.timeline_step) logLine(`Channel ${id} timeline: ${JSON.stringify(msg.timeline_step)}`, 'info');
-          if (msg.finished) { badge.textContent = 'STOPPED'; badge.classList.remove('badge-live'); disableLiveTabs(id); }
+          if (msg.finished) {
+            badge.textContent = 'STOPPED'; badge.classList.remove('badge-live'); disableLiveTabs(id);
+            if (document.getElementById(`${id}-record`).checked) _refreshReplayOptions();
+          }
         });
         pump();
       }).catch(() => {
