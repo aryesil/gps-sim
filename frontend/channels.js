@@ -88,6 +88,12 @@ window.addChannel = function () {
         </details>
         <details class="models-panel">
           <summary>Propagation &amp; receiver models (advanced) <span class="info" title="Deterministic, RNG-free. These always shape the Preview / truth observables. They alter the generated IQ only when 'apply to IQ' is ticked: ionosphere then rides gps-sdr-sim's own broadcast Klobuchar, and a quasi-static receiver-clock + multipath channel is convolved onto the composite signal (clean copy kept as gpssim.prechannel.bin). Troposphere stays truth-only. All 'off' = no change.">i</span></summary>
+          <label>Preset <select id="${id}-mdl-preset">
+            <option value="manual">Custom (set fields below)</option>
+            <option value="open-sky">Open sky — mid-latitude, clean</option>
+            <option value="urban-canyon">Urban canyon — strong multipath + clock sawtooth</option>
+            <option value="foliage-weak">Foliage / weak signal — one reflection, drifting clock</option>
+          </select><span class="info" title="Fills the model fields with a representative scenario. 'Apply to IQ' is left as you set it. Editing any field reverts to Custom. Illustrative values, not a site-calibrated model.">i</span></label>
           <label>Ionosphere <select id="${id}-mdl-iono">
             <option value="off">off</option><option value="klobuchar">klobuchar</option>
           </select></label>
@@ -556,6 +562,51 @@ function wireChannelActions(id) {
   // Fold the propagation / receiver-model panel into the request body.
   // Every sub-model defaults to "off"; the whole object is omitted when
   // nothing is enabled, so an untouched panel leaves the request as it was.
+  // Propagation / receiver-model presets. Representative field scenarios,
+  // not site-calibrated models -- a starting point the operator tunes.
+  // Selecting one fills the fields; "apply to IQ" is left untouched;
+  // hand-editing any field reverts the selector to "manual".
+  const MDL_PRESETS = {
+    'open-sky': {
+      iono: 'klobuchar', tropo: 'saastamoinen', rxclk: 'poly',
+      'rxclk-bias': 1e-7, 'rxclk-drift': 1e-9, 'rxclk-driftrate': 0,
+      'rxclk-sawamp': 0, 'rxclk-sawper': 0, mp: 'off',
+      'mp1-delay': 0, 'mp1-amp': 0, 'mp1-phase': 3.14159,
+      'mp2-delay': 0, 'mp2-amp': 0, 'mp2-phase': 3.14159,
+    },
+    'urban-canyon': {
+      iono: 'klobuchar', tropo: 'saastamoinen', rxclk: 'poly',
+      'rxclk-bias': 5e-7, 'rxclk-drift': 2e-9, 'rxclk-driftrate': 1e-12,
+      'rxclk-sawamp': 5e-9, 'rxclk-sawper': 1.0, mp: 'specular',
+      'mp1-delay': 15, 'mp1-amp': 0.5, 'mp1-phase': 3.14159,
+      'mp2-delay': 45, 'mp2-amp': 0.3, 'mp2-phase': 3.14159,
+    },
+    'foliage-weak': {
+      iono: 'klobuchar', tropo: 'saastamoinen', rxclk: 'poly',
+      'rxclk-bias': 2e-7, 'rxclk-drift': 5e-9, 'rxclk-driftrate': 0,
+      'rxclk-sawamp': 0, 'rxclk-sawper': 0, mp: 'specular',
+      'mp1-delay': 8, 'mp1-amp': 0.35, 'mp1-phase': 3.14159,
+      'mp2-delay': 0, 'mp2-amp': 0, 'mp2-phase': 3.14159,
+    },
+  };
+  const _mdlPresetSel = document.getElementById(`${id}-mdl-preset`);
+  _mdlPresetSel.onchange = () => {
+    const p = MDL_PRESETS[_mdlPresetSel.value];
+    if (!p) return;
+    for (const [sfx, v] of Object.entries(p)) {
+      const f = document.getElementById(`${id}-mdl-${sfx}`);
+      if (f) f.value = v;
+    }
+  };
+  ['iono', 'tropo', 'rxclk', 'rxclk-bias', 'rxclk-drift', 'rxclk-driftrate',
+   'rxclk-sawamp', 'rxclk-sawper', 'mp', 'mp1-delay', 'mp1-amp', 'mp1-phase',
+   'mp2-delay', 'mp2-amp', 'mp2-phase', 'to-iq'].forEach(sfx => {
+    const f = document.getElementById(`${id}-mdl-${sfx}`);
+    ['input', 'change'].forEach(ev => f.addEventListener(ev, () => {
+      _mdlPresetSel.value = 'manual';
+    }));
+  });
+
   function _channelModelsBody() {
     const val = (sfx) => document.getElementById(`${id}-mdl-${sfx}`).value;
     const num = (sfx) => Number(document.getElementById(`${id}-mdl-${sfx}`).value) || 0;

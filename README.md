@@ -518,7 +518,11 @@ feeds `atmosphere` / `receiver_clock` / `multipath` and a `models_to_iq`
 flag into `/api/preview` and `/api/generate`. An untouched panel adds
 nothing to either request. `/api/preview` returns a `channel_models`
 summary (per-epoch iono/tropo metres, receiver-clock offset, multipath
-bias) that the panel renders under the controls.
+bias) that the panel renders under the controls. A **Preset** selector —
+*Open sky*, *Urban canyon*, *Foliage / weak signal* — fills the model
+fields with a representative scenario (`apply to IQ` is left as set);
+hand-editing any field reverts it to *Custom*. Presets are frontend-only
+starting points, not a site-calibrated model.
 
 #### Channel models in the IQ
 
