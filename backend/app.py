@@ -14,7 +14,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend import (config, ephemeris, geometry, scenario, generator,
-                     inspector, receiver, lnav_display, transmit, live, trajectory, audit)
+                     inspector, receiver, lnav_display, transmit, live, trajectory, audit,
+                     scenario_lib)
 
 app = FastAPI(title="GPS L1 C/A Signal Simulator")
 
@@ -527,6 +528,30 @@ def trajectory_load(name: str):
     try:
         return {"waypoints": trajectory.load(name)}
     except trajectory.TrajectoryError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.post("/api/scenario/save")
+def scenario_save(body: dict):
+    try:
+        scenario_lib.save(body["name"], body.get("params", {}))
+    except KeyError as e:
+        raise HTTPException(400, f"missing field: {e}")
+    except scenario_lib.ScenarioLibError as e:
+        raise HTTPException(400, str(e))
+    return {"saved": body["name"]}
+
+
+@app.get("/api/scenario/list")
+def scenario_list():
+    return {"names": scenario_lib.list_names()}
+
+
+@app.get("/api/scenario/load")
+def scenario_load(name: str):
+    try:
+        return {"params": scenario_lib.load(name)}
+    except scenario_lib.ScenarioLibError as e:
         raise HTTPException(404, str(e))
 
 

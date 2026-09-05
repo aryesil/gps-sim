@@ -44,6 +44,11 @@ window.addChannel = function () {
         <label>Format <select id="${id}-fmt"><option>int16</option><option>int8</option></select></label>
         <label>RINEX <input id="${id}-rinex-path" value="AUTO" size="26"></label>
         <div id="${id}-size-estimate" class="hint"></div>
+        <div class="scenario-lib-row">
+          <input id="${id}-scenario-name" placeholder="scenario name" size="14">
+          <button id="${id}-scenario-save">Save</button>
+          <select id="${id}-scenario-load"><option value="">Load saved…</option></select>
+        </div>
       </div>
       <div class="col-map">
         <h4>Reference Position</h4>
@@ -165,6 +170,59 @@ function wireChannelActions(id) {
     document.getElementById(elId).addEventListener('change', _updateSizeEstimate);
   });
   _updateSizeEstimate();
+
+  // Scenario library: save/load this channel's whole config by name, the
+  // same file-per-name pattern as trajectory save/load (backend/scenario_lib.py).
+  async function _refreshScenarioOptions() {
+    const sel = document.getElementById(`${id}-scenario-load`);
+    const r = await fetch('/api/scenario/list');
+    if (!r.ok) return;
+    const d = await r.json();
+    sel.innerHTML = '<option value="">Load saved…</option>' +
+      d.names.map(n => `<option value="${n}">${n}</option>`).join('');
+  }
+  _refreshScenarioOptions();
+
+  document.getElementById(`${id}-scenario-save`).onclick = async () => {
+    const name = document.getElementById(`${id}-scenario-name`).value.trim();
+    if (!name) return alert('enter a scenario name first');
+    const ll = st.map.latlng();
+    const params = {
+      lat: ll ? ll.lat : 0, lon: ll ? ll.lng : 0, alt: 100,
+      start_utc: document.getElementById(`${id}-start-utc`).value + ':00',
+      duration_s: Number(document.getElementById(`${id}-duration`).value),
+      sample_rate: Number(document.getElementById(`${id}-rate`).value),
+      sample_format: document.getElementById(`${id}-fmt`).value,
+      rinex_path: document.getElementById(`${id}-rinex-path`).value.trim() || 'AUTO',
+      lo_hz: Number(document.getElementById(`${id}-lo`).value),
+      tx_gain_db: Number(document.getElementById(`${id}-gain`).value),
+    };
+    const r = await fetch('/api/scenario/save', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, params }),
+    });
+    if (!r.ok) { const d = await r.json(); return alert('save failed: ' + (d.detail || '')); }
+    logLine(`Channel ${id}: saved scenario "${name}"`, 'info');
+    _refreshScenarioOptions();
+  };
+
+  document.getElementById(`${id}-scenario-load`).onchange = async (ev) => {
+    const name = ev.target.value;
+    if (!name) return;
+    const r = await fetch(`/api/scenario/load?name=${encodeURIComponent(name)}`);
+    if (!r.ok) { const d = await r.json(); return alert('load failed: ' + (d.detail || '')); }
+    const { params } = await r.json();
+    if (params.start_utc) document.getElementById(`${id}-start-utc`).value = params.start_utc.slice(0, 16);
+    if (params.duration_s !== undefined) document.getElementById(`${id}-duration`).value = params.duration_s;
+    if (params.sample_rate !== undefined) document.getElementById(`${id}-rate`).value = params.sample_rate;
+    if (params.sample_format) document.getElementById(`${id}-fmt`).value = params.sample_format;
+    if (params.rinex_path) document.getElementById(`${id}-rinex-path`).value = params.rinex_path;
+    if (params.lo_hz !== undefined) document.getElementById(`${id}-lo`).value = params.lo_hz;
+    if (params.tx_gain_db !== undefined) document.getElementById(`${id}-gain`).value = params.tx_gain_db;
+    if (params.lat !== undefined && params.lon !== undefined) st.map.setLatlng(params.lat, params.lon);
+    _updateSizeEstimate();
+    logLine(`Channel ${id}: loaded scenario "${name}"`, 'info');
+  };
 
   document.getElementById(`${id}-btn-preview`).onclick = async () => {
     const su = document.getElementById(`${id}-start-utc`).value;

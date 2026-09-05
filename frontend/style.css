@@ -113,6 +113,8 @@ section { display: block; }
 
 .warn { color: var(--warning); font-size: 12px; margin: 0 0 var(--sp-3) 0; }
 .hint { color: var(--text-faint); font-size: 12px; }
+.scenario-lib-row { display: flex; gap: var(--sp-2); margin-top: var(--sp-2); align-items: center; }
+.scenario-lib-row input { flex: 1; min-width: 0; }
 
 table { border-collapse: collapse; width: 100%; margin: var(--sp-2) 0; }
 td, th { border: 1px solid var(--border); padding: 3px 8px; font-size: 11px; text-align: right; }

@@ -22,6 +22,17 @@ window.gpsMap = (function () {
       onPick: (f) => { inst.cb = f; },
       latlng: () => inst.marker ? inst.marker.getLatLng() : null,
       invalidateSize: () => m.invalidateSize(),
+      // Programmatic placement (e.g. loading a saved scenario) -- same
+      // marker-replace + pan the click handler above does, just without
+      // a click event driving it.
+      setLatlng: (lat, lon) => {
+        if (inst.marker) inst.marker.remove();
+        inst.marker = L.marker([lat, lon]).addTo(m);
+        m.panTo([lat, lon]);
+        const readout = document.getElementById(`${mapElementId}-readout`);
+        if (readout) readout.textContent = `RX ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+        if (inst.cb) inst.cb(lat, lon);
+      },
     };
     instances[mapElementId] = inst;
     return inst.handle;
