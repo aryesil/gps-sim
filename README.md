@@ -9,8 +9,7 @@ PlutoSDR-class SDR — into a cable, never over the air.
 The web UI is modelled on commercial multi-channel GNSS constellation
 simulators: up to two independent transmit channels, a map-driven trajectory
 builder, a persistent audit log, and a live "what the real receiver reports"
-feedback panel. Reference screenshots of the layout it targets are in
-[`Example-sim/`](Example-sim/).
+feedback panel.
 
 > ⚠️ **RF safety first.** Transmit is disabled by default. Read
 > [Safety](#safety) before enabling it. This tool is for signal generation
