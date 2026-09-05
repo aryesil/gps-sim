@@ -1,12 +1,27 @@
 # tests/test_app_live.py
 import json
 
+import numpy as np
 from fastapi.testclient import TestClient
 
 from backend import config
-from backend.app import app
+from backend.app import _tee_spectrogram, app
 
 client = TestClient(app)
+
+
+def test_tee_spectrogram_forwards_chunks_unchanged_and_emits_one_row_per_chunk():
+    chunks = [np.ones(512, dtype=np.complex64) * (k + 1) for k in range(3)]
+    rows = []
+    out = list(_tee_spectrogram(iter(chunks), sample_rate=2_600_000.0,
+                                 on_row=lambda freqs, db: rows.append((freqs, db))))
+    assert len(out) == 3
+    for orig, forwarded in zip(chunks, out):
+        assert np.array_equal(orig, forwarded)
+    assert len(rows) == 3
+    freqs, db = rows[0]
+    assert len(freqs) == len(db) == 256  # nfft passed to inspector.spectrum
+    assert np.all(np.isfinite(db))
 
 
 def test_live_start_needs_allow_tx_and_confirm(monkeypatch):

@@ -366,6 +366,19 @@ def stop_transmit(body: dict | None = None):
     return {"stopped": True}
 
 
+def _tee_spectrogram(chunks, sample_rate: float, on_row):
+    """Wrap a live-session chunk source: forward every IQ chunk unchanged
+    to the caller (transmit.stream's hardware push) while also handing
+    each chunk's spectrum snapshot to on_row -- one FFT column per
+    ~1s segment, computed with the existing inspector.spectrum() (no new
+    DSP, same 4096-sample Hanning-windowed FFT /api/iqplot already uses,
+    just cheaper: nfft=256 is enough resolution for a live waterfall)."""
+    for chunk in chunks:
+        freqs, db = inspector.spectrum(chunk, sample_rate, nfft=256)
+        on_row(freqs, db)
+        yield chunk
+
+
 @app.post("/api/live/start")
 def live_start(body: dict):
     if not config.ALLOW_TX or not body.get("confirm_isolated"):
@@ -395,11 +408,15 @@ def live_start(body: dict):
             def cb(d):
                 d["fraction"] = None  # unbounded live stream -- no total to divide by
                 q.append(d)
+            def on_row(freqs, db):
+                q.append({"spectrogram_freq_hz": freqs.tolist(),
+                          "spectrogram_db": db.tolist()})
+            chunk_source = _tee_spectrogram(session.segments(), req.sample_rate, on_row)
             th = threading.Thread(
                 target=transmit.stream,
                 kwargs=dict(params=params, dry_run=body.get("dry_run", False),
                            progress_cb=cb, cancel=_tx_slots[slot]["stop"],
-                           chunk_source=session.segments()))
+                           chunk_source=chunk_source))
             th.start()
             while th.is_alive() or q:
                 while q:

@@ -110,6 +110,32 @@ window.drawCorrelationBars = function (canvasId, rows) {
   });
 };
 
+// Live spectrogram (waterfall): each call scrolls the canvas one column
+// left and paints a new heat-mapped column at the right edge from the
+// per-segment FFT the backend streams over /api/live/start's SSE.
+function _heatColor(v) {
+  v = Math.max(0, Math.min(1, v));
+  const r = Math.round(255 * Math.min(1, v * 2));
+  const b = Math.round(255 * Math.min(1, (1 - v) * 2));
+  const g = Math.round(255 * (1 - Math.abs(v - 0.5) * 2));
+  return `rgb(${r},${g},${b})`;
+}
+
+window.pushSpectrogramColumn = function (canvasId, db) {
+  const c = document.getElementById(canvasId);
+  if (!c) return;
+  const g = c.getContext('2d');
+  g.drawImage(c, 1, 0, c.width - 1, c.height, 0, 0, c.width - 1, c.height);
+  const lo = Math.min(...db), hi = Math.max(...db);
+  const span = Math.max(1e-6, hi - lo);
+  const h = c.height, n = db.length;
+  for (let y = 0; y < h; y++) {
+    const idx = Math.min(n - 1, Math.floor((1 - y / h) * (n - 1)));
+    g.fillStyle = _heatColor((db[idx] - lo) / span);
+    g.fillRect(c.width - 1, y, 1, 1);
+  }
+};
+
 window.loadIqPlots = async function (channelId, outdir) {
   const r = await fetch(`/api/iqplot?outdir=${outdir}`);
   if (!r.ok) return;

@@ -70,6 +70,9 @@ window.addChannel = function () {
           <canvas id="${id}-iq-constellation" width="180" height="180"></canvas>
           <canvas id="${id}-iq-spectrum" width="400" height="120"></canvas>
           <div id="${id}-iq-spectrum-readout"></div>
+          <h4>Live Spectrogram</h4>
+          <canvas id="${id}-spectrogram" width="400" height="120"></canvas>
+          <div class="hint">Fills while this channel is transmitting live -- one column per ~1s segment.</div>
         </div>
         <div class="tab-content" data-tab="satellites" hidden>
           <canvas id="${id}-skyplot" width="260" height="260"></canvas>
@@ -290,6 +293,7 @@ function wireChannelActions(id) {
           const line = chunk.replace(/^data: /, '').trim(); if (!line) return;
           const msg = JSON.parse(line);
           if (msg.slot && !channelState(id).txSlot) enableLiveTabs(id, msg.slot);
+          if (msg.spectrogram_db) pushSpectrogramColumn(`${id}-spectrogram`, msg.spectrogram_db);
           if (msg.finished) { badge.textContent = 'STOPPED'; badge.classList.remove('badge-live'); disableLiveTabs(id); }
         });
         pump();
