@@ -43,3 +43,15 @@ def test_generate_refuses_when_disk_too_small(monkeypatch):
         "start_utc": "2026-09-03T06:00:00", "duration_s": 300,
         "sample_rate": 2.6e6, "sample_format": "int16"})
     assert r.status_code == 507
+
+
+def test_generate_rejects_bad_impairments(monkeypatch):
+    monkeypatch.setattr(appmod, "download_free_bytes", lambda p: 10 ** 12)
+    monkeypatch.setattr(appmod, "_resolve_rinex", lambda body, start: "/x/brdc.rnx")
+    r = client.post("/api/generate", json={
+        "rinex_path": "/x/brdc.rnx", "lat": 41.0, "lon": 29.0, "alt": 100.0,
+        "start_utc": "2026-09-03T06:00:00", "duration_s": 4,
+        "sample_rate": 2.6e6, "sample_format": "int16",
+        "impairments": {"enabled_flag": True, "snr_db": 5, "noise_power": 1.0}})
+    assert r.status_code == 422
+    assert "impairments" in r.json()["detail"]

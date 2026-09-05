@@ -398,7 +398,7 @@ operator; the authors accept no liability for misuse.
 .venv/bin/pytest -q
 ```
 
-**185 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
+**378 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
 alignment, GPS-time conversions, the SP3 parser and orbit/clock
 interpolation, the broadcast/precise mode selector, the SP3→broadcast
 fit (pure-Kepler recovery to millimetres, SP3-fixture fit, RINEX-2
@@ -408,6 +408,28 @@ receiver solve, LNAV decode, the live session, transmit plumbing
 recording/replay, the scenario library, the WebSocket hub, and the
 precise-ephemeris HTTP endpoints. The 3 `xfail` cases need real SDR
 hardware. The suite uses fixtures and mocks only — no network downloads.
+
+`tests/` is organised into flat integration tests plus `unit/`,
+`validation/` (independent cross-checks — see below), and `regression/`
+(deterministic-output and provenance guards).
+
+### Self-consistency / validation layer
+
+A set of software-only checks that do not need hardware or the real
+`gps-sdr-sim` binary:
+
+- **Independent geometry reference** (`backend/reference.py`) — a
+  from-scratch IS-GPS-200 broadcast propagator (different anomaly solver,
+  analytic velocity, rotation-matrix ECEF, own Sagnac loop) and a
+  least-squares-polynomial SP3 interpolator. The validation tests compare
+  the production path against this, never against itself.
+- **Canonical truth model** (`backend/truth.py`) — one conversion path
+  from (lat/lon/alt, UTC start, duration) to ECEF, GPS week/sow, and
+  truth observables, shared by the generator and the validator.
+- **`scripts/validate_scenario.py`** — chains ephemeris → geometry vs
+  reference → generation → IQ integrity → acquisition → weighted receiver
+  fix → nominal error budget and prints a human or `--json` PASS/FAIL
+  report. `--no-generate` runs the geometry/budget stages only.
 
 ---
 
@@ -435,6 +457,47 @@ hardware. The suite uses fixtures and mocks only — no network downloads.
 - The CDDIS RINEX mirror needs NASA Earthdata credentials; without them
   only the BKG mirror is effective. SP3 downloads require
   `PRECISE_SP3_MIRRORS` to be configured; otherwise load SP3 files by path.
+
+### Optional models (all default-off, all deterministic)
+
+These are library modules with unit + consistency tests. They are **not**
+wired into the `gps-sdr-sim` broadcast path automatically; a caller opts
+in. Enabling one changes the pseudorange/observables it is given, never
+the geometric range or the motion-derived Doppler.
+
+| Module | Model | Notes / assumptions |
+|---|---|---|
+| `backend/atmosphere.py` | Klobuchar iono (L1), Saastamoinen tropo | Broadcast-grade. Saastamoinen uses a `1/sin(el)` mapping, good to a few cm above ~15° — not Niell/VMF1. |
+| `backend/receiver_clock.py` | Receiver clock offset: bias + drift + drift-rate polynomial, optional sawtooth | Distinct from satellite clock and propagation delay; adds a common `c·offset` to simultaneous pseudoranges and a common `−f_L1·drift` carrier offset. No RNG. |
+| `backend/multipath.py` | Specular: direct + N reflections (delay, amplitude<1, phase, Doppler) | `channel_taps()` for convolving clean IQ; `tracking_bias()` is a closed-form narrow-correlator DLL/Costas approximation, **not** a substitute for filtering the IQ. |
+| `backend/impairments.py` | RF impairment layer over complex IQ: CFO, sample-clock ppm, phase noise, I/Q imbalance, DC offset, AWGN (SNR or noise power), clipping, requantisation | All randomness from one seeded `default_rng`; `(config, seed, input) → output` is bit-for-bit reproducible. Wired into `generator.run` via `ScenarioRequest.impairments` (default `None`); the clean file is kept as `gpssim.clean.bin`. |
+| `backend/wls.py` | Elevation-weighted least-squares fix + GDOP/PDOP/HDOP/VDOP/TDOP + formal covariance | Standalone; the legacy unweighted `receiver.solve_position` is unchanged. |
+| `backend/error_budget.py` | Per-PRN 1-σ range error budget, RSS to a UERE | Nominal figures are **documentation-grade, not a calibration** of this simulator. |
+
+### Reproducibility
+
+`generator.run` writes a `provenance` block into `meta.json`: a
+`scenario_hash` over the physical inputs, the git revision, the
+`gps-sdr-sim` version string, SHA-256 of the RINEX and nav files, the
+random seed, and (for precise mode) the fit method and worst dense
+post-fit residual. It also always records an `iq_integrity` report over
+the first 2M samples of the output. Identical `(request, seed)` inputs
+with a given `gps-sdr-sim` build reproduce the same `gpssim.bin`; the
+impairment layer is separately bit-reproducible.
+
+### What is **not** claimed
+
+- Not "precise" in the geodetic sense: broadcast mode realigns rather
+  than propagates, and precise mode is orbit-accurate over a 4 h arc with
+  a few-ns clock.
+- Not a calibrated error model: the atmospheric, multipath and
+  receiver-clock models are physically shaped but not tuned to match any
+  reference receiver or real recording.
+- Not a full software receiver: acquisition + a single-epoch LS/WLS fix,
+  no tracking loops, no carrier-phase / RTK processing.
+- No real-SDR or hardware-in-the-loop guarantees from the test suite; the
+  `xfail` cases are the only hardware-touching tests and are not run by
+  default.
 
 ---
 

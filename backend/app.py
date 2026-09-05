@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from backend import (config, ephemeris, geometry, scenario, generator,
                      inspector, receiver, lnav_display, transmit, live, trajectory, audit,
                      scenario_lib, recording, receiver_feed, auth, ws_hub, device,
-                     precise, ephemeris_source, ephemeris_fit)
+                     precise, ephemeris_source, ephemeris_fit, impairments)
 from backend.gpstime import GPSTime
 
 @contextlib.asynccontextmanager
@@ -299,7 +299,14 @@ def generate(body: dict):
         sample_format=body.get("sample_format", "int16"),
         route=[tuple(p) for p in body["route"]] if body.get("route") else None,
         nav_override=nav_override,
+        impairments=body.get("impairments"),
+        random_seed=body.get("random_seed"),
     )
+    if req.impairments is not None:
+        try:
+            impairments.ImpairmentConfig.from_dict(req.impairments)
+        except ValueError as e:
+            raise HTTPException(422, f"impairments: {e}")
     if scenario.estimate_bytes(req) > download_free_bytes(config.OUT_DIR):
         raise HTTPException(507, "estimated IQ size exceeds free disk space")
 
