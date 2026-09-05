@@ -33,11 +33,33 @@ def test_load_rejects_missing_file():
     assert r.status_code == 404
 
 
-def test_load_download_requires_mirrors():
+def test_load_download_requires_mirrors(monkeypatch):
+    # With the mirror list explicitly emptied, an SP3 download is refused
+    # rather than silently skipped.
+    from backend import app as appmod
+    monkeypatch.setattr(appmod.config, "PRECISE_SP3_MIRRORS", [])
     r = client.post("/api/precise/load",
                     json={"download": {"gps_week": 2433, "dow": 5}})
     assert r.status_code == 422
     assert "PRECISE_SP3_MIRRORS" in r.json()["detail"]
+
+
+def test_load_download_delegates_to_fetcher(monkeypatch):
+    # The default mirror list is populated, so an explicit download request
+    # reaches precise.download_sp3; stub it out so no network is touched.
+    from backend import app as appmod
+    calls = {}
+
+    def _fake(gps_week, dow, cache_dir, mirrors):
+        calls["args"] = (gps_week, dow, list(mirrors))
+        return SP3
+
+    monkeypatch.setattr(appmod.precise, "download_sp3", _fake)
+    r = client.post("/api/precise/load",
+                    json={"download": {"gps_week": 2433, "dow": 5}})
+    assert r.status_code == 200, r.text
+    assert calls["args"][0] == 2433 and calls["args"][1] == 5
+    assert calls["args"][2], "default mirror list must be non-empty"
 
 
 def test_compare_at_toe_shows_small_bias_only():

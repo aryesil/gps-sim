@@ -345,7 +345,7 @@ All via environment variables (see `backend/config.py`).
 | `OUT_DIR` | `./out` | Generated IQ + `meta.json`, recordings. Served at `/out`. |
 | `LOG_DIR` | `./logs` | `audit.jsonl`. |
 | `PRECISE_DIR` | `./data/precise` | SP3 product cache / load directory. |
-| `PRECISE_SP3_MIRRORS` | `""` | Comma-separated SP3 download URL templates. Empty ⇒ `POST /api/precise/load` with `download` returns 422; local-path loads still work. |
+| `PRECISE_SP3_MIRRORS` | free BKG + IGN rapid/final SP3 (anonymous) | Comma-separated SP3 download URL templates (`{gpsweek}`/`{gps_week}`/`{dow}`/`{yyyy}`/`{doy}`/`{wwwwd}`). A download is only performed on an explicit `POST /api/precise/load` with `download`; set to `""` to disable SP3 downloads entirely. |
 | `GPS_SDR_SIM_BIN` | `./gps-sdr-sim/gps-sdr-sim` | Path to the built binary. |
 | `API_KEYS_JSON` | `""` | JSON `{"<key>": "operator"｜"viewer"}`. Empty ⇒ auth disabled. |
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | uvicorn bind (via `run_server.sh`). |
@@ -398,7 +398,7 @@ operator; the authors accept no liability for misuse.
 .venv/bin/pytest -q
 ```
 
-**380 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
+**385 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
 alignment, GPS-time conversions, the SP3 parser and orbit/clock
 interpolation, the broadcast/precise mode selector, the SP3→broadcast
 fit (pure-Kepler recovery to millimetres, SP3-fixture fit, RINEX-2
@@ -455,8 +455,12 @@ A set of software-only checks that do not need hardware or the real
   `/api/correlation`, `/api/preview_track`) — call them directly with
   `curl` if a panel isn't exposed on your build.
 - The CDDIS RINEX mirror needs NASA Earthdata credentials; without them
-  only the BKG mirror is effective. SP3 downloads require
-  `PRECISE_SP3_MIRRORS` to be configured; otherwise load SP3 files by path.
+  only the BKG mirror is effective. SP3 products download from the free
+  anonymous BKG/IGN mirrors in `PRECISE_SP3_MIRRORS` (rapid tried before
+  final) on an explicit `download` request, or load by local path. Very
+  recent epochs may have no rapid product published yet. The bundled
+  `tests/fixtures/igs_sample.sp3` is a synthetic Kepler+bias file, so the
+  offline test-suite does not exercise real non-Keplerian orbit dynamics.
 
 ### Optional models (all default-off, all deterministic)
 

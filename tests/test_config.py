@@ -17,7 +17,21 @@ def test_precise_defaults():
     cfg = importlib.import_module("backend.config")
     assert cfg.PRECISE_DIR == cfg.DATA_DIR / "precise"
     assert cfg.PRECISE_DIR.is_dir()
-    assert cfg.PRECISE_SP3_MIRRORS == []      # downloads opt-in only
+    # Ships free, anonymous (no-login) IGS product mirrors by default; a
+    # download is still only performed on an explicit request.
+    assert len(cfg.PRECISE_SP3_MIRRORS) >= 2
+    assert all(m.startswith("https://") for m in cfg.PRECISE_SP3_MIRRORS)
+    assert all("cddis" not in m for m in cfg.PRECISE_SP3_MIRRORS)  # needs Earthdata login
+    assert any("RAP" in m for m in cfg.PRECISE_SP3_MIRRORS)       # rapid tried first
+    assert cfg.PRECISE_SP3_MIRRORS[0].index("RAP") > -1
+
+
+def test_precise_sp3_mirrors_env_can_disable(monkeypatch):
+    monkeypatch.setenv("PRECISE_SP3_MIRRORS", "")
+    import backend.config as cfg
+    importlib.reload(cfg)
+    assert cfg.PRECISE_SP3_MIRRORS == []
+    importlib.reload(cfg)  # restore
 
 
 def test_env_override(monkeypatch):

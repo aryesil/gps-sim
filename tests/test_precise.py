@@ -146,3 +146,43 @@ def test_neville_exact_on_polynomial():
     p, d = _neville_clean(xs, ys, 0.4)
     assert p == pytest.approx(f(0.4), rel=1e-9)
     assert d == pytest.approx(df(0.4), rel=1e-9)
+
+
+# --- download_sp3 mirror templating (no network) ---------------------
+def test_download_sp3_templating_and_gunzip(tmp_path, monkeypatch):
+    import gzip
+    from backend import precise as _p
+
+    raw = SP3.read_bytes()
+    seen = []
+
+    class _Resp:
+        def __init__(self, body): self.content = body
+        def raise_for_status(self): pass
+
+    def _fake_get(url, timeout=0):
+        seen.append(url)
+        if "IGS0OPSRAP" in url:                 # pretend rapid is missing
+            raise _p_requests.RequestException("404")
+        return _Resp(gzip.compress(raw))        # final, gzipped
+
+    import requests as _p_requests
+    monkeypatch.setattr(_p_requests, "get", _fake_get)
+
+    mirrors = [
+        "https://x/{gpsweek}/IGS0OPSRAP_{yyyy}{doy}0000_01D_15M_ORB.SP3.gz",
+        "https://y/{gps_week}/IGS0OPSFIN_{yyyy}{doy}0000_01D_15M_ORB.SP3.gz",
+    ]
+    out = _p.download_sp3(WEEK, 4, tmp_path, mirrors)
+    assert pathlib.Path(out).read_bytes()[:2] in (b"#c", b"#d", b"#a", b"#b")
+    # 2433 * 7 + 4 days after 1980-01-06 -> a real calendar date; the year
+    # and 3-digit doy must have been substituted into both URLs.
+    assert seen[0].startswith("https://x/2433/IGS0OPSRAP_2026")
+    assert seen[1].startswith("https://y/2433/IGS0OPSFIN_2026")
+    assert "0000_01D_15M_ORB.SP3.gz" in seen[1]
+
+
+def test_download_sp3_empty_mirrors_raises(tmp_path):
+    from backend.precise import download_sp3, PreciseProductError
+    with pytest.raises(PreciseProductError):
+        download_sp3(WEEK, 4, tmp_path, [])

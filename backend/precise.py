@@ -396,13 +396,24 @@ class PreciseEphemerisProvider:
 
 def download_sp3(gps_week: int, dow: int, cache_dir, mirrors: list[str]) -> str:
     """Best-effort SP3 fetch. Disabled unless ``mirrors`` is non-empty
-    (config.PRECISE_SP3_MIRRORS). Templates may use {gpsweek}/{dow}.
+    (config.PRECISE_SP3_MIRRORS). Mirror templates may use any of
+    ``{gpsweek}`` / ``{gps_week}`` (4-digit GPS week), ``{dow}`` (day of
+    week 0-6), ``{yyyy}`` (calendar year), ``{doy}`` (3-digit day of year)
+    and ``{wwwwd}`` (GPS week + dow, the legacy short-name stem).
 
-    Returns the cached local path. Raises PreciseProductError on any
+    The default list ships anonymous, no-login IGS mirrors (BKG, IGN); a
+    download is still only performed when the caller explicitly asks for
+    one. Returns the cached local path. Raises PreciseProductError on any
     network failure or if no mirror yields a plausible SP3 file -- the
     caller never gets a stale or unrelated file.
     """
+    import datetime as _dt
     import pathlib as _pl
+
+    _d = _dt.date(1980, 1, 6) + _dt.timedelta(days=gps_week * 7 + dow)
+    _doy = _d.timetuple().tm_yday
+    _fmt = dict(gpsweek=gps_week, gps_week=gps_week, dow=dow,
+                yyyy=_d.year, doy=f"{_doy:03d}", wwwwd=f"{gps_week:04d}{dow}")
 
     if not mirrors:
         raise PreciseProductError(
@@ -419,7 +430,7 @@ def download_sp3(gps_week: int, dow: int, cache_dir, mirrors: list[str]) -> str:
 
     last = None
     for tmpl in mirrors:
-        url = tmpl.format(gpsweek=gps_week, dow=dow, gps_week=gps_week)
+        url = tmpl.format(**_fmt)
         try:
             r = _rq.get(url, timeout=30)
             r.raise_for_status()

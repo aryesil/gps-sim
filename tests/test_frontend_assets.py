@@ -51,6 +51,15 @@ def test_impairments_panel_present_and_wired():
     assert 'body.impairments = _imp;' in js
 
 
+def test_precise_panel_has_sp3_fetch_button():
+    """The 'Fetch for start UTC' button must post an explicit download
+    request to /api/precise/load with a {gps_week, dow} spec."""
+    js = (F / "channels.js").read_text()
+    assert '${id}-sp3-fetch' in js
+    assert 'download: { gps_week, dow }' in js
+    assert "'/api/precise/load'" in js
+
+
 def test_channel_card_requires_confirmation_checkbox():
     """The README's safety claim ("you confirm the isolated setup in the UI")
     must correspond to a real per-card checkbox whose value is what
