@@ -55,3 +55,42 @@ def test_generate_rejects_bad_impairments(monkeypatch):
         "impairments": {"enabled_flag": True, "snr_db": 5, "noise_power": 1.0}})
     assert r.status_code == 422
     assert "impairments" in r.json()["detail"]
+
+
+def test_preview_applies_channel_models_and_reports_summary(monkeypatch):
+    monkeypatch.setattr(appmod.ephemeris, "get_ephemeris",
+                        lambda *a, **k: {1: {"toe": 0.0}})
+    seen = {}
+
+    def _fake_constellation(eph, rx, tow, mask=5.0, **kw):
+        seen.update(kw)
+        return [{"prn": 1, "az_deg": 10, "el_deg": 40, "geo_range_m": 2.1e7,
+                 "pseudorange_m": 2.1e7, "code_phase_chips": 3.0,
+                 "carrier_doppler_hz": 100.0, "code_doppler_hz": 0.06,
+                 "_los": [0, 0, 1]}]
+
+    monkeypatch.setattr(appmod.geometry, "constellation", _fake_constellation)
+    monkeypatch.setattr(appmod.geometry, "dop", lambda *a, **k: {
+        "pdop": 2.0, "gdop": 2, "hdop": 1, "vdop": 1, "tdop": 1})
+    r = client.post("/api/preview", json={
+        "lat": 41.0, "lon": 29.0, "alt": 100.0,
+        "start_utc": "2026-09-03T06:00:00",
+        "receiver_clock": {"model": "poly", "bias_s": 1e-6},
+        "atmosphere": {"troposphere": "saastamoinen"}})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["channel_models"]["receiver_clock_model"] == "poly"
+    assert body["channel_models"]["troposphere_model"] == "saastamoinen"
+    assert seen["rx_clock_range_m"] != 0.0
+    assert callable(seen["atmo_delay_fn"])
+    assert any("channel models applied" in w for w in body["warnings"])
+
+
+def test_preview_rejects_bad_channel_model(monkeypatch):
+    monkeypatch.setattr(appmod.ephemeris, "get_ephemeris",
+                        lambda *a, **k: {1: {"toe": 0.0}})
+    r = client.post("/api/preview", json={
+        "lat": 41.0, "lon": 29.0, "alt": 100.0,
+        "start_utc": "2026-09-03T06:00:00",
+        "multipath": {"model": "bogus"}})
+    assert r.status_code == 422

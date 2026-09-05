@@ -30,6 +30,20 @@ class ScenarioRequest:
     # output to before.
     impairments: dict | None = None
     random_seed: int | None = None
+    # Optional physical-channel / receiver models. Each is a plain dict
+    # parsed by the matching backend module's Config.from_dict and is
+    # DISABLED unless it carries a non-"off" model. They feed the truth /
+    # preview observables unconditionally; whether they also alter the
+    # generated IQ is gated by ``models_to_iq`` (default False -> the IQ is
+    # byte-identical to before). ``atmosphere.ionosphere == "klobuchar"``
+    # additionally lets gps-sdr-sim apply its own broadcast Klobuchar
+    # (the ``-i`` flag) so the ionosphere is present in the IQ too;
+    # troposphere and multipath and receiver-clock effects reach the IQ
+    # only through the opt-in post-processing stage.
+    atmosphere: dict | None = None
+    receiver_clock: dict | None = None
+    multipath: dict | None = None
+    models_to_iq: bool = False
 
 
 def _bytes_per_sample(fmt: str) -> int:
@@ -59,7 +73,14 @@ def build_args(req: ScenarioRequest, out_bin: str, motion_csv: str | None) -> li
         # that's what the toe +/- 2h preview warning in app.py is for.
         "-t", (req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)).strftime("%Y/%m/%d,%H:%M:%S"),
     ]
-    if not req.ionosphere:
+    # gps-sdr-sim's -i flag *disables* its internal broadcast Klobuchar.
+    # Keep it enabled (omit -i) when the legacy ionosphere bool is set, or
+    # when the atmosphere model selects klobuchar and the operator asked
+    # for models to reach the IQ.
+    atmo = req.atmosphere or {}
+    iono_in_iq = bool(req.ionosphere) or (
+        req.models_to_iq and atmo.get("ionosphere") == "klobuchar")
+    if not iono_in_iq:
         args.append("-i")
     if req.route:
         if motion_csv is None:

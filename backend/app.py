@@ -19,7 +19,8 @@ from fastapi.staticfiles import StaticFiles
 from backend import (config, ephemeris, geometry, scenario, generator,
                      inspector, receiver, lnav_display, transmit, live, trajectory, audit,
                      scenario_lib, recording, receiver_feed, auth, ws_hub, device,
-                     precise, ephemeris_source, ephemeris_fit, impairments)
+                     precise, ephemeris_source, ephemeris_fit, impairments,
+                     channel_models)
 from backend.gpstime import GPSTime
 
 @contextlib.asynccontextmanager
@@ -191,7 +192,15 @@ def preview(body: dict):
                 fallback_to_broadcast=bool(body.get("fallback_to_broadcast")))
         mode_warnings = auto_warns + mode_warnings
 
-    sats = geometry.constellation(eph_for_geo, rx, tow, body.get("mask_deg", 5.0))
+    try:
+        models = channel_models.ChannelModels.from_request(body)
+    except ValueError as e:
+        raise HTTPException(422, f"channel model: {e}")
+    model_args = models.observable_args(tow, body["lat"], body["lon"], body["alt"])
+    models_summary = models.summary(tow, body["lat"], body["lon"], body["alt"])
+
+    sats = geometry.constellation(eph_for_geo, rx, tow, body.get("mask_deg", 5.0),
+                                  **model_args)
     d = geometry.dop(sats, rx)
     pdop_raw = d["pdop"]
     d = {k: _finite(v) for k, v in d.items()}
@@ -205,7 +214,21 @@ def preview(body: dict):
         if abs(((tow - toe + 302400) % 604800) - 302400) > 7200:
             warnings.append("start time outside toe +/- 2 h for some satellites")
             break
-    return {"satellites": sats, "dop": d, "warnings": warnings}
+    if models.any_enabled:
+        warnings.append(
+            "channel models applied to the preview observables: "
+            + ", ".join(m for m in (
+                f"iono={models.atmosphere.ionosphere}" if models.atmosphere.ionosphere != "off" else "",
+                f"tropo={models.atmosphere.troposphere}" if models.atmosphere.troposphere != "off" else "",
+                f"rx_clock={models.receiver_clock.model}" if models.receiver_clock.enabled else "",
+                f"multipath={models.multipath.model}" if models.multipath.enabled else "",
+            ) if m))
+        if not body.get("models_to_iq"):
+            warnings.append(
+                "these models shape the preview/truth only — enable "
+                "\"apply to IQ\" to also alter the generated signal")
+    return {"satellites": sats, "dop": d, "warnings": warnings,
+            "channel_models": models_summary}
 
 
 @app.post("/api/preview_track")
@@ -396,12 +419,20 @@ def generate(body: dict):
         nav_override=nav_override,
         impairments=body.get("impairments"),
         random_seed=body.get("random_seed"),
+        atmosphere=body.get("atmosphere"),
+        receiver_clock=body.get("receiver_clock"),
+        multipath=body.get("multipath"),
+        models_to_iq=bool(body.get("models_to_iq")),
     )
     if req.impairments is not None:
         try:
             impairments.ImpairmentConfig.from_dict(req.impairments)
         except ValueError as e:
             raise HTTPException(422, f"impairments: {e}")
+    try:
+        channel_models.ChannelModels.from_request(req)  # validate dicts early
+    except ValueError as e:
+        raise HTTPException(422, f"channel model: {e}")
     if scenario.estimate_bytes(req) > download_free_bytes(config.OUT_DIR):
         raise HTTPException(507, "estimated IQ size exceeds free disk space")
 

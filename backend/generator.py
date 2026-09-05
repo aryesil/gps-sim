@@ -7,8 +7,10 @@ import pathlib
 import re
 import subprocess
 
-from backend import (config, ephemeris, impairments as imp, inspector,
-                     iq_integrity, provenance as prov, scenario)
+from backend import (channel_models, config, ephemeris, gpstime,
+                     impairments as imp, inspector, iq_integrity,
+                     multipath as mp_mod, provenance as prov, receiver_clock as rc_mod,
+                     scenario)
 
 _INTEGRITY_MAX_SAMPLES = 2_000_000
 
@@ -77,6 +79,103 @@ def _run_gps_sdr_sim(argv: list[str], duration_s: float, progress_cb=None) -> No
         raise GeneratorError(f"gps-sdr-sim exit {proc.returncode}: {tail}")
 
 
+def _read_iq(out_bin: pathlib.Path, sample_format: str):
+    import numpy as np
+    dtype = np.int8 if sample_format == "int8" else np.int16
+    raw = np.fromfile(out_bin, dtype=dtype)
+    raw = raw[: len(raw) - (len(raw) % 2)]
+    return raw[0::2].astype(np.float32) + 1j * raw[1::2].astype(np.float32)
+
+
+def _write_iq(iq, out_bin: pathlib.Path, sample_format: str) -> None:
+    import numpy as np
+    dtype = np.int8 if sample_format == "int8" else np.int16
+    fs = 127.0 if sample_format == "int8" else 32767.0
+    inter = np.empty(2 * len(iq), dtype=dtype)
+    inter[0::2] = np.clip(np.round(iq.real), -fs, fs)
+    inter[1::2] = np.clip(np.round(iq.imag), -fs, fs)
+    inter.tofile(out_bin)
+
+
+def _frac_delay(iq, shift_samples: float):
+    """Delay ``iq`` by ``shift_samples`` (>=0) with linear interpolation.
+    Samples shifted in from before the start are zero."""
+    import numpy as np
+    if shift_samples <= 0:
+        return iq.copy()
+    i = int(np.floor(shift_samples))
+    f = float(shift_samples - i)
+    n = len(iq)
+    out = np.zeros(n, dtype=iq.dtype)
+    if i < n:
+        out[i:] = (1.0 - f) * iq[: n - i]
+    if i + 1 < n:
+        out[i + 1:] += f * iq[: n - i - 1]
+    return out
+
+
+def _apply_channel(req: scenario.ScenarioRequest, out_bin: pathlib.Path) -> dict | None:
+    """Opt-in deterministic physical-channel post-processing of the
+    composite gps-sdr-sim output: a common receiver-clock time/carrier
+    offset and a specular-multipath FIR applied to the summed signal.
+
+    Quasi-static: the receiver-clock offset and the multipath taps are
+    evaluated once at mid-scenario, so a large clock drift or a non-zero
+    reflection Doppler is only approximated. Ionospheric delay reaches the
+    IQ through gps-sdr-sim's own broadcast Klobuchar (the -i flag, see
+    scenario.build_args); tropospheric delay is a truth-only model and is
+    NOT injected here. Nothing runs unless req.models_to_iq is set and a
+    receiver-clock or multipath model is enabled. The pre-channel file is
+    kept next to the output as gpssim.prechannel.bin."""
+    if not getattr(req, "models_to_iq", False):
+        return None
+    models = channel_models.ChannelModels.from_request(req)
+    rc_cfg, mp_cfg = models.receiver_clock, models.multipath
+    if not (rc_cfg.enabled or mp_cfg.enabled):
+        return None
+
+    import numpy as np
+
+    sow = gpstime.utc_to_gps(req.start).sow
+    t_mid = req.duration_s / 2.0
+    off_s = rc_mod.offset_s(rc_cfg, sow + t_mid)
+    taps = mp_mod.channel_taps(mp_cfg, t_mid)  # [(delay_s, gain), ...], direct first
+
+    iq = _read_iq(out_bin, req.sample_format)
+    fs = req.sample_rate
+    # unified impulse response: every ray delayed by its excess delay plus
+    # the common receiver-clock offset, then a common carrier rotation for
+    # the receiver-clock phase.
+    acc = np.zeros(len(iq), dtype=np.complex64)
+    for delay_s, gain in taps:
+        acc += gain * _frac_delay(iq, (delay_s + max(off_s, 0.0)) * fs)
+    rot = np.exp(-1j * ((2.0 * np.pi * config.L1_HZ * off_s) % (2.0 * np.pi)))
+    acc *= rot
+    # keep the composite level comparable to the input
+    in_rms = float(np.sqrt(np.mean(np.abs(iq) ** 2))) or 1.0
+    out_rms = float(np.sqrt(np.mean(np.abs(acc) ** 2))) or 1.0
+    acc *= in_rms / out_rms
+
+    pre = out_bin.with_name("gpssim.prechannel.bin")
+    out_bin.replace(pre)
+    _write_iq(acc, out_bin, req.sample_format)
+
+    notes = []
+    if rc_cfg.enabled and rc_cfg.drift_s_per_s:
+        notes.append("receiver-clock drift approximated at mid-scenario")
+    if mp_cfg.enabled and any(r.doppler_hz for r in mp_cfg.reflections):
+        notes.append("multipath reflection Doppler approximated at mid-scenario")
+    if models.atmosphere.troposphere != "off":
+        notes.append("tropospheric delay is a truth-only model; not in the IQ")
+    return {
+        "receiver_clock": rc_mod.state(rc_cfg, sow + t_mid) if rc_cfg.enabled else None,
+        "multipath": mp_mod.tracking_bias(mp_cfg, t_mid) if mp_cfg.enabled else None,
+        "level_rescaled_by": in_rms / out_rms,
+        "prechannel_output": "gpssim.prechannel.bin",
+        "notes": notes,
+    }
+
+
 def _apply_impairments(req: scenario.ScenarioRequest, out_bin: pathlib.Path) -> dict | None:
     """Deterministically post-process the generated .bin in place when
     req.impairments is set. The clean file is preserved next to it as
@@ -128,6 +227,7 @@ def run(req: scenario.ScenarioRequest, progress_cb=None, binary: str | None = No
     if progress_cb:
         progress_cb(1.0)
 
+    channel_report = _apply_channel(req, out_bin)
     impairment_report = _apply_impairments(req, out_bin)
 
     integrity = None
@@ -147,6 +247,7 @@ def run(req: scenario.ScenarioRequest, progress_cb=None, binary: str | None = No
         "nav_sha256": prov.sha256_file(nav_path),
         "random_seed": getattr(req, "random_seed", None),
         "impairments": impairment_report,
+        "channel_models": channel_report,
     }
     if req.nav_override is not None:
         fits = [e["_fit"] for e in req.nav_override.values() if "_fit" in e]

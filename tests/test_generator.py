@@ -112,3 +112,35 @@ def test_run_segment_passes_no_extra_offset_to_prepare_nav(tmp_path, monkeypatch
                           duration_s=1.0, binary="fake")
     assert seen["offset"] == 0.0
     assert seen["start"] == dt.datetime(2026, 1, 1, 12, 0, 45)
+
+
+def test_channel_models_off_by_default_no_prechannel_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(generator.config, "OUT_DIR", tmp_path)
+    fake = _fake_binary(tmp_path)
+    req = scenario.ScenarioRequest(
+        rinex_path=str(_FIX), lat=41.0, lon=29.0, alt=100.0,
+        start=dt.datetime(2026, 9, 3, 6, 0, 0), duration_s=10,
+        multipath={"model": "specular",
+                   "reflections": [{"excess_delay_m": 40.0, "amplitude": 0.5}]})
+    outdir = generator.run(req, binary=fake)
+    assert not (outdir / "gpssim.prechannel.bin").exists()
+    meta = json.loads((outdir / "meta.json").read_text())
+    assert meta["provenance"]["channel_models"] is None
+
+
+def test_channel_models_to_iq_writes_prechannel_and_report(tmp_path, monkeypatch):
+    monkeypatch.setattr(generator.config, "OUT_DIR", tmp_path)
+    fake = _fake_binary(tmp_path)
+    req = scenario.ScenarioRequest(
+        rinex_path=str(_FIX), lat=41.0, lon=29.0, alt=100.0,
+        start=dt.datetime(2026, 9, 3, 6, 0, 0), duration_s=10,
+        models_to_iq=True,
+        receiver_clock={"model": "poly", "bias_s": 1e-6},
+        multipath={"model": "specular",
+                   "reflections": [{"excess_delay_m": 60.0, "amplitude": 0.4}]})
+    outdir = generator.run(req, binary=fake)
+    assert (outdir / "gpssim.prechannel.bin").stat().st_size == 2000
+    assert (outdir / "gpssim.bin").exists()
+    rep = json.loads((outdir / "meta.json").read_text())["provenance"]["channel_models"]
+    assert rep["multipath"]["n_reflections"] == 1
+    assert rep["receiver_clock"]["range_bias_m"] != 0.0

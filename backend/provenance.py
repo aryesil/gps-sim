@@ -54,6 +54,8 @@ def scenario_hash(req) -> str:
         "atmosphere": getattr(req, "atmosphere", None),
         "impairments": getattr(req, "impairments", None),
         "receiver_clock": getattr(req, "receiver_clock", None),
+        "multipath": getattr(req, "multipath", None),
+        "models_to_iq": getattr(req, "models_to_iq", False),
         "random_seed": getattr(req, "random_seed", None),
     }
     return sha256_json(fields)

@@ -121,7 +121,8 @@ def _enu(rx_ecef):
 
 
 def observables(eph, rx_ecef, t_rx: float, rx_vel=(0.0, 0.0, 0.0),
-                atmo_delay_fn=None) -> dict:
+                atmo_delay_fn=None, rx_clock_range_m: float = 0.0,
+                mp_code_bias_m: float = 0.0) -> dict:
     """``eph`` is a broadcast-ephemeris dict or a ``state_fn`` (see
     ``as_state_fn``). Everything downstream -- az/el, geometric range,
     Doppler, pseudorange, code phase -- is identical for both.
@@ -130,6 +131,11 @@ def observables(eph, rx_ecef, t_rx: float, rx_vel=(0.0, 0.0, 0.0),
     path delay in metres`` (see ``backend.atmosphere``). It is added to the
     pseudorange and code phase exactly once; ``geo_range_m`` and the
     Doppler stay geometric. Legacy callers pass nothing and are unaffected.
+
+    ``rx_clock_range_m`` is a common receiver-clock range bias (metres,
+    same for every satellite at one epoch; see ``backend.receiver_clock``);
+    ``mp_code_bias_m`` is the multipath code-tracking bias for this line of
+    sight (see ``backend.multipath``). Both default to 0 -- no effect.
     """
     rx = np.asarray(rx_ecef, float)
     pos, vel, tof, clk = solve_transmit_time(eph, rx, t_rx)
@@ -146,6 +152,9 @@ def observables(eph, rx_ecef, t_rx: float, rx_vel=(0.0, 0.0, 0.0),
     if atmo_delay_fn is not None:
         atmo_m = float(atmo_delay_fn(np.radians(az), np.radians(el)))
         pr += atmo_m
+    rx_clk_m = float(rx_clock_range_m)
+    mp_m = float(mp_code_bias_m)
+    pr += rx_clk_m + mp_m
     code_phase = (pr / config.C * config.CA_CHIP_HZ) % config.CA_CODE_LEN
     return {
         "az_deg": float(az), "el_deg": float(el), "geo_range_m": geo,
@@ -153,17 +162,27 @@ def observables(eph, rx_ecef, t_rx: float, rx_vel=(0.0, 0.0, 0.0),
         "carrier_doppler_hz": float(fd),
         "code_doppler_hz": float(fd * config.CA_CHIP_HZ / config.L1_HZ),
         "atmo_delay_m": atmo_m,
+        "rx_clock_range_m": rx_clk_m,
+        "multipath_code_bias_m": mp_m,
         "_los": los.tolist(),
     }
 
 
 def constellation(eph_by_prn: dict, rx_ecef, t_rx: float,
-                  mask_deg: float = 5.0) -> list[dict]:
+                  mask_deg: float = 5.0, atmo_delay_fn=None,
+                  rx_clock_range_m: float = 0.0,
+                  mp_code_bias_m: float = 0.0) -> list[dict]:
     """``eph_by_prn`` maps PRN -> broadcast dict or state_fn (see
-    ``as_state_fn``); mixing the two across PRNs is allowed."""
+    ``as_state_fn``); mixing the two across PRNs is allowed.
+
+    ``atmo_delay_fn`` / ``rx_clock_range_m`` / ``mp_code_bias_m`` are
+    forwarded to ``observables`` (all default to no effect)."""
     out = []
     for prn in sorted(eph_by_prn):
-        o = observables(eph_by_prn[prn], rx_ecef, t_rx)
+        o = observables(eph_by_prn[prn], rx_ecef, t_rx,
+                        atmo_delay_fn=atmo_delay_fn,
+                        rx_clock_range_m=rx_clock_range_m,
+                        mp_code_bias_m=mp_code_bias_m)
         if o["el_deg"] >= mask_deg:
             o["prn"] = prn
             out.append(o)
