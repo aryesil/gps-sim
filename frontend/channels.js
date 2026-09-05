@@ -67,6 +67,12 @@ window.addChannel = function () {
         </details>
         <details class="impairments-panel">
           <summary>RF impairments (advanced) <span class="info" title="Deterministic, seeded. Post-processes the gps-sdr-sim output; a clean copy is kept as gpssim.clean.bin. All-zero fields = no-op.">i</span></summary>
+          <label>Preset <select id="${id}-imp-preset">
+            <option value="manual">Custom (enter values below)</option>
+            <option value="bench">Bench cable test (near-ideal)</option>
+            <option value="field">Field test — typical SDR + antenna</option>
+            <option value="urban">Field test — degraded / urban multipath</option>
+          </select><span class="info" title="Picking a preset fills every field below with representative SDR-replay values and ticks the enable box. Editing any field afterwards drops the preset back to Custom. Values are illustrative starting points, not a calibrated device model.">i</span></label>
           <label><input type="checkbox" id="${id}-imp-enabled"> Apply impairments to generated IQ</label>
           <label>Seed <input id="${id}-imp-seed" type="number" value="0"></label>
           <label>Carrier freq offset Hz <input id="${id}-imp-cfo" type="number" value="0"></label>
@@ -499,6 +505,33 @@ function wireChannelActions(id) {
   // /api/generate body is byte-identical to before this panel existed.
   // The raw AWGN-power knob is deliberately not exposed (it is mutually
   // exclusive with snr_db server-side); leave the SNR field blank for no AWGN.
+  // Field-test impairment presets. Representative wideband SDR-replay
+  // values (PlutoSDR-class front end + antenna), not a calibrated device
+  // model -- a starting point the operator then tunes. Selecting one fills
+  // the fields and enables the panel; hand-editing any field reverts the
+  // selector to "manual".
+  const IMP_PRESETS = {
+    bench: { seed: 1, cfo: 20, ppm: 0.1, phn: 0.3, gain: 0.05, iqphase: 0.3,
+             dci: 0.001, dcq: 0.001, snr: 40, clip: 0, bits: 12 },
+    field: { seed: 7, cfo: 250, ppm: 1.0, phn: 1.5, gain: 0.3, iqphase: 1.5,
+             dci: 0.008, dcq: 0.008, snr: 12, clip: 0.02, bits: 10 },
+    urban: { seed: 13, cfo: 600, ppm: 2.5, phn: 3.0, gain: 0.6, iqphase: 3.0,
+             dci: 0.02, dcq: 0.02, snr: 4, clip: 0.05, bits: 8 },
+  };
+  const _impPresetSel = document.getElementById(`${id}-imp-preset`);
+  _impPresetSel.onchange = () => {
+    const p = IMP_PRESETS[_impPresetSel.value];
+    if (!p) return;
+    document.getElementById(`${id}-imp-enabled`).checked = true;
+    for (const [sfx, v] of Object.entries(p)) {
+      const f = document.getElementById(`${id}-imp-${sfx}`);
+      if (f) f.value = v;
+    }
+  };
+  ['seed', 'cfo', 'ppm', 'phn', 'gain', 'iqphase', 'dci', 'dcq', 'snr', 'clip', 'bits']
+    .forEach(sfx => document.getElementById(`${id}-imp-${sfx}`)
+      .addEventListener('input', () => { _impPresetSel.value = 'manual'; }));
+
   function _impairmentsBody() {
     if (!document.getElementById(`${id}-imp-enabled`).checked) return null;
     const num = (sfx) => Number(document.getElementById(`${id}-imp-${sfx}`).value) || 0;

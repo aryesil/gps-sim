@@ -139,6 +139,7 @@ section { display: block; }
 .impairments-panel summary { cursor: pointer; color: var(--text-faint); }
 .impairments-panel label { display: block; margin-top: 4px; }
 .impairments-panel input[type="number"] { width: 8em; }
+.impairments-panel select { margin-left: 4px; }
 
 .models-panel { margin-top: var(--sp-2); font-size: 12px; }
 .models-panel summary { cursor: pointer; color: var(--text-faint); }

@@ -52,6 +52,19 @@ def test_impairments_panel_present_and_wired():
     assert 'body.impairments = _imp;' in js
 
 
+def test_impairments_field_test_presets():
+    """The panel offers ready-made field-test presets as an alternative to
+    hand-entering every knob; choosing one enables the panel, hand-editing
+    a field reverts to Custom."""
+    js = (F / "channels.js").read_text()
+    assert '${id}-imp-preset' in js
+    assert 'IMP_PRESETS' in js
+    for name in ('bench', 'field', 'urban'):
+        assert f'{name}:' in js
+    assert "document.getElementById(`${id}-imp-enabled`).checked = true;" in js
+    assert "_impPresetSel.value = 'manual';" in js
+
+
 def test_precise_panel_advertises_auto_download_no_manual_step():
     """Picking precise mode must not require the operator to place or fetch
     an SP3 file: the panel says Preview/Generate auto-download it, and the
