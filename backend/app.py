@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from backend import (config, ephemeris, geometry, scenario, generator,
                      inspector, receiver, lnav_display, transmit, live, trajectory, audit,
                      scenario_lib, recording, receiver_feed, auth, ws_hub, device,
-                     precise, ephemeris_source)
+                     precise, ephemeris_source, ephemeris_fit)
 from backend.gpstime import GPSTime
 
 @contextlib.asynccontextmanager
@@ -251,16 +251,54 @@ def _resolve_rinex(body: dict, start: dt.datetime) -> str:
         return str(fb)
 
 
+def _precise_nav_override(body: dict, start: dt.datetime):
+    """For ``ephemeris_mode == "precise"``: fit an SP3-backed broadcast
+    record set for ``start`` and return ``(eph_dict, warnings)``. The
+    fitted records -- unlike ``ephemeris.align_epochs`` -- carry solved
+    M0/perturbations so the satellite states gps-sdr-sim propagates match
+    the precise product to well under a metre.
+
+    Returns ``(None, [])`` for broadcast mode. Raises
+    ``ephemeris_source.EphemerisModeError`` (HTTP 422) when precise is
+    requested but unavailable, unless ``fallback_to_broadcast`` is set.
+    """
+    mode = ephemeris_source.normalise_mode(body.get("ephemeris_mode"))
+    if mode != "precise":
+        return None, []
+    fallback = bool(body.get("fallback_to_broadcast"))
+    if not _precise_provider.loaded:
+        if fallback:
+            return None, ["precise generation: no SP3 product loaded; used broadcast"]
+        raise ephemeris_source.EphemerisModeError(
+            "ephemeris_mode=precise but no precise (SP3) product is loaded")
+    gps_start = start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
+    week, sow = ephemeris.gps_week_and_sow(gps_start)
+    prns = sorted(_precise_provider.satellites())
+    try:
+        eph, warns = ephemeris_fit.build_precise_broadcast(
+            _precise_provider, prns, GPSTime(week, sow), strict=not fallback)
+    except (ephemeris_fit.EphemerisFitError, precise.PreciseProductError) as e:
+        if fallback:
+            return None, [f"precise generation unavailable ({e}); used broadcast"]
+        raise ephemeris_source.EphemerisModeError(f"precise generation: {e}")
+    return eph, warns
+
+
 @app.post("/api/generate")
 def generate(body: dict):
     start = dt.datetime.fromisoformat(body["start_utc"])
-    rinex_path = _resolve_rinex(body, start)
+    nav_override, precise_warnings = _precise_nav_override(body, start)
+    # In precise mode the broadcast nav file is never read; only resolve
+    # (and possibly download) one when it will actually be used.
+    rinex_path = (body.get("rinex_path") or "") if nav_override is not None \
+        else _resolve_rinex(body, start)
     req = scenario.ScenarioRequest(
         rinex_path=rinex_path, lat=body["lat"], lon=body["lon"], alt=body["alt"],
         start=start, duration_s=int(body["duration_s"]),
         sample_rate=float(body.get("sample_rate", config.DEFAULT_SAMPLE_RATE)),
         sample_format=body.get("sample_format", "int16"),
         route=[tuple(p) for p in body["route"]] if body.get("route") else None,
+        nav_override=nav_override,
     )
     if scenario.estimate_bytes(req) > download_free_bytes(config.OUT_DIR):
         raise HTTPException(507, "estimated IQ size exceeds free disk space")
@@ -278,10 +316,15 @@ def generate(body: dict):
             # from the same aligned copy here or this comparison reports
             # huge, misleading errors whenever the real epoch was far from
             # the requested start.
-            eph, _ = _resolve_eph(req.start.date(), req.rinex_path)
-            gps_start = req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
-            week, sow = ephemeris.gps_week_and_sow(gps_start)
-            eph = ephemeris.align_epochs(eph, week, sow)
+            if req.nav_override is not None:
+                # Precise mode: the IQ was generated from the SP3-fitted
+                # records, so build "expected" from those same records.
+                eph = req.nav_override
+            else:
+                eph, _ = _resolve_eph(req.start.date(), req.rinex_path)
+                gps_start = req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
+                week, sow = ephemeris.gps_week_and_sow(gps_start)
+                eph = ephemeris.align_epochs(eph, week, sow)
             rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
             sats = geometry.constellation(eph, rx, _gps_tow(req.start))
             iq = inspector.read_iq(outdir / "gpssim.bin", req.sample_format,
@@ -296,7 +339,9 @@ def generate(body: dict):
             return
         done = {"done": {"outdir": outdir.name,
                          "size_bytes": (outdir / "gpssim.bin").stat().st_size,
-                         "inspect": table}}
+                         "inspect": table,
+                         "ephemeris_mode": "precise" if req.nav_override is not None else "broadcast",
+                         "warnings": precise_warnings}}
         yield f"data: {json.dumps(done)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
@@ -622,11 +667,15 @@ def live_start(body: dict, request: Request):
     slot = _acquire_tx_slot()
     try:
         start = dt.datetime.fromisoformat(body["start_utc"])
+        nav_override, _ = _precise_nav_override(body, start)
+        rinex_path = (body.get("rinex_path") or "") if nav_override is not None \
+            else _resolve_rinex(body, start)
         req = scenario.ScenarioRequest(
-            rinex_path=_resolve_rinex(body, start), lat=body["lat"], lon=body["lon"], alt=body["alt"],
+            rinex_path=rinex_path, lat=body["lat"], lon=body["lon"], alt=body["alt"],
             start=start, duration_s=int(body.get("duration_s", 300)),
             sample_rate=float(body.get("sample_rate", config.DEFAULT_SAMPLE_RATE)),
-            sample_format=body.get("sample_format", "int16"))
+            sample_format=body.get("sample_format", "int16"),
+            nav_override=nav_override)
         session = live.LiveSession(req)
         _tx_slots[slot]["session"] = session
         params = transmit.TxParams(

@@ -52,13 +52,13 @@ window.addChannel = function () {
         </select></label>
         <label>Format <select id="${id}-fmt"><option>int16</option><option>int8</option></select></label>
         <label>RINEX <input id="${id}-rinex-path" value="AUTO" size="26"></label>
-        <label>Ephemeris (analysis)
+        <label>Ephemeris
           <select id="${id}-eph-mode">
-            <option value="broadcast">Broadcast</option>
-            <option value="precise">Precise (SP3)</option>
+            <option value="broadcast">Broadcast (realigned)</option>
+            <option value="precise">Precise (SP3-fitted)</option>
           </select>
         </label>
-        <div class="hint">analysis only — generated IQ always uses broadcast</div>
+        <div class="hint">precise: SP3 orbit/clock fitted into the broadcast records that drive generation (needs a loaded SP3 product covering the epoch)</div>
         <details class="precise-panel">
           <summary>Precise ephemeris (SP3)</summary>
           <label>SP3 path <input id="${id}-sp3-path" size="26" placeholder="data/precise/…​.sp3"></label>
@@ -442,6 +442,7 @@ function wireChannelActions(id) {
       duration_s: Number(document.getElementById(`${id}-duration`).value),
       sample_rate: Number(document.getElementById(`${id}-rate`).value),
       sample_format: document.getElementById(`${id}-fmt`).value,
+      ephemeris_mode: document.getElementById(`${id}-eph-mode`).value,
     };
     if (st.route) body.route = st.route;
     fetch('/api/generate', {

@@ -89,3 +89,64 @@ backend/transmit.py --> PlutoSDR   only when ALLOW_TX and confirm_isolated
 | 9 | `docs/API.md` (new) + `README.md` rewrite | move the exhaustive endpoint table into `docs/API.md`; rewrite README to describe what exists, with an honest Accuracy & Limitations section. | `tests/test_frontend_assets.py` doc checks if any |
 
 Backward compatibility gate: `.venv/bin/pytest -q` baseline is **124 passed, 3 xfailed**; must stay green after every step. Broadcast generate/inspect/receiver/lnav/transmit/RBAC/audit paths unchanged.
+
+---
+
+## Addendum — Strategy B for signal generation (`ephemeris_fit.py`)
+
+The Strategy D subsystem above left IQ generation on broadcast Keplerian
+nav with only `toc`/`toe` stamped (`ephemeris.align_epochs`). That is
+self-consistent between the simulated LNAV and a receiver decoding it, so
+most of the absolute orbit error cancels in the navigation solution — but
+the sky geometry (elevation, azimuth, Doppler) and the inter-satellite
+error are wrong, and the error grows with distance from the real
+broadcast epoch.
+
+This addendum makes precise satellite states actually drive generation,
+which is what "precise IQ" requires.
+
+### Approach
+
+`gps-sdr-sim` still consumes a RINEX-2 broadcast record and owns orbit
+propagation, Doppler, code phase, carrier, and the LNAV bitstream — none
+of that C code is touched. Instead, for `ephemeris_mode="precise"`:
+
+1. Sample the interpolated SP3 ECEF position over a 4 h arc (`toe` ± 2 h,
+   97 points) — the same interval the GPS control segment fits a
+   broadcast record over.
+2. Least-squares fit (damped Gauss-Newton, normalised parameters, a
+   coarse 2-D grid seed on M0 / node longitude) the 15 broadcast
+   parameters — `m0, e, sqrtA, delta_n, i0, idot, omega0, omega_dot,
+   omega, cuc, cus, crc, crs, cic, cis` — so the standard broadcast
+   propagation (`geometry._orbit`, identical to gps-sdr-sim's `eph2pos`)
+   reproduces the SP3 track. `af0/af1/af2` are fitted to the SP3 clock
+   with the relativistic-eccentricity term removed.
+3. Serialise the fitted records with `ephemeris.to_rinex2_nav` and hand
+   them to `gps-sdr-sim` with **no realignment** — they already carry a
+   real `toe` valid across the whole run (one fit covers every live
+   segment).
+
+Over a ±1 h arc the harmonic terms are unobservable and the fit stalls
+hundreds of metres out; the 4 h arc makes them observable and a
+pure-Keplerian synthetic recovers to millimetres. A real SP3 fits to
+well under a metre; a fit that cannot get under ~2 m is returned as
+HTTP 422, never written to a nav file.
+
+### What still is not precise
+
+- **Clock:** SP3 coarse clock (15-min, linearly interpolated) fitted to a
+  quadratic — good to a few ns, not a 30 s CLK-RINEX source.
+- **Iono / tropo / multipath:** absent — that is `gps-sdr-sim`, unchanged.
+- **CoM vs APC:** the ~cm radial SP3 centre-of-mass / antenna-phase-centre
+  offset is still not applied.
+
+### Files
+
+| File | Change |
+|------|--------|
+| `backend/ephemeris_fit.py` (new) | `fit_satellite`, `build_precise_broadcast`, `EphemerisFitError`; vectorised broadcast forward model for the fit's inner loop. |
+| `backend/scenario.py` | `ScenarioRequest.nav_override` — a parsed-eph dict written straight to the nav file, no realignment. |
+| `backend/generator.py` | `_prepare_nav` honours `nav_override`; `meta.json` records `ephemeris_mode` and `precise_fit`. |
+| `backend/app.py` | `_precise_nav_override` helper; `ephemeris_mode` / `fallback_to_broadcast` on `/api/generate` and `/api/live/start`; 422 on unavailable precise. |
+| frontend | Ephemeris selector now applies to Generate/live; hint reworded; cache-bust `?v=21`. |
+| `tests/test_ephemeris_fit.py`, `tests/test_app_precise_generate.py` (new) | fit recovery + wiring. |

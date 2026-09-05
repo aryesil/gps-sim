@@ -6,9 +6,11 @@ Pick a place and time on a map, generate a baseband GPS L1 C/A IQ recording
 with [`gps-sdr-sim`](https://github.com/osqzss/gps-sdr-sim), check it with a
 built-in software receiver, decode its navigation message, and — optionally,
 into a cable and never over the air — replay it to a PlutoSDR-class SDR.
-Every RF-relevant action is written to a persistent audit log; a precise
-orbit/clock (SP3) subsystem lets you quantify how far the broadcast-ephemeris
-signal path sits from a precise reference.
+Every RF-relevant action is written to a persistent audit log. Signal
+generation runs from broadcast ephemeris by default; in **precise mode** an
+IGS SP3 orbit/clock product is fitted into the broadcast record set that
+drives `gps-sdr-sim`, so the satellite states behind the IQ match the
+precise product to well under a metre.
 
 > ⚠️ **RF safety first.** Transmit is disabled by default. Read
 > [Safety](#safety) before enabling it. Lawful, authorized operation is
@@ -51,9 +53,13 @@ signal path sits from a precise reference.
   and GPS time can be jogged *while transmitting*; timeline scripting;
   live spectrogram + C/N0 trend over SSE; record the SSE stream and replay
   it later with no hardware attached.
-- **Precise ephemeris (analysis)** — parse IGS SP3-c/d products, interpolate
-  satellite ECEF position/velocity and clock, and compare the precise
-  reference against the realigned broadcast column the IQ actually uses.
+- **Precise ephemeris** — parse IGS SP3-c/d products and interpolate
+  satellite ECEF position/velocity and clock. Two uses: (1) *analysis* —
+  compare the precise reference against the realigned broadcast column;
+  (2) *generation* — least-squares fit the SP3 track into a broadcast
+  record set (solved M0 + perturbations, a 4 h arc) so `gps-sdr-sim`
+  propagates satellite states that match the precise product to
+  sub-metre, instead of the epoch-stamped `toc`/`toe` approximation.
 - **Operations support** — persistent JSONL audit log, multi-operator
   `/ws/events` WebSocket mirror, real-receiver NMEA feedback (UDP/serial),
   named trajectory and scenario presets, optional API-key RBAC.
@@ -69,10 +75,14 @@ is. This workbench wraps generation with the parts a test rig needs:
   receiver fix, decoded LNAV), and every RF action is logged.
 - **Reproducible** — scenarios and trajectories are saved by name; a live
   session's exact event stream can be recorded and replayed.
-- **Honest about fidelity** — the signal is built from *broadcast* ephemeris
-  whose epoch is realigned to the requested start. The precise-ephemeris
-  subsystem exists to *measure* the resulting error, not to hide it. It is
-  an analysis reference only — SP3 data never drives signal generation.
+- **Honest about fidelity** — by default the signal is built from
+  *broadcast* ephemeris whose epoch is only realigned (`toc`/`toe`
+  stamped) to the requested start, and the precise subsystem *measures*
+  the resulting error rather than hiding it. When you need the geometry to
+  be right, precise mode fits the SP3 track into the broadcast records so
+  the IQ is genuinely precise-driven — and the README says exactly which
+  path produced a given recording (`meta.json` records `ephemeris_mode`
+  and the per-PRN fit residual).
 
 ---
 
@@ -108,33 +118,41 @@ Run the test suite:
 ```
                 map + time
                     |
-                    v
-        broadcast RINEX nav (IGS/BKG mirror or upload)
-                    |
-          toc/toe realigned to requested start
-                    |
-                    v
-              gps-sdr-sim  ------------->  raw IQ + meta.json
-                    |                           |
-                    |                  +--------+--------+
-                    |                  |                 |
-                    v                  v                 v
-            software receiver     spectrum /        transmit (opt-in,
-            least-squares fix     acquisition /     cabled only) / live
-                    |             LNAV decode       segment regeneration
-                    v
-             fix error vs marker
+       +------------+--------------------------------+
+       | ephemeris_mode = broadcast (default)        | ephemeris_mode = precise
+       v                                             v
+  broadcast RINEX nav                    IGS SP3 orbit/clock (interpolated)
+  (IGS/BKG mirror or upload)                          |
+       |                                  least-squares fit -> broadcast
+  toc/toe realigned to start              records (solved M0 + perturb.,
+       |                                  4 h arc, sub-metre residual)
+       +------------------+--------------------------+
+                          v
+                    RINEX-2 nav file
+                          |
+                          v
+                    gps-sdr-sim  ------------->  raw IQ + meta.json
+                          |                           |
+                          |                  +--------+--------+
+                          v                  v                 v
+                  software receiver     spectrum /        transmit (opt-in,
+                  least-squares fix     acquisition /     cabled only) / live
+                          |             LNAV decode       segment regeneration
+                          v
+                   fix error vs marker
 
-        precise SP3 orbit/clock  --(analysis only)-->  compare vs the
-        (IGS product, interpolated)                    realigned broadcast
-                                                       column  ── NEVER
-                                                       feeds gps-sdr-sim
+  precise SP3 orbit/clock  --(analysis)-->  /api/preview, /api/precise/compare
+  (also drives generation                   per-PRN delta vs realigned broadcast
+   in precise mode, above)
 ```
 
-**The signal is broadcast-only.** `gps-sdr-sim` consumes a RINEX-2
-broadcast Keplerian nav file and nothing else — there is no
-satellite-state interface into it. The precise subsystem reads the same
-epoch and reports per-PRN deltas; it never produces IQ.
+**`gps-sdr-sim` always consumes a RINEX-2 broadcast Keplerian nav file** —
+there is no satellite-state interface into it. In broadcast mode that file
+is the realigned daily BRDC; in precise mode it is a record set whose
+parameters were *solved* against the SP3 track, so the states gps-sdr-sim
+propagates match the precise product. The analysis endpoints
+(`/api/preview` precise, `/api/precise/compare`) still report the
+broadcast-vs-precise delta so the realignment error stays visible.
 
 ```
 backend/
@@ -147,6 +165,7 @@ backend/
   gpstime.py        GPSTime dataclass, leap-second table, UTC<->GPS
   precise.py        SP3-c/d parser, Neville position/velocity interp, clock interp
   ephemeris_source.py  broadcast|precise mode selection, per-PRN state functions
+  ephemeris_fit.py  least-squares fit of SP3 track -> broadcast record set (precise generation)
   inspector.py      IQ read, spectrum, C/A acquisition, correlation, compare
   receiver.py       least-squares position solve from generated IQ
   lnav_display.py   LNAV subframe reconstruction + human-readable explain
@@ -182,18 +201,21 @@ built from source); dependency-free vanilla JS plus Leaflet from a CDN.
 
 ## Ephemeris and accuracy modes
 
+Set with `ephemeris_mode` on `/api/generate`, `/api/live/start`, and
+`/api/preview` (`"broadcast"` default, or `"precise"`).
+
 | Mode | Where it applies | What it means |
 |------|------------------|---------------|
-| **Broadcast** (default) | signal generation **and** analysis | The daily broadcast RINEX nav file. This is the only thing that reaches `gps-sdr-sim`. |
-| **toc/toe realignment** | signal generation | Every satellite's `toc`/`toe`/`gps_week` is overwritten to the requested start so `gps-sdr-sim`'s validity-window check passes. It is a **broadcast-compatibility mechanism, not a new precise ephemeris** — orbit error grows as the requested start moves away from the real broadcast epoch. |
-| **Precise (SP3)** | analysis only (`/api/preview`, `/api/precise/*`) | An IGS SP3-c/d orbit/clock product, interpolated (~10th-order Neville for position, analytic derivative for velocity, linear for the coarse SP3 clock). Used as the reference to quantify realignment error. **Never feeds signal generation.** |
+| **Broadcast** (default) | generation + analysis | The daily broadcast RINEX nav file, with every satellite's `toc`/`toe`/`gps_week` **stamped** to the requested start so `gps-sdr-sim`'s validity-window check passes. M0 and the perturbations are left untouched — a broadcast-compatibility mechanism, not a precise ephemeris — so orbit error grows as the requested start moves away from the real broadcast epoch. |
+| **Precise (SP3), analysis** | `/api/preview`, `/api/precise/compare` | An IGS SP3-c/d orbit/clock product, interpolated (~10th-order Neville for position, analytic derivative for velocity, linear for the coarse SP3 clock). Reports the per-PRN broadcast-vs-precise delta. |
+| **Precise (SP3), generation** | `/api/generate`, `/api/live/start` | `ephemeris_fit.py` least-squares fits the interpolated SP3 track (position over a 4 h arc, `toe` ± 2 h) into a broadcast record set — solving M0, `delta_n`, the rate terms and the six harmonic corrections, plus `af0/af1/af2` against the SP3 clock. The fitted records go to `gps-sdr-sim` with **no realignment**, so the satellite states behind the IQ match the SP3 product to sub-metre. Fit residuals land in `meta.json` (`precise_fit`); a fit that cannot get under ~2 m is an error, not a silent bad nav file. |
 
 Precise mode fails explicitly rather than silently degrading:
 
-- No SP3 product loaded, or the requested epoch is outside the product's
-  covered interval → **HTTP 422**, unless the caller passes
-  `fallback_to_broadcast: true` (which then returns broadcast data with a
-  `FELL BACK` warning).
+- No SP3 product loaded, epoch outside the product's covered interval, or
+  a fit that will not converge below tolerance → **HTTP 422**, unless the
+  caller passes `fallback_to_broadcast: true` (which then uses broadcast
+  with a warning that names what failed).
 - A PRN absent from the SP3 product is **omitted and named in `warnings`**,
   never silently replaced with a broadcast value.
 - No extrapolation past the product's edge epochs.
@@ -216,10 +238,9 @@ Three pages, switched from the left sidebar.
   *Record this session*.
 - *Simulation config* — map marker, Start UTC, Duration, Sample rate,
   Format (int16 / int8), RINEX (`AUTO` or a path).
-- *Ephemeris (analysis)* — Broadcast / Precise (SP3) selector plus a
-  collapsible panel to load an SP3 file and run a compare-vs-broadcast.
-  The hint states plainly: analysis only — generated IQ always uses
-  broadcast.
+- *Ephemeris* — Broadcast (realigned) / Precise (SP3-fitted) selector,
+  applied to Generate and live runs, plus a collapsible panel to load an
+  SP3 file and run a compare-vs-broadcast.
 - *Scenario library* — save/reload the card's config by name.
 - *Timeline* — `jog` / `time_shift` steps that fire at `t + N` s.
 - *Inspect panels* — IQ waveform + spectrum with a playback scrubber,
@@ -256,8 +277,17 @@ and the Event list: the persistent audit trail merged with the live
 1. Download an IGS SP3 product covering your scenario epoch.
 2. In the card's precise panel, load it, set the same lat/lon/time, and
    **Compare vs broadcast**. Read the per-PRN and RMS position/range/Doppler
-   deltas — this is how far the generated signal's geometry sits from a
-   precise reference.
+   deltas — this is how far a *broadcast*-mode recording's geometry sits
+   from the precise reference.
+
+**Precise-geometry generation**
+
+1. Load an SP3 product (as above) whose interval covers the scenario
+   epoch ± 2 h.
+2. Set the card's Ephemeris selector to **Precise (SP3-fitted)** and
+   **Generate**. The `done` event and `meta.json` (`precise_fit`) report
+   the per-PRN fit residual; a scenario epoch outside the product's
+   coverage fails with HTTP 422 instead of falling back silently.
 
 **Cabled hardware replay**
 
@@ -288,7 +318,7 @@ key in `X-API-Key`; a transmit *stop* never does.
 | Health / preview | `GET /api/health`, `POST /api/preview` (accepts `ephemeris_mode`, `fallback_to_broadcast`), `POST /api/preview_track` |
 | Ephemeris | `POST /api/rinex/upload` |
 | Precise (analysis) | `GET /api/precise/status`, `POST /api/precise/load` *(operator)*, `POST /api/precise/compare` |
-| Generate / inspect | `POST /api/generate` (SSE), `POST /api/receiver`, `GET /api/iqplot`, `GET /api/correlation`, `GET /api/lnav` |
+| Generate / inspect | `POST /api/generate` (SSE; accepts `ephemeris_mode`, `fallback_to_broadcast`), `POST /api/receiver`, `GET /api/iqplot`, `GET /api/correlation`, `GET /api/lnav` |
 | Transmit *(needs `ALLOW_TX=1`)* | `POST /api/transmit` (SSE, operator), `POST /api/transmit/stop`, `POST /api/live/start` (SSE, operator), `POST /api/live/jog|time_shift` *(operator)*, `POST /api/live/stop` |
 | Device *(needs `ALLOW_TX=1`)* | `POST /api/device/connect|disconnect` *(operator)*, `GET /api/device/status` |
 | Recording | `GET /api/recording/list`, `GET /api/recording/replay` (SSE) |
@@ -367,10 +397,12 @@ operator; the authors accept no liability for misuse.
 .venv/bin/pytest -q
 ```
 
-**172 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
+**185 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
 alignment, GPS-time conversions, the SP3 parser and orbit/clock
-interpolation, the broadcast/precise mode selector, geometry, acquisition,
-the receiver solve, LNAV decode, the live session, transmit plumbing
+interpolation, the broadcast/precise mode selector, the SP3→broadcast
+fit (pure-Kepler recovery to millimetres, SP3-fixture fit, RINEX-2
+serialisation), precise generation wiring, geometry, acquisition, the
+receiver solve, LNAV decode, the live session, transmit plumbing
 (mocked hardware), the device link, audit, RBAC, NMEA parsing,
 recording/replay, the scenario library, the WebSocket hub, and the
 precise-ephemeris HTTP endpoints. The 3 `xfail` cases need real SDR
@@ -380,13 +412,19 @@ hardware. The suite uses fixtures and mocks only — no network downloads.
 
 ## Accuracy and limitations
 
-- **The generated signal uses broadcast ephemeris, realigned.** Orbit
-  error grows the further the requested start is from the real broadcast
-  epoch — this is inherent to realigning `gps-sdr-sim`'s ephemeris and is
-  exactly what the precise-ephemeris compare is for.
-- **Precise (SP3) is analysis only.** It never drives IQ generation. The
-  SP3 clock is the product's coarse clock, linearly interpolated; it is a
-  reference, not a sub-nanosecond time source.
+- **Broadcast mode realigns, it does not propagate.** `toc`/`toe` are
+  stamped to the requested start; M0 and the perturbations are not, so
+  orbit error grows the further the start is from the real broadcast
+  epoch. Use the precise compare to quantify it, or precise generation to
+  avoid it.
+- **Precise generation is orbit-accurate, not a time standard.** The
+  fitted records reproduce the SP3 *position* track to sub-metre over the
+  fit arc, but the clock comes from the SP3 product's coarse clock
+  (linearly interpolated) fitted to `af0/af1/af2` — good to a few ns, not
+  a sub-nanosecond source. Iono/tropo/multipath are still absent (that is
+  `gps-sdr-sim`, unchanged).
+- **The fit arc is 4 h.** Precise generation needs an SP3 product whose
+  epochs cover the scenario start ± 2 h; outside that it returns HTTP 422.
 - **GPS L1 C/A only** — single band, single constellation. No GLONASS /
   Galileo / BeiDou, no L2/L5.
 - **Two transmit slots** (`TX1`, `TX2`) maximum.

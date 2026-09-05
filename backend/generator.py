@@ -39,12 +39,18 @@ def _prepare_nav(req: scenario.ScenarioRequest, outdir: pathlib.Path,
     as a RINEX-2 nav file inside outdir, and return its path. Shared by
     run() and run_segment() so the F2/F4 handling in KNOWN_ISSUES only
     exists once."""
+    nav_path = outdir / "nav.rinex2.n"
+    if req.nav_override is not None:
+        # Precise (SP3-fitted) records already carry a real toe valid over
+        # a +/-2 h window, so every segment of a run uses the same file and
+        # realignment must NOT touch it.
+        nav_path.write_text(ephemeris.to_rinex2_nav(req.nav_override))
+        return nav_path
     eph = ephemeris.parse_rinex(req.rinex_path)
     gps_start = (req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
                  + dt.timedelta(seconds=time_offset_s))
     week, sow = ephemeris.gps_week_and_sow(gps_start)
     eph = ephemeris.align_epochs(eph, week, sow)
-    nav_path = outdir / "nav.rinex2.n"
     nav_path.write_text(ephemeris.to_rinex2_nav(eph))
     return nav_path
 
@@ -91,7 +97,10 @@ def run(req: scenario.ScenarioRequest, progress_cb=None, binary: str | None = No
             "lat": req.lat, "lon": req.lon, "alt": req.alt,
             "start_utc": req.start.isoformat(), "duration_s": req.duration_s,
             "rinex_path": req.rinex_path, "route": req.route,
+            "ephemeris_mode": "precise" if req.nav_override is not None else "broadcast",
         },
+        "precise_fit": ([e["_fit"] for e in req.nav_override.values() if "_fit" in e]
+                        if req.nav_override is not None else None),
         "argv": argv,
         "binary_version": binary_version(b),
         "sample_rate": req.sample_rate,

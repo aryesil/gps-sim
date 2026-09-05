@@ -18,6 +18,11 @@ class ScenarioRequest:
     sample_format: str = "int16"
     route: list[tuple[float, float, float]] | None = None
     ionosphere: bool = False
+    # When set, this parsed-ephemeris dict (one entry per PRN, in the shape
+    # ephemeris.parse_rinex returns) is written straight to the nav file
+    # gps-sdr-sim reads, with NO toc/toe realignment. Used for precise
+    # (SP3-fitted) generation -- the records already carry a real toe.
+    nav_override: dict | None = None
 
 
 def _bytes_per_sample(fmt: str) -> int:

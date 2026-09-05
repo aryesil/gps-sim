@@ -41,8 +41,11 @@ away from the real broadcast epoch.
 
 ## Precise ephemeris
 
-Analysis and verification only. SP3 orbit/clock products never reach
-signal generation — see [`precise-ephemeris-design.md`](precise-ephemeris-design.md).
+Load and inspect IGS SP3-c/d products. These endpoints are the analysis
+surface (compare vs. broadcast); the same loaded product also backs
+`ephemeris_mode: "precise"` on `/api/generate` and `/api/live/start`,
+where `ephemeris_fit.py` fits it into the broadcast records that drive
+`gps-sdr-sim` — see [`precise-ephemeris-design.md`](precise-ephemeris-design.md).
 
 | Method | Path | Role | Notes |
 |--------|------|------|-------|
@@ -56,7 +59,7 @@ signal generation — see [`precise-ephemeris-design.md`](precise-ephemeris-desi
 
 | Method | Path | Role | Notes |
 |--------|------|------|-------|
-| `POST` | `/api/generate` | any | **SSE.** Body: `{lat, lon, alt, start_utc, duration_s, sample_rate, sample_format, rinex_path?, route?}`. `route` is a list of timestamped waypoints for a dynamic scenario. Emits `progress` frames, then `done` (`{outdir, size_bytes, inspect{}}`) or `error`. |
+| `POST` | `/api/generate` | any | **SSE.** Body: `{lat, lon, alt, start_utc, duration_s, sample_rate, sample_format, rinex_path?, route?, ephemeris_mode?="broadcast", fallback_to_broadcast?=false}`. `route` is a list of timestamped waypoints for a dynamic scenario. `ephemeris_mode="precise"` fits the loaded SP3 product into the broadcast records that drive generation; it fails **422** (before the stream opens) if no product is loaded, the epoch is outside the product's coverage ± 2 h, or a per-PRN fit will not converge below ~2 m — unless `fallback_to_broadcast=true`. Emits `progress` frames, then `done` (`{outdir, size_bytes, inspect{}, ephemeris_mode, warnings[]}}`) or `error`. `meta.json` records `config.ephemeris_mode` and `precise_fit` (per-PRN residual summary). |
 | `POST` | `/api/receiver` | any | Body: `{outdir, marker?}`. Runs the from-scratch software receiver over the generated IQ, solves a least-squares fix, returns the fix and its error vs. `marker`. |
 | `GET` | `/api/iqplot?outdir=&n=2000&offset=0` | any | Waveform slice + power spectrum. `offset` / `total_samples` drive the playback scrubber. |
 | `GET` | `/api/correlation?outdir=&prn=` | any | Code-correlation curve (chips vs. amplitude) and the acquired Doppler for one PRN. |
@@ -74,7 +77,7 @@ setup confirmed" checkbox).
 |--------|------|------|-------|
 | `POST` | `/api/transmit` | **operator** | **SSE.** Replay a generated file to the SDR. Body: `{outdir｜iq_path, sample_rate, sample_format, lo_hz?, tx_gain_db?, uri?, tx_scale?, dry_run?, confirm_isolated}`. Emits `progress`/underflow stats then `done`/`error`. Audited. |
 | `POST` | `/api/transmit/stop` | any | Body `{slot?}`. Sets the cancel event for that TX slot. |
-| `POST` | `/api/live/start` | **operator** | **SSE.** Open-ended live session (segment-at-a-time regeneration). Body adds `{max_duration_s?, timeline?[], record?, track_prn?}`. Emits `progress`, `spectrogram_*`, `cn0_db`, `timeline_step`, and `finished`. `max_duration_s` forces a stop and logs `auto_stop_timeout`. Audited. |
+| `POST` | `/api/live/start` | **operator** | **SSE.** Open-ended live session (segment-at-a-time regeneration). Body adds `{max_duration_s?, timeline?[], record?, track_prn?, ephemeris_mode?, fallback_to_broadcast?}`. `ephemeris_mode="precise"` behaves as on `/api/generate` (one fit covers the whole session; **422** on the same conditions). Emits `progress`, `spectrogram_*`, `cn0_db`, `timeline_step`, and `finished`. `max_duration_s` forces a stop and logs `auto_stop_timeout`. Audited. |
 | `POST` | `/api/live/jog` | **operator** | Body `{slot, direction, distance_m}`. Shift the live position in the ENU frame. |
 | `POST` | `/api/live/time_shift` | **operator** | Body `{slot, field, delta}`. Shift the live GPS time-of-week / clock offset. |
 | `POST` | `/api/live/stop` | any | Body `{slot}`. Stop the live session. |
