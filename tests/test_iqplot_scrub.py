@@ -42,4 +42,5 @@ def test_api_iqplot_reports_total_samples_and_honors_offset(tmp_path, monkeypatc
     d = r.json()
     assert d["total_samples"] == 20000
     assert d["offset"] == 1000
+    assert d["sample_format"] == "int16"     # scrubber needs it for a dBFS readout
     assert len(d["i"]) == 500

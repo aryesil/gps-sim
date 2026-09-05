@@ -100,12 +100,21 @@ window.drawCorrelationBars = function (canvasId, rows) {
   g.clearRect(0, 0, c.width, c.height);
   if (!rows || !rows.length) return;
   const w = c.width / rows.length;
-  const maxDb = Math.max(1, ...rows.map(r => r.metric_db));
+  // Zoom the y-axis to the actual spread. Every acquired PRN's peak/floor
+  // ratio saturates near the same value for a fixed integration length, so
+  // a 0-based scale makes the bars look identical; a min-anchored window
+  // (>= 6 dB) makes the few-dB per-PRN differences legible.
+  const vals = rows.map(r => r.metric_db);
+  const hi = Math.max(...vals) + 1;
+  const lo = Math.min(Math.min(...vals) - 2, hi - 6);
+  const span = Math.max(1e-6, hi - lo);
   rows.forEach((r, k) => {
-    const h = (Math.max(0, r.metric_db) / maxDb) * (c.height - 14);
+    const h = Math.max(0, (r.metric_db - lo) / span) * (c.height - 22);
     g.fillStyle = '#2a6';
-    g.fillRect(k * w + 2, c.height - h, w - 4, h);
-    g.fillStyle = '#333';
+    g.fillRect(k * w + 2, c.height - h - 10, w - 4, h);
+    g.fillStyle = '#7fd8b0';
+    g.fillText(r.metric_db.toFixed(1), k * w + 2, c.height - h - 13);
+    g.fillStyle = '#666';
     g.fillText('G' + r.prn, k * w + 2, c.height - 2);
   });
 };
@@ -180,7 +189,16 @@ window.loadIqPlots = async function (channelId, outdir, offset) {
     slider.value = d.offset;
   }
   if (readout) {
-    readout.textContent = `t=${(d.offset / d.sample_rate).toFixed(2)}s / ${(d.total_samples / d.sample_rate).toFixed(2)}s`;
+    // Window RMS in dBFS. GPS L1 C/A baseband is a wideband spread-spectrum
+    // sum with a near-constant envelope, so this figure barely moves as the
+    // scrubber is dragged -- that is expected, not a stuck plot.
+    let ss = 0;
+    for (let k = 0; k < d.i.length; k++) ss += d.i[k] * d.i[k] + d.q[k] * d.q[k];
+    const rms = Math.sqrt(ss / Math.max(1, d.i.length));
+    const fs = d.sample_format === 'int8' ? 127 : 32767;
+    readout.textContent =
+      `t=${(d.offset / d.sample_rate).toFixed(2)}s / ${(d.total_samples / d.sample_rate).toFixed(2)}s` +
+      `   RMS ${(20 * Math.log10(rms / fs)).toFixed(1)} dBFS`;
   }
 };
 

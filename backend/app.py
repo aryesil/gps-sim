@@ -514,6 +514,7 @@ def iqplot(outdir: str, n: int = 2000, offset: int = 0):
         "i": iq.real[:n].tolist(), "q": iq.imag[:n].tolist(),
         "spectrum_freq_hz": freqs.tolist(), "spectrum_db": power_db.tolist(),
         "offset": offset, "sample_rate": meta["sample_rate"],
+        "sample_format": meta["sample_format"],
         "total_samples": inspector.iq_sample_count(bin_path, meta["sample_format"]),
     }
 
