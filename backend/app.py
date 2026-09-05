@@ -366,16 +366,28 @@ def stop_transmit(body: dict | None = None):
     return {"stopped": True}
 
 
-def _tee_spectrogram(chunks, sample_rate: float, on_row):
+def _tee_spectrogram(chunks, sample_rate: float, on_row, track_prn: int | None = None,
+                      on_cn0=None):
     """Wrap a live-session chunk source: forward every IQ chunk unchanged
     to the caller (transmit.stream's hardware push) while also handing
     each chunk's spectrum snapshot to on_row -- one FFT column per
     ~1s segment, computed with the existing inspector.spectrum() (no new
     DSP, same 4096-sample Hanning-windowed FFT /api/iqplot already uses,
-    just cheaper: nfft=256 is enough resolution for a live waterfall)."""
+    just cheaper: nfft=256 is enough resolution for a live waterfall).
+
+    When track_prn is set, also runs the existing inspector.acquire() on
+    each chunk and reports its metric_db to on_cn0 -- one C/N0 trend
+    sample per segment, same acquisition already used by /api/correlation
+    and the post-generate inspect table, just re-run every ~1s live."""
     for chunk in chunks:
         freqs, db = inspector.spectrum(chunk, sample_rate, nfft=256)
         on_row(freqs, db)
+        if track_prn is not None and on_cn0 is not None:
+            try:
+                res = inspector.acquire(chunk, sample_rate, track_prn)
+                on_cn0(res["metric_db"])
+            except Exception:
+                pass  # a transient acquisition failure must never drop the TX chunk
         yield chunk
 
 
@@ -411,7 +423,12 @@ def live_start(body: dict):
             def on_row(freqs, db):
                 q.append({"spectrogram_freq_hz": freqs.tolist(),
                           "spectrogram_db": db.tolist()})
-            chunk_source = _tee_spectrogram(session.segments(), req.sample_rate, on_row)
+            def on_cn0(metric_db):
+                q.append({"cn0_db": metric_db})
+            track_prn = body.get("track_prn")
+            chunk_source = _tee_spectrogram(
+                session.segments(), req.sample_rate, on_row,
+                track_prn=int(track_prn) if track_prn else None, on_cn0=on_cn0)
             th = threading.Thread(
                 target=transmit.stream,
                 kwargs=dict(params=params, dry_run=body.get("dry_run", False),

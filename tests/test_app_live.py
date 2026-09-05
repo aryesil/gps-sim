@@ -24,6 +24,28 @@ def test_tee_spectrogram_forwards_chunks_unchanged_and_emits_one_row_per_chunk()
     assert np.all(np.isfinite(db))
 
 
+def test_tee_spectrogram_tracks_prn_when_requested():
+    rng = np.random.default_rng(0)
+    chunks = [(rng.standard_normal(4096) + 1j * rng.standard_normal(4096)).astype(np.complex64)
+              for _ in range(2)]
+    cn0_samples = []
+    out = list(_tee_spectrogram(iter(chunks), sample_rate=2_600_000.0,
+                                 on_row=lambda f, d: None, track_prn=1,
+                                 on_cn0=lambda db: cn0_samples.append(db)))
+    assert len(out) == 2
+    assert len(cn0_samples) == 2
+    assert all(isinstance(v, float) for v in cn0_samples)
+
+
+def test_tee_spectrogram_skips_cn0_without_track_prn():
+    chunks = [np.ones(512, dtype=np.complex64)]
+    cn0_samples = []
+    list(_tee_spectrogram(iter(chunks), sample_rate=2_600_000.0,
+                           on_row=lambda f, d: None,
+                           on_cn0=lambda db: cn0_samples.append(db)))
+    assert cn0_samples == []
+
+
 def test_live_start_needs_allow_tx_and_confirm(monkeypatch):
     monkeypatch.setattr(config, "ALLOW_TX", False)
     r = client.post("/api/live/start", json={

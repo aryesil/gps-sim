@@ -136,6 +136,32 @@ window.pushSpectrogramColumn = function (canvasId, db) {
   }
 };
 
+// C/N0 trend: scrolling line chart, one sample per live segment (~1/s).
+// Keeps its own history per canvas so a redraw can rescale to the visible
+// window's min/max instead of a fixed dB range.
+const _cn0History = {};   // canvasId -> number[]
+
+window.pushCn0Sample = function (canvasId, db) {
+  const c = document.getElementById(canvasId);
+  if (!c) return;
+  const hist = _cn0History[canvasId] || (_cn0History[canvasId] = []);
+  hist.push(db);
+  while (hist.length > c.width) hist.shift();
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, c.width, c.height);
+  const lo = Math.min(...hist), hi = Math.max(...hist);
+  const span = Math.max(1e-6, hi - lo);
+  g.strokeStyle = '#8b7cf6'; g.beginPath();
+  hist.forEach((v, k) => {
+    const x = (k / Math.max(1, hist.length - 1)) * c.width;
+    const y = c.height - ((v - lo) / span) * (c.height - 8) - 4;
+    k === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+  });
+  g.stroke();
+  const readout = document.getElementById(canvasId.replace('-trend', '-readout'));
+  if (readout) readout.textContent = ` ${db.toFixed(1)} dB`;
+};
+
 window.loadIqPlots = async function (channelId, outdir) {
   const r = await fetch(`/api/iqplot?outdir=${outdir}`);
   if (!r.ok) return;

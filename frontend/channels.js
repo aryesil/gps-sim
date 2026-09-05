@@ -73,6 +73,9 @@ window.addChannel = function () {
           <h4>Live Spectrogram</h4>
           <canvas id="${id}-spectrogram" width="400" height="120"></canvas>
           <div class="hint">Fills while this channel is transmitting live -- one column per ~1s segment.</div>
+          <h4>C/N0 Trend<span id="${id}-cn0-readout" class="hint"></span></h4>
+          <canvas id="${id}-cn0-trend" width="400" height="100"></canvas>
+          <div class="hint">Set "Selected PRN" on the Satellites tab before Start to track it live.</div>
         </div>
         <div class="tab-content" data-tab="satellites" hidden>
           <canvas id="${id}-skyplot" width="260" height="260"></canvas>
@@ -265,6 +268,8 @@ function wireChannelActions(id) {
       confirm_isolated: document.getElementById(`${id}-tx-confirm`).checked,
       dry_run: document.getElementById(`${id}-tx-dryrun`).checked,
     };
+    const prnInput = document.getElementById(`${id}-lnav-prn`);
+    if (prnInput && prnInput.value) body.track_prn = Number(prnInput.value);
     const r = await fetch('/api/live/start', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
@@ -294,6 +299,7 @@ function wireChannelActions(id) {
           const msg = JSON.parse(line);
           if (msg.slot && !channelState(id).txSlot) enableLiveTabs(id, msg.slot);
           if (msg.spectrogram_db) pushSpectrogramColumn(`${id}-spectrogram`, msg.spectrogram_db);
+          if (msg.cn0_db !== undefined) pushCn0Sample(`${id}-cn0-trend`, msg.cn0_db);
           if (msg.finished) { badge.textContent = 'STOPPED'; badge.classList.remove('badge-live'); disableLiveTabs(id); }
         });
         pump();
