@@ -18,14 +18,16 @@ import datetime as dt
 import json
 import threading
 
-from backend import config
+from backend import config, ws_hub
 
 _lock = threading.Lock()
 
 
 def log_event(event: str, **fields) -> None:
-    """Append one audit record. Never raises -- a logging failure must
-    never take down or block an actual transmit."""
+    """Append one audit record, and broadcast it to every connected
+    /ws/events client (backend/ws_hub.py) -- the multi-operator view.
+    Never raises -- a logging or broadcast failure must never take down
+    or block an actual transmit."""
     record = {"ts": dt.datetime.utcnow().isoformat() + "Z", "event": event, **fields}
     try:
         with _lock:
@@ -33,6 +35,7 @@ def log_event(event: str, **fields) -> None:
                 f.write(json.dumps(record) + "\n")
     except OSError:
         pass
+    ws_hub.broadcast(record)
 
 
 def read_events(limit: int = 200) -> list[dict]:

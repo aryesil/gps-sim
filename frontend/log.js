@@ -63,6 +63,32 @@ window.addEventListener('DOMContentLoaded', () => {
   };
 });
 
+// Multi-operator: a shared live feed of every audit event (transmit
+// start/stop, timeline steps, auto-stop, ...) over backend/ws_hub.py's
+// /ws/events, so every operator's open tab sees the same activity in
+// real time -- not just the one that issued it.
+window.connectEventsSocket = function () {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  let ws;
+  try {
+    ws = new WebSocket(`${proto}//${location.host}/ws/events`);
+  } catch (e) {
+    return;  // e.g. no WebSocket support -- multi-operator live feed just doesn't run
+  }
+  ws.onmessage = (ev) => {
+    let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
+    const list = document.getElementById('log-list');
+    if (!list) return;
+    const li = document.createElement('li');
+    li.className = 'log-audit';
+    const detail = Object.entries(d).filter(([k]) => k !== 'ts' && k !== 'event')
+      .map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ');
+    li.textContent = `[${new Date(d.ts).toLocaleTimeString()}] ${d.event}${detail ? ' ' + detail : ''}`;
+    list.insertBefore(li, list.firstChild);
+  };
+  ws.onclose = () => { setTimeout(window.connectEventsSocket, 3000); };  // reconnect on drop
+};
+
 window.loadAuditLog = async function () {
   const r = await fetch('/api/audit?limit=200');
   if (!r.ok) return;

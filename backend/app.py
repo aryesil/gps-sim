@@ -9,15 +9,47 @@ import shutil
 import threading
 import time
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+import asyncio
+import contextlib
+
+from fastapi import FastAPI, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend import (config, ephemeris, geometry, scenario, generator,
                      inspector, receiver, lnav_display, transmit, live, trajectory, audit,
-                     scenario_lib, recording, receiver_feed, auth)
+                     scenario_lib, recording, receiver_feed, auth, ws_hub)
 
-app = FastAPI(title="GPS L1 C/A Signal Simulator")
+@contextlib.asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # audit.log_event() runs on worker threads and needs a live asyncio
+    # loop to schedule WebSocket sends onto (backend/ws_hub.py).
+    ws_hub.set_loop(asyncio.get_event_loop())
+    yield
+
+
+app = FastAPI(title="GPS L1 C/A Signal Simulator", lifespan=_lifespan)
+
+
+@app.websocket("/ws/events")
+async def ws_events(websocket: WebSocket):
+    """Multi-operator shared view: every audit event (transmit
+    start/stop, timeline steps, auto-stop, ...) is pushed here in real
+    time to every connected tab -- see backend/ws_hub.py."""
+    # Belt-and-suspenders: the lifespan startup hook above sets this too,
+    # but a bare TestClient(app) (used by every test in this suite,
+    # including this file) never runs lifespan events unless entered as
+    # `with TestClient(app) as c:` -- so the first real connection also
+    # captures the loop it's actually running on.
+    ws_hub.set_loop(asyncio.get_event_loop())
+    await ws_hub.register(websocket)
+    try:
+        while True:
+            await websocket.receive_text()  # only used to detect disconnect
+    except WebSocketDisconnect:
+        pass
+    finally:
+        ws_hub.unregister(websocket)
 
 
 @app.exception_handler(ephemeris.EphemerisUnavailable)

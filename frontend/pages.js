@@ -23,4 +23,5 @@ window.addEventListener('DOMContentLoaded', () => {
     btn.onclick = () => showPage(btn.dataset.page);
   });
   if (window.loadAuditLog) loadAuditLog();
+  if (window.connectEventsSocket) connectEventsSocket();
 });
