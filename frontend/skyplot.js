@@ -1,4 +1,27 @@
 // frontend/skyplot.js
+
+// Shared HiDPI fix. Canvases authored at CSS px look blurry on retina /
+// fractional-DPI screens because the backing store is 1:1 with CSS px. Size
+// the backing store to devicePixelRatio and install a matching context
+// transform, so every draw routine keeps working in CSS px via the returned
+// {W, H}. Idempotent -- safe to call at the top of every redraw.
+window.fitCanvas = function (c) {
+  if (typeof c === 'string') c = document.getElementById(c);
+  const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  if (!c.dataset.cssw) {
+    c.dataset.cssw = c.getAttribute('width') || c.width;
+    c.dataset.cssh = c.getAttribute('height') || c.height;
+    c.style.width = c.dataset.cssw + 'px';
+    c.style.height = c.dataset.cssh + 'px';
+  }
+  const W = +c.dataset.cssw, H = +c.dataset.cssh;
+  const bw = Math.round(W * dpr), bh = Math.round(H * dpr);
+  if (c.width !== bw) { c.width = bw; c.height = bh; }
+  const g = c.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { c, g, W, H };
+};
+
 let _lastSkyEntries = {};   // canvasId -> entries, for click-to-select (positions recomputed on click)
 const _SYS_COLOR = {G:'#06c', R:'#c30', E:'#093', C:'#c60', J:'#606', S:'#888'};
 
@@ -7,9 +30,10 @@ const _SYS_COLOR = {G:'#06c', R:'#c30', E:'#093', C:'#c60', J:'#606', S:'#888'};
 // flat blue used when only geometry (no IQ yet) is available.
 window.drawSkyplot = function (canvasId, entries, cn0ByPrn) {
   _lastSkyEntries[canvasId] = entries;
-  const c = document.getElementById(canvasId), g = c.getContext('2d');
-  const cx = c.width / 2, cy = c.height / 2, R = Math.min(cx, cy) - 10;
-  g.clearRect(0, 0, c.width, c.height);
+  const { g, W, H } = fitCanvas(canvasId);
+  const cx = W / 2, cy = H / 2, R = Math.min(cx, cy) - 10;
+  g.clearRect(0, 0, W, H);
+  g.font = '10px system-ui, sans-serif';
   g.strokeStyle = '#ccc';
   [1, 2 / 3, 1 / 3].forEach(k => { g.beginPath(); g.arc(cx, cy, R * k, 0, 7); g.stroke(); });
   entries.forEach(e => {

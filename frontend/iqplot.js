@@ -4,15 +4,15 @@ let _lastSpectrum = {};   // canvasId -> {freqs, db} -- for hover readout
 
 window.drawWaveform = function (canvasId, i, q) {
   _lastWaveform[canvasId] = { i, q };
-  const c = document.getElementById(canvasId), g = c.getContext('2d');
-  g.clearRect(0, 0, c.width, c.height);
-  const n = i.length, mid = c.height / 2;
+  const { g, W, H } = fitCanvas(canvasId);
+  g.clearRect(0, 0, W, H);
+  const n = i.length, mid = H / 2;
   const maxAbs = Math.max(1, ...i.map(Math.abs), ...q.map(Math.abs));
-  const scale = (c.height / 2 - 4) / maxAbs;
+  const scale = (H / 2 - 4) / maxAbs;
   const plot = (arr, color) => {
-    g.strokeStyle = color; g.beginPath();
+    g.strokeStyle = color; g.lineWidth = 1; g.beginPath();
     arr.forEach((v, k) => {
-      const x = (k / n) * c.width, y = mid - v * scale;
+      const x = (k / n) * W, y = mid - v * scale;
       k === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
     });
     g.stroke();
@@ -33,9 +33,9 @@ window.attachWaveformHover = function (canvasId, readoutId) {
 };
 
 window.drawConstellation = function (canvasId, i, q) {
-  const c = document.getElementById(canvasId), g = c.getContext('2d');
-  g.clearRect(0, 0, c.width, c.height);
-  const cx = c.width / 2, cy = c.height / 2;
+  const { g, W, H } = fitCanvas(canvasId);
+  g.clearRect(0, 0, W, H);
+  const cx = W / 2, cy = H / 2;
   const maxAbs = Math.max(1, ...i.map(Math.abs), ...q.map(Math.abs));
   const scale = (Math.min(cx, cy) - 4) / maxAbs;
   g.fillStyle = 'rgba(0,80,200,0.35)';
@@ -66,8 +66,9 @@ window.drawSpectrum = function (canvasId, freqs, db) {
   }));
   _lastSpectrum[canvasId] = { series: merged };
 
-  const c = document.getElementById(canvasId), g = c.getContext('2d');
-  g.clearRect(0, 0, c.width, c.height);
+  const { g, W, H } = fitCanvas(canvasId);
+  g.clearRect(0, 0, W, H);
+  g.font = '10px system-ui, sans-serif';
   let xmin = Infinity, xmax = -Infinity, lo = Infinity, hi = -Infinity;
   merged.forEach(s => {
     s.abs.forEach(f => { if (f < xmin) xmin = f; if (f > xmax) xmax = f; });
@@ -76,10 +77,10 @@ window.drawSpectrum = function (canvasId, freqs, db) {
   const xspan = Math.max(1e-6, xmax - xmin);
   const span = Math.max(1e-6, hi - lo);
   merged.forEach(s => {
-    g.strokeStyle = s.color; g.beginPath();
+    g.strokeStyle = s.color; g.lineWidth = 1; g.beginPath();
     s.db.forEach((v, k) => {
-      const x = ((s.abs[k] - xmin) / xspan) * c.width;
-      const y = c.height - ((v - lo) / span) * c.height;
+      const x = ((s.abs[k] - xmin) / xspan) * W;
+      const y = H - ((v - lo) / span) * H;
       k === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
     });
     g.stroke();
@@ -109,13 +110,13 @@ window.attachSpectrumHover = function (canvasId, readoutId) {
 };
 
 window.drawCorrelationCurve = function (canvasId, chips, amp) {
-  const c = document.getElementById(canvasId), g = c.getContext('2d');
-  g.clearRect(0, 0, c.width, c.height);
+  const { g, W, H } = fitCanvas(canvasId);
+  g.clearRect(0, 0, W, H);
   if (!amp.length) return;
   const hi = Math.max(...amp);
-  g.strokeStyle = '#a06'; g.beginPath();
+  g.strokeStyle = '#a06'; g.lineWidth = 1; g.beginPath();
   amp.forEach((v, k) => {
-    const x = (chips[k] / 1023) * c.width, y = c.height - (v / hi) * (c.height - 4);
+    const x = (chips[k] / 1023) * W, y = H - (v / hi) * (H - 4);
     k === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
   });
   g.stroke();
@@ -130,29 +131,45 @@ window.loadCorrelationCurve = async function (canvasId, readoutId, outdir, prn) 
   out.textContent = `G${d.prn}: Doppler ${d.doppler_hz.toFixed(0)} Hz, peak ${d.metric_db.toFixed(1)} dB`;
 };
 
-// Reuses metric_db already computed per-PRN by /api/generate's inspect step
-// (backend/inspector.py:compare -> acquire) -- no extra backend call needed.
-window.drawCorrelationBars = function (canvasId, rows) {
-  const c = document.getElementById(canvasId), g = c.getContext('2d');
-  g.clearRect(0, 0, c.width, c.height);
-  if (!rows || !rows.length) return;
-  const w = c.width / rows.length;
-  // Zoom the y-axis to the actual spread. Every acquired PRN's peak/floor
-  // ratio saturates near the same value for a fixed integration length, so
-  // a 0-based scale makes the bars look identical; a min-anchored window
-  // (>= 6 dB) makes the few-dB per-PRN differences legible.
-  const vals = rows.map(r => r.metric_db);
+// GPS-only runs: one bar per acquired PRN, height = metric_db from the
+// inspect step (backend/inspector.py:compare -> acquire).
+// Multi-GNSS runs: inspector is GPS L1 C/A only, so there is no per-PRN
+// correlation. Fall back to the per-SV planned power (gain_db) from
+// meta.json provenance.svs, one bar per satellite across every system,
+// coloured by constellation.
+const _BAR_SYS_COLOR = { G:'#2a6', R:'#c30', E:'#093', C:'#c60', J:'#606', S:'#888' };
+window.drawCorrelationBars = function (canvasId, rows, svs) {
+  const { g, W, H } = fitCanvas(canvasId);
+  g.clearRect(0, 0, W, H);
+  g.font = '10px system-ui, sans-serif';
+  let items;
+  if (rows && rows.length) {
+    items = rows.map(r => ({ label: 'G' + r.prn, val: r.metric_db, color: '#2a6' }));
+  } else if (svs && svs.length) {
+    items = svs.map(s => {
+      const v = (typeof s.gain_db === 'number') ? s.gain_db
+        : (typeof s.gain === 'number' ? 20 * Math.log10(s.gain) : 0);
+      return { label: s.sys + s.prn, val: v, color: _BAR_SYS_COLOR[s.sys] || '#2a6' };
+    });
+  } else { return; }
+  items.sort((a, b) => (a.label < b.label ? -1 : 1));
+  // Zoom the y-axis to the actual spread -- for GPS metric_db the peak/floor
+  // ratio saturates near the same value, and for gain_db the elevation
+  // taper spread is only a few dB; a min-anchored window (>= 6 dB) keeps the
+  // per-SV differences legible.
+  const w = W / items.length;
+  const vals = items.map(x => x.val);
   const hi = Math.max(...vals) + 1;
   const lo = Math.min(Math.min(...vals) - 2, hi - 6);
   const span = Math.max(1e-6, hi - lo);
-  rows.forEach((r, k) => {
-    const h = Math.max(0, (r.metric_db - lo) / span) * (c.height - 22);
-    g.fillStyle = '#2a6';
-    g.fillRect(k * w + 2, c.height - h - 10, w - 4, h);
-    g.fillStyle = '#7fd8b0';
-    g.fillText(r.metric_db.toFixed(1), k * w + 2, c.height - h - 13);
+  items.forEach((x, k) => {
+    const h = Math.max(0, (x.val - lo) / span) * (H - 22);
+    g.fillStyle = x.color;
+    g.fillRect(k * w + 2, H - h - 10, Math.max(1, w - 4), h);
+    g.fillStyle = '#333';
+    g.fillText(x.val.toFixed(1), k * w + 2, H - h - 13);
     g.fillStyle = '#666';
-    g.fillText('G' + r.prn, k * w + 2, c.height - 2);
+    g.fillText(x.label, k * w + 2, H - 2);
   });
 };
 

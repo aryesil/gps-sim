@@ -198,8 +198,8 @@ window.addChannel = function () {
           <table id="${id}-svpower-table"></table>
           <div class="iq-inspect">
             <div class="iq-block">
-              <div class="iq-label">Acquisition metric</div>
-              <canvas id="${id}-iq-correlation" width="760" height="90"></canvas>
+              <div class="iq-label" id="${id}-iq-correlation-label">Acquisition metric</div>
+              <canvas id="${id}-iq-correlation" width="760" height="140"></canvas>
             </div>
             <div class="iq-block">
               <div class="iq-label">
@@ -774,7 +774,13 @@ function wireChannelActions(id) {
               st.lastOutdir = msg.done.outdir;
               drawInspectTable(`${id}-inspect-table`, msg.done.inspect);
               drawSvPowerTable(`${id}-svpower-table`, msg.done.svs, msg.done.bands);
-              drawCorrelationBars(`${id}-iq-correlation`, msg.done.inspect);
+              const corrLabel = document.getElementById(`${id}-iq-correlation-label`);
+              if (corrLabel) {
+                corrLabel.textContent = (msg.done.inspect && msg.done.inspect.length)
+                  ? 'Acquisition metric (dB)'
+                  : 'Per-SV signal power (gain dB, all constellations)';
+              }
+              drawCorrelationBars(`${id}-iq-correlation`, msg.done.inspect, msg.done.svs);
               loadIqPlots(id, msg.done.outdir);
               attachIqScrubber(id, msg.done.outdir);
               if (st.lastSatellites) {
