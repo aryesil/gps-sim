@@ -14,6 +14,6 @@ struct SvChannel {
     NavSource nav{};
     float gain = 1.0f;
 };
-void mix_block(const SvChannel *svs, int nsv, double fs,
-               uint64_t sample0, int n, float *iq);
+void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
+               uint64_t sample0, int n, float *__restrict iq);
 }  // namespace gs

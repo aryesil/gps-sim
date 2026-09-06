@@ -5,8 +5,11 @@
 
 namespace gs {
 
-void mix_block(const SvChannel *svs, int nsv, double fs,
-               uint64_t sample0, int n, float *iq) {
+#if defined(__x86_64__) && defined(__GNUC__)
+__attribute__((target_clones("default", "sse4.2", "avx2", "avx2,fma")))
+#endif
+void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
+               uint64_t sample0, int n, float *__restrict iq) {
     const double dt = 1.0 / fs;
     for (int s = 0; s < nsv; ++s) {
         const SvChannel &sv = svs[s];
@@ -24,6 +27,8 @@ void mix_block(const SvChannel *svs, int nsv, double fs,
         const double chip_rate = sv.code_rate_hz + sv.code_doppler_hz;
         const double g = sv.gain;
         const int L = sv.code_len;
+        const int8_t *__restrict code = sv.code;
+        const NavSource nav = sv.nav;
         // Code-phase convention: geometry.observables reports the epoch delay
         // rho/c in chips, and inspector.acquire / inspector.compare treat that
         // value as the correlation lag directly (gps-sdr-sim convention). The
@@ -38,10 +43,10 @@ void mix_block(const SvChannel *svs, int nsv, double fs,
             double cp = eff + chip_rate * (t - abs_t0);
             long ci = static_cast<long>(cp) % L;
             if (ci < 0) ci += L;
-            float chip = static_cast<float>(sv.code[ci]);
-            float nav = static_cast<float>(nav_symbol(sv.nav, t));
+            float chip = static_cast<float>(code[ci]);
+            float navsym = static_cast<float>(nav_symbol(nav, t));
             std::complex<float> c = carr.next();
-            float d = g * chip * nav;
+            float d = g * chip * navsym;
             iq[2 * k]     += d * c.real();
             iq[2 * k + 1] += d * c.imag();
         }
