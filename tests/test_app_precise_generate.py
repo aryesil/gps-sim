@@ -127,6 +127,50 @@ def test_generate_precise_feeds_nav_override_to_generator(with_sp3, monkeypatch)
     assert set(req.nav_override) == set(range(1, 11))
 
 
+def test_generate_precise_multi_threads_broadcast_rinex(with_sp3, monkeypatch):
+    """Native precise multi-GNSS still needs the broadcast RINEX so
+    engine.run can recover R-only FDMA channels (glo_k). The precise-multi
+    payload must reach the engine with a non-empty rinex_path when the body
+    supplies one -- GPS-only precise leaves it empty."""
+    seen = {}
+
+    def fake_run(req, progress_cb=None, binary=None):
+        seen["req"] = req
+        raise RuntimeError("stop after capture")
+
+    monkeypatch.setattr(app_mod.signal_engine, "run", fake_run)
+    r = client.post("/api/generate", json={
+        "start_utc": START.isoformat(), "duration_s": 5,
+        "lat": 41.0, "lon": 29.0, "alt": 100.0,
+        "engine": "native", "systems": ["G", "R"],
+        "ephemeris_mode": "precise", "rinex_path": BRDC})
+    assert r.status_code == 200, r.text
+    req = seen["req"]
+    assert isinstance(req.nav_override, dict)
+    assert "precise_provider" in req.nav_override
+    assert req.rinex_path == BRDC
+
+
+def test_generate_precise_multi_auto_rinex_still_resolves(with_sp3, monkeypatch):
+    """Even with rinex_path 'AUTO', the precise-multi payload gets a real
+    resolved broadcast path (not left empty) so GLONASS keeps glo_k."""
+    seen = {}
+    monkeypatch.setattr(app_mod, "_resolve_rinex", lambda body, start: BRDC)
+
+    def fake_run(req, progress_cb=None, binary=None):
+        seen["req"] = req
+        raise RuntimeError("stop after capture")
+
+    monkeypatch.setattr(app_mod.signal_engine, "run", fake_run)
+    r = client.post("/api/generate", json={
+        "start_utc": START.isoformat(), "duration_s": 5,
+        "lat": 41.0, "lon": 29.0, "alt": 100.0,
+        "engine": "native", "systems": ["G", "R"],
+        "ephemeris_mode": "precise"})
+    assert r.status_code == 200, r.text
+    assert seen["req"].rinex_path == BRDC
+
+
 def test_generate_broadcast_sets_no_override(with_sp3, monkeypatch):
     seen = {}
     monkeypatch.setattr(app_mod.generator, "run",

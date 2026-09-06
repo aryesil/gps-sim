@@ -584,8 +584,18 @@ def generate(body: dict):
     nav_override, precise_warnings = _precise_nav_override(body, start)
     # In precise mode the broadcast nav file is never read; only resolve
     # (and possibly download) one when it will actually be used.
-    rinex_path = (body.get("rinex_path") or "") if nav_override is not None \
-        else _resolve_rinex(body, start)
+    if nav_override is not None:
+        rinex_path = body.get("rinex_path") or ""
+        # The native precise-multi payload still needs broadcast RINEX so
+        # engine.run can recover R-only FDMA channels (glo_k); GPS-only
+        # precise and gps-sdr-sim never read it.
+        if isinstance(nav_override, dict) and "precise_provider" in nav_override:
+            try:
+                rinex_path = _resolve_rinex(body, start) or rinex_path
+            except Exception:
+                pass  # R degrades with the existing engine.run warning
+    else:
+        rinex_path = _resolve_rinex(body, start)
     req = scenario.ScenarioRequest(
         rinex_path=rinex_path, lat=body["lat"], lon=body["lon"], alt=body["alt"],
         start=start, duration_s=int(body["duration_s"]),
