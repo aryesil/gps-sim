@@ -47,4 +47,4 @@ def test_config_validation():
 
 def test_abi_version_matches_library():
     lib = _lib.load_lib()
-    assert lib.synth_abi_version() == _lib.ABI_VERSION == 16
+    assert lib.synth_abi_version() == _lib.ABI_VERSION == 17

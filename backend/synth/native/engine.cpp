@@ -25,8 +25,9 @@ static int run_one_band(const BandSpec &b,
     std::vector<gs::SvChannel> ch(static_cast<size_t>(nsv));
     for (int i = 0; i < nsv; ++i) {
         ch[i].code = specs[i].code;
-        ch[i].code_len = 1023;
-        ch[i].code_rate_hz = 1.023e6;
+        ch[i].code_len = specs[i].code_len > 0 ? specs[i].code_len : 1023;
+        ch[i].code_rate_hz =
+            specs[i].chip_rate_hz > 0.0 ? specs[i].chip_rate_hz : 1.023e6;
         ch[i].code_phase0_chips = specs[i].code_phase0_chips;
         ch[i].code_doppler_hz = specs[i].code_doppler_hz;
         ch[i].carrier_freq_hz = specs[i].carrier_freq_hz;

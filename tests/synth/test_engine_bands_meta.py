@@ -25,8 +25,8 @@ def test_two_bands_write_two_files(tmp_path):
     assert (tmp_path / "G1.bin").stat().st_size == 160000 * 4
 
 
-def test_abi_version_is_16():
-    assert _lib.load_lib().synth_abi_version() == _lib.ABI_VERSION == 16
+def test_abi_version_is_17():
+    assert _lib.load_lib().synth_abi_version() == _lib.ABI_VERSION == 17
 
 
 # --- part 2: engine.run multi-band output + meta band map -------------------

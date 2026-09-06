@@ -97,6 +97,8 @@ def _sv_spec_for(entry, gain):
     pbuf = (ctypes.c_int8 * prim_len)(*prim.tolist())
     spec.code = pbuf
     keep = [pbuf]
+    spec.code_len = sig.code_len
+    spec.chip_rate_hz = sig.chip_rate_hz
     spec.carrier_freq_hz = entry["carrier_doppler_hz"]
     if sysc == "R":
         # FDMA: the G1 recorder LO sits at 1602.0 MHz; this SV's carrier is
@@ -205,9 +207,14 @@ def run(req, progress_cb=None) -> pathlib.Path:
             keep_alive.append(keep)
             band_sys.add(e["sys"])
             sig = e["signal_id"]
-            meta_svs.append({"sys": e["sys"], "prn": e["prn"],
-                             "code_len": sig.code_len,
-                             "chip_hz": sig.chip_rate_hz})
+            sv_meta = {"sys": e["sys"], "prn": e["prn"],
+                       "code_len": sig.code_len,
+                       "chip_hz": sig.chip_rate_hz}
+            gk = e.get("glo_k")
+            if e["sys"] == "R" and gk is not None and not (
+                    isinstance(gk, float) and math.isnan(gk)):
+                sv_meta["glo_k"] = int(gk)
+            meta_svs.append(sv_meta)
         if not sv_list:
             continue
         total_samples = int(round(plan.fs * req.duration_s))

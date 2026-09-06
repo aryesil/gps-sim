@@ -98,6 +98,6 @@ def test_bad_prn_and_short_buffer():
             _lib.code(sysc, 99, 4092, 0)
 
 
-def test_abi_still_12():
-    assert _lib.load_lib().synth_abi_version() == 16
-    assert _lib.ABI_VERSION == 16
+def test_abi_version_is_current():
+    assert _lib.load_lib().synth_abi_version() == 17
+    assert _lib.ABI_VERSION == 17

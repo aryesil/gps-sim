@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-ABI_VERSION = 16
+ABI_VERSION = 17
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
@@ -70,6 +70,9 @@ class SvSpec(ctypes.Structure):
         ("sec_code", ctypes.POINTER(ctypes.c_int8)),
         ("sec_len", ctypes.c_int),
         ("sec_rate_hz", ctypes.c_double),
+        # Task 16b -- per-SV primary code geometry for the full-run path.
+        ("code_len", ctypes.c_int),
+        ("chip_rate_hz", ctypes.c_double),
     ]
 
 
@@ -129,6 +132,8 @@ def one_sv_spec(code, carrier_hz=0.0, code_phase0=0.0, code_doppler=0.0,
     s.sec_code = None
     s.sec_len = 0
     s.sec_rate_hz = 0.0
+    s.code_len = 1023
+    s.chip_rate_hz = 1.023e6
     return s
 
 

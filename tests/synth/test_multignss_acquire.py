@@ -61,14 +61,44 @@ def test_each_l1_system_acquires_in_one_correlated_capture(tmp_path, monkeypatch
         if s in present:
             assert hits.get(s, 0) >= 1, (s, metrics)
 
-    # BeiDou B1I is 2046 chips @ 2.046 Mcps. run_one_band (engine.cpp) hardcodes
-    # every channel to code_len=1023 / code_rate=1.023e6 and the ABI-16 SvSpec
-    # has no field to override them, so a correct B1I waveform needs a C change
-    # -- out of scope for Task 16 (ABI frozen at 16, no C changes). The metric
-    # here is only a mis-rate partial correlation.
-    if "C" in present and hits.get("C", 0) < 1:
-        pytest.xfail("BeiDou B1I needs code_len=2046/code_rate=2.046e6 that the "
-                     f"frozen native band engine cannot carry; metrics={metrics['C']}")
+    # BeiDou B1I is 2046 chips @ 2.046 Mcps. Since ABI 17 the full-run mixer path
+    # carries per-SV code_len / chip_rate_hz, so B1I is synthesized at its real
+    # rate and must clear the same threshold as the others.
+    if "C" in present:
+        assert hits.get("C", 0) >= 1, ("C", metrics)
+
+
+def test_glonass_g1_acquires_in_the_g1_band(tmp_path, monkeypatch):
+    import json
+
+    from backend import inspector
+    from backend.synth import signals
+    from tests.synth import _corr
+
+    monkeypatch.setattr(config, "OUT_DIR", tmp_path)
+    req = ScenarioRequest(rinex_path=_MIXED, lat=41.0, lon=29.0, alt=100.0,
+                          start=dt.datetime(2026, 9, 1, 12), duration_s=4,
+                          sample_rate=6_000_000.0, sample_format="int16",
+                          engine="native", systems=["G", "R"])
+    outdir = engine.run(req)
+    meta = json.loads((outdir / "meta.json").read_text())
+    g1 = next((b for b in meta["bands"] if b["id"] == "G1"), None)
+    glo_svs = [s for s in meta["provenance"]["svs"] if s["sys"] == "R"]
+    if g1 is None or not glo_svs:
+        pytest.skip("no visible GLONASS SV at this epoch/location")
+
+    iq = inspector.read_iq(outdir / g1["file"], "int16",
+                           max_samples=int(g1["fs"] * 0.020))
+    metrics = []
+    hits = 0
+    for e in glo_svs:
+        center = signals.glo_channel_offset_hz(int(e["glo_k"]))
+        r = _corr.acquire(iq, g1["fs"], "R", e["prn"],
+                          code_len=511, chip_hz=511_000.0, center_hz=center)
+        metrics.append(round(r["metric_db"], 1))
+        if r["metric_db"] > _METRIC_DB:
+            hits += 1
+    assert hits >= 1, metrics
 
 
 def _entry(sysc, sig, prn=1):

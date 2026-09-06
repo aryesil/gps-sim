@@ -138,6 +138,11 @@ typedef struct {
     const int8_t *sec_code;    // secondary code chips {-1,+1}, sec_len entries
     int    sec_len;            // > 0 => apply secondary-code XOR
     double sec_rate_hz;        // secondary chip rate (Hz)
+    // Task 16b -- per-SV code geometry for the full-run path. 0 / 0.0 keep the
+    // Phase-1 GPS defaults (1023 chips @ 1.023 Mcps) so debug/test shims that
+    // zero-init SvSpec stay byte-identical.
+    int    code_len;           // primary code length in chips; 0 => 1023
+    double chip_rate_hz;       // primary chip rate (Hz); 0.0 => 1.023e6
 } SvSpec;
 // Whole-run spec. Field order frozen -- _lib.py mirrors it exactly.
 typedef struct {
