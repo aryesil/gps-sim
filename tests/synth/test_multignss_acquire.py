@@ -348,3 +348,11 @@ def test_signal_for_still_returns_gps_l1ca():
     assert signals.signal_for("E") is signals.SIGNALS["GAL_E1"]
     assert signals.signal_for("C") is signals.SIGNALS["BDS_B1I"]
     assert signals.signal_for("S") is signals.SIGNALS["SBAS_L1"]
+
+
+def test_sv_spec_for_out_of_range_prn_returns_reason_not_raise():
+    sig = signals.SIGNALS["BDS_B1I"]
+    spec, reason = engine._sv_spec_for(_entry("C", sig, prn=421), 1.0)
+    assert spec is None
+    assert "skipped" in reason
+    assert "C421" in reason

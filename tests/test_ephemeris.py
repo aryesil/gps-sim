@@ -71,3 +71,20 @@ def test_get_ephemeris_raises_when_unavailable(tmp_path, monkeypatch):
     (tmp_path / "rinex").mkdir()
     with pytest.raises(ephemeris.EphemerisUnavailable):
         ephemeris.get_ephemeris(dt.date(2000, 1, 1), download=False)
+
+
+@pytest.mark.parametrize("s,prn,ok", [
+    ("C", 421, False),
+    ("C", 6, True),
+    ("E", 361, False),
+    ("E", 36, True),
+    ("S", 21, True),
+    ("S", 141, True),
+    ("J", 2, True),
+    ("J", 241, False),
+    ("J", 193, True),
+    ("G", 0, False),
+    ("G", 5, True),
+])
+def test_prn_in_range(s, prn, ok):
+    assert ephemeris._prn_in_range(s, prn) is ok

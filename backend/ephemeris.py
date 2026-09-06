@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import gzip
+import logging
 import math
 import pathlib
 
@@ -163,6 +164,40 @@ def _pick_epoch(sub, noon_gps: float, sysc: str):
     return sub.isel(time=best_i)
 
 
+_log = logging.getLogger(__name__)
+
+# Valid raw-PRN ranges as they appear in a RINEX-3 nav file, BEFORE any
+# ``_native_prn`` offset. Short forms for SBAS/QZSS; full-PRN forms are
+# additionally accepted in ``_prn_in_range``.
+_PRN_RANGE = {
+    "G": (1, 32),
+    "R": (1, 30),      # GLONASS slot numbers
+    "E": (1, 50),      # Galileo E01..E36 today, headroom to 50
+    "C": (1, 63),      # BeiDou C01..C63
+    "J": (1, 10),      # QZSS short form J01..J07 (georinex), headroom to 10
+    "S": (20, 58),     # SBAS short form S20..S58 == PRN 120..158
+}
+
+
+def _prn_in_range(s: str, prn: int) -> bool:
+    """True if ``prn`` is a plausible raw PRN for system letter ``s``.
+
+    Accepts the short form for every system, plus the full-PRN form for
+    SBAS (120..158) and QZSS (183..202) which some files emit instead.
+    Unknown system letters are passed through (True).
+    """
+    rng = _PRN_RANGE.get(s)
+    if rng is None:
+        return True
+    if rng[0] <= prn <= rng[1]:
+        return True
+    if s == "S" and 120 <= prn <= 158:
+        return True
+    if s == "J" and 183 <= prn <= 202:
+        return True
+    return False
+
+
 def parse_rinex_multi(path: str | pathlib.Path, systems=("G",),
                       require=None) -> dict:
     """Parse a RINEX 2/3 nav file into per-satellite broadcast records.
@@ -189,11 +224,15 @@ def parse_rinex_multi(path: str | pathlib.Path, systems=("G",),
     noon = dt.datetime(mid_day.year, mid_day.month, mid_day.day, 12, 0, 0)
     noon_gps = _gps_seconds(noon)
     out: dict = {}
+    skipped: list[str] = []
     for sv in nav.sv.values:
         s = str(sv)[0]
         if s not in systems:
             continue
         prn = int(str(sv)[1:])
+        if not _prn_in_range(s, prn):
+            skipped.append(f"{s}{prn}")
+            continue
         sub = nav.sel(sv=sv).dropna(dim="time", how="all")
         if sub.time.size == 0:
             continue
@@ -211,6 +250,10 @@ def parse_rinex_multi(path: str | pathlib.Path, systems=("G",),
         else:
             e["toe_ref"] = epoch_sow
         out[prn if systems == ("G",) else (s, prn)] = e
+    if skipped:
+        _log.warning(
+            "parse_rinex_multi: dropped %d out-of-range PRN record(s) from %s "
+            "(e.g. %s)", len(skipped), path, ", ".join(skipped[:6]))
     if not out:
         raise EphemerisUnavailable(
             f"no ephemeris for systems {list(systems)!r} in {path}")

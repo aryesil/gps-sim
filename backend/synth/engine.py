@@ -92,7 +92,11 @@ def _sv_spec_for(entry, gain):
     if sysc == "R":
         prim, sec = _glo_g1_code(), None
     else:
-        prim, sec = _lib.code(code_sys, entry["prn"], prim_len, sec_len)
+        try:
+            prim, sec = _lib.code(code_sys, entry["prn"], prim_len, sec_len)
+        except ValueError:
+            return None, (f"{sysc}{entry['prn']}: code generation rejected "
+                          f"(PRN out of range for {sysc}), skipped")
     spec = _lib.SvSpec()
     pbuf = (ctypes.c_int8 * prim_len)(*prim.tolist())
     spec.code = pbuf
