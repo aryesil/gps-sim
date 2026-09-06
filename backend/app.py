@@ -168,13 +168,59 @@ def _try_import(name: str) -> bool:
         return False
 
 
+def _preview_multi(body: dict, start: dt.datetime, rx, tow: float,
+                   systems: tuple) -> dict:
+    """Geometry preview across multiple constellations (one correlated epoch).
+    Same response shape as /api/preview. Channel models / precise mode are
+    GPS-only and not applied here."""
+    path = _resolve_rinex(body, start)
+    gps_start = start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
+    week, sow = ephemeris.gps_week_and_sow(gps_start)
+    try:
+        eph = ephemeris.parse_rinex_multi(path, systems, require=("G",))
+    except ephemeris.EphemerisUnavailable as e:
+        raise HTTPException(422, f"ephemeris: {e}")
+    eph = ephemeris.align_epochs(eph, week, sow)
+    got = {(k[0] if isinstance(k, tuple) else "G") for k in eph}
+    dropped = [s for s in systems if s not in got]
+
+    mask = float(body.get("mask_deg", 5.0))
+    ents = geometry.constellation_multi(eph, rx, sow, signals.signal_for,
+                                        mask_deg=mask)
+    sats = []
+    for o in ents:
+        s = {k: v for k, v in o.items() if k not in ("signal_id", "_los")}
+        s["sys"] = o["sys"]
+        s["svid"] = f"{o['sys']}{o['prn']:02d}"
+        s["band"] = o["signal_id"].band
+        s["_los"] = o["_los"]
+        sats.append(s)
+    d = {k: _finite(v) for k, v in geometry.dop(ents, rx).items()}
+    warnings = [f"ephemeris: {pathlib.Path(path).name}",
+                f"multi-GNSS preview: {', '.join(sorted(got))}"]
+    if dropped:
+        warnings.append(f"no records for {', '.join(dropped)} in this RINEX")
+    if len(sats) < 4:
+        warnings.append("fewer than 4 visible satellites — no hardware fix")
+    return {"satellites": sats, "dop": d, "warnings": warnings,
+            "channel_models": None}
+
+
 @app.post("/api/preview")
 def preview(body: dict):
     start = dt.datetime.fromisoformat(body["start_utc"])
     date = start.date()
     tow = _gps_tow(start)
-    eph, eph_src = _resolve_eph(date, body.get("rinex_path"))
     rx = geometry.llh_to_ecef(body["lat"], body["lon"], body["alt"])
+
+    # Multi-constellation preview: when more than GPS is requested, resolve the
+    # mixed nav file and evaluate every system at the one epoch. Channel models
+    # and precise mode are GPS-only and stay on the path below.
+    req_systems = tuple(dict.fromkeys(body.get("systems") or ["G"]))
+    if tuple(sorted(req_systems)) != ("G",):
+        return _preview_multi(body, start, rx, tow, req_systems)
+
+    eph, eph_src = _resolve_eph(date, body.get("rinex_path"))
 
     # Ephemeris mode for the *geometry preview only*. 'precise' uses the
     # loaded SP3 product (analysis); the generated IQ is still broadcast.

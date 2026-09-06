@@ -464,6 +464,8 @@ function wireChannelActions(id) {
         alt: 100, start_utc: su + ':00',
         rinex_path: document.getElementById(`${id}-rinex-path`).value.trim(),
         ephemeris_mode: document.getElementById(`${id}-eph-mode`).value,
+        systems: ["G", "R", "E", "C", "J", "S"].filter(
+          s => (document.getElementById(`${id}-sys-${s}`) || {}).checked),
         ...(_channelModelsBody() || {}),
       }),
     });

@@ -18,7 +18,7 @@ window.drawSkyplot = function (canvasId, entries, cn0ByPrn) {
     g.fillStyle = (db === undefined) ? '#06c' : _cn0Color(db);
     g.beginPath(); g.arc(x, y, 4, 0, 7); g.fill();
     g.fillStyle = '#333';
-    g.fillText('G' + e.prn, x + 5, y);
+    g.fillText((e.sys || 'G') + e.prn, x + 5, y);
   });
 };
 

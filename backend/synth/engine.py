@@ -130,6 +130,16 @@ def _sv_spec_for(entry, gain):
     return spec, keep
 
 
+def _el_gain(el_deg: float) -> float:
+    """Elevation-dependent receive amplitude taper. Without it every SV comes
+    out at exactly equal power (gps-sdr-sim applies an antenna-pattern +
+    range taper, so its output has a natural per-SV spread). ~0 dB at
+    zenith, ~-6 dB near the 5 deg mask. Returns an amplitude multiplier."""
+    el = max(0.0, min(90.0, float(el_deg)))
+    p = max(0.15, math.sin(math.radians(el)) ** 0.6)   # relative power
+    return float(p ** 0.5)                              # -> amplitude
+
+
 def _visible_gps(req) -> list[tuple[int, dict]]:
     """Visible GPS PRNs (el_deg >= 5) with observables evaluated once at the
     run START epoch (t = sow), with Doppler held constant over the run -- the
@@ -165,13 +175,35 @@ def run(req, progress_cb=None) -> pathlib.Path:
     outdir.mkdir(parents=True, exist_ok=True)
 
     systems = tuple(getattr(req, "systems", None) or ("G",))
+    warnings: list[str] = []
 
     # All systems align to the one GPS SoW run-start epoch: align_epochs rewrites
     # every Keplerian toc/toe and every R/S toe_ref to `sow`, so GLONASS (which
     # propagates on `t_gps - toe_ref`) lines up on the GPS scale with the rest.
     gps_start = req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
     week, sow = ephemeris.gps_week_and_sow(gps_start)
-    eph = ephemeris.parse_rinex_multi(req.rinex_path, systems)
+
+    nav_override = getattr(req, "nav_override", None)
+    if nav_override:
+        # Precise (SP3-fitted) broadcast records: GPS-only, keyed by bare int
+        # PRN. There is no precise fit for the other constellations, so a
+        # precise run stays GPS-only whatever `systems` asked for.
+        extra = [s for s in systems if s != "G"]
+        if extra:
+            warnings.append("precise ephemeris covers GPS only; ignored "
+                            f"systems {extra!r} for this run")
+        eph = dict(nav_override)
+        systems = ("G",)
+    else:
+        eph = ephemeris.parse_rinex_multi(req.rinex_path, systems,
+                                          require=("G",))
+        got = {(k[0] if isinstance(k, tuple) else "G") for k in eph}
+        dropped = [s for s in systems if s not in got]
+        if dropped:
+            warnings.append(f"RINEX has no records for systems {dropped!r}; "
+                            "generated the remaining systems")
+            systems = tuple(s for s in systems if s in got)
+
     eph = ephemeris.align_epochs(eph, week, sow)
     rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
     entries = geometry.constellation_multi(eph, rx, sow, signals.signal_for,
@@ -195,7 +227,7 @@ def run(req, progress_cb=None) -> pathlib.Path:
         sv_list = []
         band_sys = set()
         for e in plan.entries:
-            spec, keep = _sv_spec_for(e, 1.0)
+            spec, keep = _sv_spec_for(e, _el_gain(e.get("el_deg", 90.0)))
             if spec is None:
                 _log.warning("engine.run: %s", keep)
                 continue
@@ -258,6 +290,8 @@ def run(req, progress_cb=None) -> pathlib.Path:
             "phase1_approx": "observables at run start epoch, Doppler held constant over the run",
             "fading": cfg.model,
             "svs": meta_svs,
+            "systems": sorted({e["sys"] for e in entries}),
+            "warnings": warnings,
         },
         "bands": meta_bands,
     }

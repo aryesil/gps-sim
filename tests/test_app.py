@@ -1,11 +1,26 @@
 # tests/test_app.py
 import datetime as dt
+import pathlib
 
 from fastapi.testclient import TestClient
 
 from backend import app as appmod
 
 client = TestClient(appmod.app)
+
+_MIXED = str(pathlib.Path(__file__).parent / "fixtures" / "brdc_mixed.rnx")
+
+
+def test_preview_multi_returns_non_gps_systems():
+    r = client.post("/api/preview", json={
+        "lat": 41.0, "lon": 29.0, "alt": 100.0,
+        "start_utc": "2026-09-01T12:00:00",
+        "rinex_path": _MIXED, "systems": ["G", "E", "C", "R"]})
+    assert r.status_code == 200, r.text
+    sats = r.json()["satellites"]
+    seen = {s["sys"] for s in sats}
+    assert seen - {"G"}, f"only GPS came back: {seen}"
+    assert all("svid" in s for s in sats)
 
 
 def test_health_shape():

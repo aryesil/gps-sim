@@ -163,7 +163,8 @@ def _pick_epoch(sub, noon_gps: float, sysc: str):
     return sub.isel(time=best_i)
 
 
-def parse_rinex_multi(path: str | pathlib.Path, systems=("G",)) -> dict:
+def parse_rinex_multi(path: str | pathlib.Path, systems=("G",),
+                      require=None) -> dict:
     """Parse a RINEX 2/3 nav file into per-satellite broadcast records.
 
     ``systems`` is an ordered iterable of RINEX system letters. When it is
@@ -172,6 +173,14 @@ def parse_rinex_multi(path: str | pathlib.Path, systems=("G",)) -> dict:
     Keplerian systems (G J E C) carry the ``_VARMAP_KEPLER`` fields plus
     ``toc``; ECEF-state systems (R S) carry the ``_VARMAP_STATE`` fields plus
     ``toe_ref``. Every record also carries ``"system"`` and ``"prn"``.
+
+    ``require`` controls the absent-system policy. ``None`` (default): every
+    letter in ``systems`` must be present or :class:`EphemerisUnavailable`
+    is raised naming the missing ones. A tuple: only those letters are
+    mandatory -- other requested-but-absent systems are simply not in the
+    result, and the caller compares the keys it got against what it asked
+    for to surface a warning instead of failing the whole run. Common daily
+    mixed BRDC files often omit SBAS ('S') and are sparse in QZSS ('J').
     """
     systems = tuple(dict.fromkeys(systems))          # dedupe, keep order
     nav = gr.load(str(path), use=list(systems))
@@ -208,9 +217,11 @@ def parse_rinex_multi(path: str | pathlib.Path, systems=("G",)) -> dict:
     missing = [s for s in systems
                if not any((k[0] if isinstance(k, tuple) else "G") == s
                           for k in out)]
-    if missing:
+    mandatory = list(systems) if require is None else list(require)
+    hard_missing = [s for s in missing if s in mandatory]
+    if hard_missing:
         raise EphemerisUnavailable(
-            f"systems {missing!r} not present in {path}")
+            f"systems {hard_missing!r} not present in {path}")
     return out
 
 

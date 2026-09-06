@@ -29,6 +29,38 @@ def test_abi_version_is_17():
     assert _lib.load_lib().synth_abi_version() == _lib.ABI_VERSION == 17
 
 
+def test_el_gain_is_monotonic_and_bounded():
+    g = [engine._el_gain(e) for e in (5, 20, 45, 70, 90)]
+    assert g == sorted(g) and 0.0 < g[0] < g[-1] == 1.0
+
+
+def test_absent_system_is_dropped_with_warning(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "OUT_DIR", tmp_path)
+    req = ScenarioRequest(rinex_path=_GPS2, lat=41.0, lon=29.0, alt=100.0,
+                          start=dt.datetime(2024, 1, 1, 12, 0, 0), duration_s=2,
+                          sample_rate=6_000_000.0, sample_format="int16",
+                          engine="native", systems=["G", "E", "C"])
+    outdir = engine.run(req)                       # must not raise
+    meta = json.loads((outdir / "meta.json").read_text())
+    assert meta["provenance"]["systems"] == ["G"]
+    assert any("no records" in w for w in meta["provenance"]["warnings"])
+
+
+def test_nav_override_forces_gps_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "OUT_DIR", tmp_path)
+    from backend import ephemeris
+    ov = ephemeris.parse_rinex(_GPS2)              # bare-int GPS records
+    req = ScenarioRequest(rinex_path="AUTO", lat=41.0, lon=29.0, alt=100.0,
+                          start=dt.datetime(2024, 1, 1, 12, 0, 0), duration_s=2,
+                          sample_rate=6_000_000.0, sample_format="int16",
+                          engine="native", systems=["G", "R"],
+                          nav_override=ov)
+    outdir = engine.run(req)                       # must not touch "AUTO"
+    meta = json.loads((outdir / "meta.json").read_text())
+    assert meta["provenance"]["systems"] == ["G"]
+    assert any("precise" in w for w in meta["provenance"]["warnings"])
+
+
 # --- part 2: engine.run multi-band output + meta band map -------------------
 
 def test_gps_only_run_is_single_band_backcompat(tmp_path, monkeypatch):

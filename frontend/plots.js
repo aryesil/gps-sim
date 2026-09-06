@@ -25,7 +25,7 @@ window.drawSatTable = function (tableId, sats) {
   const t = document.getElementById(tableId);
   t.innerHTML = '<tr><th>PRN</th><th>az °</th><th>el °</th><th>range km</th>'
     + '<th>Doppler Hz</th><th>code chip</th></tr>'
-    + (sats || []).map(s => `<tr><td>G${s.prn}</td><td>${s.az_deg.toFixed(1)}</td>`
+    + (sats || []).map(s => `<tr><td>${s.svid || ('G' + s.prn)}</td><td>${s.az_deg.toFixed(1)}</td>`
       + `<td>${s.el_deg.toFixed(1)}</td><td>${(s.geo_range_m / 1000).toFixed(1)}</td>`
       + `<td>${s.carrier_doppler_hz.toFixed(0)}</td>`
       + `<td>${s.code_phase_chips.toFixed(1)}</td></tr>`).join('');

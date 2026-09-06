@@ -34,3 +34,16 @@ def test_missing_system_raises_named():
     with pytest.raises(ephemeris.EphemerisUnavailable) as ei:
         ephemeris.parse_rinex_multi(_GPS2, systems=("E",))
     assert "E" in str(ei.value)
+
+
+def test_require_lets_absent_optional_system_be_dropped():
+    # GPS-only file, ask for G+E but only require G -> E is dropped, no raise
+    eph = ephemeris.parse_rinex_multi(_GPS2, systems=("G", "E"),
+                                      require=("G",))
+    assert eph and {(k[0] if isinstance(k, tuple) else "G") for k in eph} == {"G"}
+
+
+def test_require_still_raises_when_a_required_system_is_absent():
+    with pytest.raises(ephemeris.EphemerisUnavailable):
+        ephemeris.parse_rinex_multi(_GPS2, systems=("G", "E"),
+                                    require=("G", "E"))
