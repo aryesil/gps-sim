@@ -21,3 +21,11 @@ SIGNALS = {
     "GPS_L1CA": Signal(config.L1_HZ, config.CA_CHIP_HZ, config.CA_CODE_LEN,
                        None, config.NAV_BIT_HZ, "L1"),
 }
+
+SYSTEMS = ("G", "R", "E", "C", "J", "S")
+
+_SIGNAL_FOR = {"G": "GPS_L1CA"}      # extended in Stage 2
+
+
+def signal_for(sys: str) -> Signal:
+    return SIGNALS[_SIGNAL_FOR[sys]]

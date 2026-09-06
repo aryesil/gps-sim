@@ -246,6 +246,34 @@ def constellation(eph_by_prn: dict, rx_ecef, t_rx: float,
     return out
 
 
+def state_fn_for(record: dict):
+    """Dispatch a broadcast ``record`` to its state function by
+    ``record["system"]``. ``G J E C`` use the Kepler model; ``R S``
+    (GLONASS/SBAS) are added in a later task."""
+    s = record.get("system", "G")
+    if s in ("G", "J", "E", "C"):
+        return keplerian_state(record)
+    raise NotImplementedError("GLONASS/SBAS state added in a later task")
+
+
+def constellation_multi(eph_by_key, rx_ecef, t_rx: float, signal_for,
+                        mask_deg: float = 5.0) -> list[dict]:
+    """Evaluate one correlated epoch across systems. ``eph_by_key`` maps
+    ``(sys, prn)`` -> broadcast dict; each returned entry is the
+    ``observables`` dict plus ``"sys"``, ``"prn"``, ``"signal_id"``."""
+    out = []
+    for key, rec in eph_by_key.items():
+        sys = key[0] if isinstance(key, tuple) else "G"
+        prn = key[1] if isinstance(key, tuple) else key
+        sig = signal_for(sys)
+        o = observables(state_fn_for(rec), rx_ecef, t_rx, signal=sig)
+        if o["el_deg"] < mask_deg:
+            continue
+        o["sys"], o["prn"], o["signal_id"] = sys, prn, sig
+        out.append(o)
+    return out
+
+
 def dop(entries: list[dict], rx_ecef) -> dict:
     if len(entries) < 4:
         return {k: float("inf") for k in ("gdop", "pdop", "hdop", "vdop", "tdop")}
