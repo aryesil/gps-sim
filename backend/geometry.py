@@ -16,7 +16,7 @@ SYS_PARAMS = {
     "G": {"mu": config.MU,      "omega_e_dot": config.OMEGA_E_DOT, "f_rel": config.F_REL},
     "J": {"mu": config.MU,      "omega_e_dot": config.OMEGA_E_DOT, "f_rel": config.F_REL},
     "E": {"mu": 3.986004418e14, "omega_e_dot": 7.2921151467e-5,    "f_rel": -4.442807309e-10},
-    "C": {"mu": 3.986004418e14, "omega_e_dot": 7.2921150e-5,       "f_rel": -4.442807633e-10},
+    "C": {"mu": 3.986004418e14, "omega_e_dot": 7.2921150e-5,       "f_rel": -4.442807309e-10},
 }
 
 # BeiDou GEO/IGSO PRNs use the GEO reference-frame rotation (BDS-SIS-ICD-B1I).
