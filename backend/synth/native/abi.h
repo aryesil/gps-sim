@@ -154,6 +154,25 @@ typedef struct {
 int synth_run(const char *path, const RunSpec *rs,
               const SvSpec *svs, int nsv,
               void (*progress)(double, void *), void *user);
+// One band == one interleaved-IQ output file. Field order frozen -- _lib.py
+// mirrors it exactly.
+typedef struct {
+    const char *out_path;      // one file per band
+    double   fs;
+    int      quant;            // 0 int8, 1 int12, 2 int16 (same as RunSpec)
+    int      dither;
+    uint64_t total_samples;
+    int      block_samples;
+    int      nthreads;
+    const SvSpec *svs;         // this band's channels
+    int      nsv;
+} BandSpec;
+// Streams one interleaved-IQ file per band (bands[0..nband-1]). Progress is
+// forwarded per band as fraction 0..1 over that band's own sample count; with
+// nband == 1 this is identical to synth_run's Phase-1 progress semantics.
+// Returns the first non-zero per-band rc, else 0.
+int synth_run_bands(const BandSpec *bands, int nband,
+                    void (*progress)(double, void *), void *user);
 // L1-group code generator. CODE-GEN sys int (SEPARATE from the propagation sys
 // int of synth_sat_state_sys): 0 GPS, 1 QZSS, 2 SBAS, 3 BeiDou B1I, 4 GLONASS
 // G1. Fills primary[0..prim_len-1] with {-1,+1} chips (prim_len must be >= the

@@ -11,10 +11,15 @@
 #include <cstdio>
 #include <vector>
 
-int synth_run(const char *path, const RunSpec *rs, const SvSpec *specs, int nsv,
-              void (*progress)(double, void *), void *user) {
-    if (!path || !rs || (nsv > 0 && !specs)) return -1;
-    std::FILE *f = std::fopen(path, "wb");
+// Streams one interleaved-IQ file for a single band. This is the former
+// synth_run body, with fs/quant/dither/total_samples/block_samples/nthreads/
+// svs/nsv/out_path sourced from the BandSpec instead of RunSpec + args.
+static int run_one_band(const BandSpec &b,
+                        void (*progress)(double, void *), void *user) {
+    const SvSpec *specs = b.svs;
+    const int nsv = b.nsv;
+    if (!b.out_path || (nsv > 0 && !specs)) return -1;
+    std::FILE *f = std::fopen(b.out_path, "wb");
     if (!f) return -1;
 
     std::vector<gs::SvChannel> ch(static_cast<size_t>(nsv));
@@ -40,7 +45,7 @@ int synth_run(const char *path, const RunSpec *rs, const SvSpec *specs, int nsv,
     std::vector<float> base_gain(static_cast<size_t>(nsv));
     for (int i = 0; i < nsv; ++i) base_gain[i] = specs[i].gain;
 
-    const int blk = rs->block_samples > 0 ? rs->block_samples : 65536;
+    const int blk = b.block_samples > 0 ? b.block_samples : 65536;
     std::vector<float> fbuf(static_cast<size_t>(2 * blk));
     std::vector<int16_t> qbuf16(static_cast<size_t>(2 * blk));
     std::vector<int8_t> qbuf8(static_cast<size_t>(2 * blk));
@@ -48,32 +53,32 @@ int synth_run(const char *path, const RunSpec *rs, const SvSpec *specs, int nsv,
     // Composite-level scale: aim for ~1/4 of full scale, divided by sqrt(nsv)
     // so a full constellation does not clip.
     const float fs_full =
-        (rs->quant == 0) ? 127.0f : (rs->quant == 1 ? 2047.0f : 32767.0f);
+        (b.quant == 0) ? 127.0f : (b.quant == 1 ? 2047.0f : 32767.0f);
     const float scale = (nsv > 0)
         ? (0.25f * fs_full / static_cast<float>(std::sqrt((double)nsv)))
         : fs_full;
 
     uint64_t done = 0;
     int rc = 0;
-    while (done < rs->total_samples) {
+    while (done < b.total_samples) {
         const int n = static_cast<int>(
             std::min<uint64_t>(static_cast<uint64_t>(blk),
-                               rs->total_samples - done));
+                               b.total_samples - done));
         // Recompute deterministic per-SV fading at the block midpoint every
         // block (do not hoist -- it is time-varying). Off model => factor 1.0f.
         const double block_mid_t_seconds =
-            (static_cast<double>(done) + n / 2.0) / rs->fs;
+            (static_cast<double>(done) + n / 2.0) / b.fs;
         for (int i = 0; i < nsv; ++i) {
             const float fade = gs::fading_gain_linear(
                 &specs[i].fading, specs[i].prn, block_mid_t_seconds);
             ch[i].gain = base_gain[i] * fade;
         }
-        gs::mix_block_parallel(ch.data(), nsv, rs->fs, done, n, fbuf.data(),
-                               rs->nthreads);
-        void *q = (rs->quant == 0) ? static_cast<void *>(qbuf8.data())
-                                   : static_cast<void *>(qbuf16.data());
-        gs::quantize_block(fbuf.data(), 2 * n, rs->quant, scale, q);
-        const size_t esz = (rs->quant == 0) ? 1u : 2u;
+        gs::mix_block_parallel(ch.data(), nsv, b.fs, done, n, fbuf.data(),
+                               b.nthreads);
+        void *q = (b.quant == 0) ? static_cast<void *>(qbuf8.data())
+                                 : static_cast<void *>(qbuf16.data());
+        gs::quantize_block(fbuf.data(), 2 * n, b.quant, scale, q);
+        const size_t esz = (b.quant == 0) ? 1u : 2u;
         if (std::fwrite(q, esz, static_cast<size_t>(2 * n), f) !=
             static_cast<size_t>(2 * n)) {
             rc = -2;
@@ -82,9 +87,35 @@ int synth_run(const char *path, const RunSpec *rs, const SvSpec *specs, int nsv,
         done += n;
         if (progress)
             progress(static_cast<double>(done) /
-                         static_cast<double>(rs->total_samples),
+                         static_cast<double>(b.total_samples),
                      user);
     }
     std::fclose(f);
     return rc;
+}
+
+int synth_run_bands(const BandSpec *bands, int nband,
+                    void (*progress)(double, void *), void *user) {
+    if (!bands || nband < 0) return -1;
+    for (int i = 0; i < nband; ++i) {
+        const int rc = run_one_band(bands[i], progress, user);
+        if (rc != 0) return rc;
+    }
+    return 0;
+}
+
+int synth_run(const char *path, const RunSpec *rs, const SvSpec *specs, int nsv,
+              void (*progress)(double, void *), void *user) {
+    if (!path || !rs || (nsv > 0 && !specs)) return -1;
+    BandSpec b;
+    b.out_path = path;
+    b.fs = rs->fs;
+    b.quant = rs->quant;
+    b.dither = rs->dither;
+    b.total_samples = rs->total_samples;
+    b.block_samples = rs->block_samples;
+    b.nthreads = rs->nthreads;
+    b.svs = specs;
+    b.nsv = nsv;
+    return synth_run_bands(&b, 1, progress, user);
 }

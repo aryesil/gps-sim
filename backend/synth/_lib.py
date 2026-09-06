@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-ABI_VERSION = 15
+ABI_VERSION = 16
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
@@ -85,7 +85,85 @@ class RunSpec(ctypes.Structure):
     ]
 
 
+class BandSpec(ctypes.Structure):
+    # Field order MUST match `BandSpec` in native/abi.h exactly (frozen).
+    _fields_ = [
+        ("out_path", ctypes.c_char_p),
+        ("fs", ctypes.c_double),
+        ("quant", ctypes.c_int),
+        ("dither", ctypes.c_int),
+        ("total_samples", ctypes.c_uint64),
+        ("block_samples", ctypes.c_int),
+        ("nthreads", ctypes.c_int),
+        ("svs", ctypes.POINTER(SvSpec)),
+        ("nsv", ctypes.c_int),
+    ]
+
+
 _PROGRESS_CB = ctypes.CFUNCTYPE(None, ctypes.c_double, ctypes.c_void_p)
+
+
+def one_sv_spec(code, carrier_hz=0.0, code_phase0=0.0, code_doppler=0.0,
+                gain=1.0, prn=1):
+    """Return a filled `SvSpec` for a single channel: nav_mode 0 (zero), fading
+    off, and the five Task-10 fields zero/None. `code` is a 1023-entry int8
+    array of {-1,+1} chips; the caller must keep it alive for the run (this
+    helper stashes a contiguous int8 copy on the returned struct as
+    ``._code_keep`` so the pointer stays valid)."""
+    s = SvSpec()
+    kept = np.ascontiguousarray(code, dtype=np.int8)
+    s.code = kept.ctypes.data_as(ctypes.POINTER(ctypes.c_int8))
+    s._code_keep = kept  # keep the buffer alive as long as the struct lives
+    s.carrier_freq_hz = float(carrier_hz)
+    s.carrier_phase0_rad = 0.0
+    s.code_phase0_chips = float(code_phase0)
+    s.code_doppler_hz = float(code_doppler)
+    s.nav_mode = 0
+    s.nav_bits = None
+    s.nav_nbits = 0
+    s.gain = float(gain)
+    s.prn = int(prn)
+    s.fading = FadingCfg(0, 0.0, 0.0, 0)
+    s.sys = 0
+    s.sub_carrier_hz = 0.0
+    s.sec_code = None
+    s.sec_len = 0
+    s.sec_rate_hz = 0.0
+    return s
+
+
+def fill_band(bandspec, path, fs, quant, total_samples, sv_list,
+              block_samples=65536, nthreads=0):
+    """Populate `bandspec` (a `_lib.BandSpec`) in place from `sv_list` (a list of
+    `_lib.SvSpec`). A `(SvSpec * n)` array is built and both it and the SvSpec
+    code buffers are stashed on the struct (``._svs_keep`` / ``._sv_list``) so
+    they are not garbage-collected while the C side holds the pointer. Returns
+    `bandspec`."""
+    n = len(sv_list)
+    arr = (SvSpec * n)(*sv_list)
+    bandspec.out_path = str(path).encode()
+    bandspec.fs = float(fs)
+    bandspec.quant = int(quant)
+    bandspec.dither = 0
+    bandspec.total_samples = int(total_samples)
+    bandspec.block_samples = int(block_samples)
+    bandspec.nthreads = int(nthreads)
+    bandspec.svs = ctypes.cast(arr, ctypes.POINTER(SvSpec))
+    bandspec.nsv = n
+    bandspec._svs_keep = arr        # keep the (SvSpec*n) array alive
+    bandspec._sv_list = list(sv_list)  # keep the source structs (code bufs) alive
+    return bandspec
+
+
+def run_bands(bands, progress_cb=None) -> int:
+    """Run `synth_run_bands` over a list of `_lib.BandSpec`. Returns the C rc
+    (0 on success, first non-zero per-band rc otherwise)."""
+    lib = load_lib()
+    n = len(bands)
+    arr = (BandSpec * n)(*bands)
+    _cb_keep = _PROGRESS_CB(progress_cb) if progress_cb is not None else None
+    cb = ctypes.cast(_cb_keep, ctypes.c_void_p) if _cb_keep is not None else None
+    return int(lib.synth_run_bands(arr, ctypes.c_int(n), cb, None))
 
 
 def _bind_run(lib: ctypes.CDLL) -> None:
@@ -93,6 +171,10 @@ def _bind_run(lib: ctypes.CDLL) -> None:
     lib.synth_run.argtypes = [
         ctypes.c_char_p, ctypes.POINTER(RunSpec), ctypes.POINTER(SvSpec),
         ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
+    lib.synth_run_bands.restype = ctypes.c_int
+    lib.synth_run_bands.argtypes = [
+        ctypes.POINTER(BandSpec), ctypes.c_int, ctypes.c_void_p,
+        ctypes.c_void_p]
     lib.synth_ca_code.restype = ctypes.c_int
     lib.synth_ca_code.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_int8),
                                   ctypes.c_int]
