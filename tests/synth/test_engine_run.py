@@ -24,6 +24,14 @@ def _mid_epoch(req):
     return eph, rx, sow + req.duration_s / 2.0
 
 
+def _start_epoch(req):
+    gps_start = req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
+    week, sow = ephemeris.gps_week_and_sow(gps_start)
+    eph = ephemeris.align_epochs(ephemeris.parse_rinex(_RINEX), week, sow)
+    rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
+    return eph, rx, sow
+
+
 def test_engine_writes_bin_and_meta_with_expected_sample_count(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "OUT_DIR", tmp_path)
     req = _req()
@@ -53,14 +61,14 @@ def test_engine_code_phase_matches_geometry_convention(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "OUT_DIR", tmp_path)
     req = _req()
     outdir = engine.run(req)
-    eph, rx, t_mid = _mid_epoch(req)
-    sats = geometry.constellation(eph, rx, t_mid)
+    eph, rx, t0 = _start_epoch(req)
+    sats = geometry.constellation(eph, rx, t0)
     iq = inspector.read_iq(outdir / "gpssim.bin", "int16",
                            max_samples=int(req.sample_rate * 0.010))
     table = inspector.compare(iq, req.sample_rate, sats)
     strongest = max(table, key=lambda r: r["metric_db"])
     acq = inspector.acquire(iq, req.sample_rate, strongest["prn"])
-    geo_phase = geometry.observables(eph[strongest["prn"]], rx, t_mid)["code_phase_chips"]
+    geo_phase = geometry.observables(eph[strongest["prn"]], rx, t0)["code_phase_chips"]
     d = abs(acq["code_phase_chips"] - geo_phase)
     resid = min(d, 1023 - d)
     assert resid <= 2.0, (strongest["prn"], acq["code_phase_chips"], geo_phase, resid)
