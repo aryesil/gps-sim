@@ -52,3 +52,30 @@ def test_parity_is_self_consistent_for_any_prev(d29, d30):
     # recovering source from transmitted bits and re-deriving parity matches
     rec = [b ^ d30 for b in w[:24]]
     assert w[24:] == le.parity_bits(rec, d29, d30)
+
+
+# --- Task 2: TLM / HOW / subframe skeleton ------------------------------
+
+def test_tlm_starts_with_preamble():
+    assert le.tlm_word(0, 0)[:8] == le.PREAMBLE
+
+
+def test_subframe_is_300_bits_and_starts_with_preamble():
+    sf = le.subframe([[0] * 24] * 8, tow_count=100, subframe_id=1)
+    assert len(sf) == 300
+    assert sf[:8] == le.PREAMBLE
+
+
+def test_subframe_word_boundaries_parity_check():
+    sf = le.subframe([[1, 0] * 12] * 8, tow_count=7, subframe_id=3)
+    d29 = d30 = 0
+    for i in range(10):
+        w = sf[i * 30:(i + 1) * 30]
+        src = [b ^ d30 for b in w[:24]]
+        assert w[24:] == le.parity_bits(src, d29, d30)
+        d29, d30 = w[28], w[29]
+
+
+def test_subframe_rejects_wrong_word_count():
+    with pytest.raises(ValueError):
+        le.subframe([[0] * 24] * 7, tow_count=1, subframe_id=1)

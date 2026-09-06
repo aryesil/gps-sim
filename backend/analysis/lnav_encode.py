@@ -74,3 +74,44 @@ def HOW_solve_bits(tow_count: int, subframe_id: int,
             if w[28] == 0 and w[29] == 0:
                 return src
     raise AssertionError("no HOW solve bits found")
+
+
+# --- TLM / HOW / subframe skeleton --------------------------------------
+
+def tlm_word(D29_prev: int, D30_prev: int) -> list[int]:
+    """Word 1: preamble + 14-bit TLM message (0) + integrity + reserved."""
+    src = PREAMBLE + bits_of(0, 14) + [0, 0]
+    return make_word(src, D29_prev, D30_prev)
+
+
+def how_word(tow_count: int, subframe_id: int,
+             D29_prev: int, D30_prev: int) -> list[int]:
+    """Word 2: 17-bit TOW-count + alert/A-S + 3-bit subframe id, trailing
+    parity solved to zero."""
+    src = HOW_solve_bits(tow_count, subframe_id, D29_prev, D30_prev)
+    return make_word(src, D29_prev, D30_prev)
+
+
+def subframe(words_src, tow_count: int, subframe_id: int,
+            D29_start: int = 0, D30_start: int = 0) -> list[int]:
+    """Assemble a 300-bit subframe: TLM, HOW, then eight 24-bit source
+    words (3..10), tracking D29*/D30* across word boundaries.
+
+    ``tow_count`` is the count for *this* subframe; the HOW carries the
+    count of the next subframe start (IS-GPS-200 20.3.3.2).
+    """
+    if len(words_src) != 8 or any(len(w) != 24 for w in words_src):
+        raise ValueError("subframe needs 8 source words of 24 bits each")
+    out: list[int] = []
+    d29, d30 = D29_start, D30_start
+    w1 = tlm_word(d29, d30)
+    out += w1
+    d29, d30 = w1[28], w1[29]
+    w2 = how_word((tow_count + 1) & 0x1FFFF, subframe_id, d29, d30)
+    out += w2
+    d29, d30 = w2[28], w2[29]
+    for src in words_src:
+        w = make_word(list(src), d29, d30)
+        out += w
+        d29, d30 = w[28], w[29]
+    return out
