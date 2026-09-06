@@ -92,6 +92,16 @@ void synth_debug_mix_parallel(const int8_t *code, double code_rate,
                               double code_phase0, double code_doppler,
                               double carrier_freq, double fs, uint64_t sample0,
                               int n, int nthreads, float *iq);
+// SP-B debug shim: one SV through gs::mix_block over [sample0, sample0+n) with
+// the six trajectory fields set. Zeroes iq[0..2n) first. carr_phase/code_phase
+// are the accumulated-at-t_j arrays; carr_freq/code_rate the per-knot rates.
+void synth_debug_mix_traj(const int8_t *code, double code_rate,
+                          double code_phase0, double carrier_freq, double fs,
+                          uint64_t sample0, int n, int traj_nknots,
+                          uint64_t traj_knot_samples,
+                          const double *carr_freq, const double *carr_phase,
+                          const double *code_rate_knots,
+                          const double *code_phase_knots, float *iq);
 // Task 10 debug shims: like the three above but taking the five new SvSpec
 // fields (sys / sub_carrier_hz / sec_code / sec_len / sec_rate_hz) so tests can
 // exercise the BOC sign + secondary-code XOR path. Passing 0/nullptr for the

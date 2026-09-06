@@ -13,18 +13,41 @@ void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
     const double dt = 1.0 / fs;
     for (int s = 0; s < nsv; ++s) {
         const SvChannel &sv = svs[s];
-        // Carrier NCO seeded so that absolute sample `sample0` has the exact
-        // starting phase (continuity across blocks).
-        Nco carr;
-        carr.set_freq(sv.carrier_freq_hz, fs);
         double abs_t0 = sample0 * dt;
-        double ph0 = sv.carrier_phase0_rad
-                     + 2.0 * M_PI * sv.carrier_freq_hz * abs_t0;
+
+        // SP-B: pick this block's trajectory knot. Knot j covers mixer block j;
+        // within the block the NCO runs linearly from the knot's frequency and
+        // accumulated phase. traj_nknots == 0 => Phase-1 constant-Doppler path,
+        // which the expressions below reduce to exactly (seg_t0 == 0).
+        const bool use_traj = sv.traj_nknots > 0;
+        double eff_carr_freq = sv.carrier_freq_hz;
+        double eff_carr_phase0 = sv.carrier_phase0_rad;   // phase at seg_t0
+        double eff_code_rate = sv.code_rate_hz + sv.code_doppler_hz;
+        double seg_t0 = 0.0;
+        double code_phase_at_seg = 0.0;
+        if (use_traj) {
+            const uint64_t ks = sv.traj_knot_samples;
+            int j = ks ? static_cast<int>(sample0 / ks) : 0;
+            if (j < 0) j = 0;
+            if (j > sv.traj_nknots - 1) j = sv.traj_nknots - 1;
+            seg_t0 = static_cast<double>(static_cast<uint64_t>(j) * ks) / fs;
+            eff_carr_freq = sv.traj_carr_freq[j];
+            eff_carr_phase0 = sv.traj_carr_phase[j];
+            eff_code_rate = sv.traj_code_rate[j];
+            code_phase_at_seg = sv.traj_code_phase[j];
+        }
+
+        // Carrier NCO seeded so that absolute sample `sample0` has the exact
+        // starting phase (continuity across blocks / knots).
+        Nco carr;
+        carr.set_freq(eff_carr_freq, fs);
+        double ph0 = eff_carr_phase0
+                     + 2.0 * M_PI * eff_carr_freq * (abs_t0 - seg_t0);
         ph0 = std::fmod(ph0, 2.0 * M_PI);
         if (ph0 < 0) ph0 += 2.0 * M_PI;
         carr.phase = static_cast<uint32_t>(ph0 / (2.0 * M_PI) * 4294967296.0);
 
-        const double chip_rate = sv.code_rate_hz + sv.code_doppler_hz;
+        const double chip_rate = eff_code_rate;
         const double g = sv.gain;
         const int L = sv.code_len;
         const int8_t *__restrict code = sv.code;
@@ -38,6 +61,9 @@ void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
         if (eff < 0) eff += L;
         eff = L - eff;
         if (eff >= L) eff -= L;
+        // Trajectory branch: absolute code phase at abs_t0 comes from the knot.
+        const double cp_base =
+            code_phase_at_seg + eff_code_rate * (abs_t0 - seg_t0);
 
         // BOC(1,1): the sub-carrier is code-phase-locked -- two half-chips per
         // code chip. Deriving the sign from the running code phase `cp` (which
@@ -55,7 +81,8 @@ void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
             // keeps the code NCO continuous across streaming blocks and across
             // parallel chunks. Using (t - abs_t0) here dropped the absolute term
             // and restarted the code phase at `eff` every call (final review B1).
-            double cp = eff + chip_rate * t;
+            double cp = use_traj ? (cp_base + chip_rate * (k * dt))
+                                 : (eff + chip_rate * t);
             long ci = static_cast<long>(cp) % L;
             if (ci < 0) ci += L;
             float chip = static_cast<float>(code[ci]);
@@ -129,6 +156,25 @@ void synth_debug_mix_range(const int8_t *code, double code_rate,
     for (int k = 0; k < 2 * n; ++k) iq[k] = 0.0f;
     gs::SvChannel sv = debug_sv(code, code_rate, code_phase0, code_doppler,
                                 carrier_freq);
+    gs::mix_block(&sv, 1, fs, sample0, n, iq);
+}
+
+// SP-B debug shim: one SV through gs::mix_block with the trajectory fields set.
+void synth_debug_mix_traj(const int8_t *code, double code_rate,
+                          double code_phase0, double carrier_freq, double fs,
+                          uint64_t sample0, int n, int traj_nknots,
+                          uint64_t traj_knot_samples,
+                          const double *carr_freq, const double *carr_phase,
+                          const double *code_rate_knots,
+                          const double *code_phase_knots, float *iq) {
+    for (int k = 0; k < 2 * n; ++k) iq[k] = 0.0f;
+    gs::SvChannel sv = debug_sv(code, code_rate, code_phase0, 0.0, carrier_freq);
+    sv.traj_nknots = traj_nknots;
+    sv.traj_knot_samples = traj_knot_samples;
+    sv.traj_carr_freq = carr_freq;
+    sv.traj_carr_phase = carr_phase;
+    sv.traj_code_rate = code_rate_knots;
+    sv.traj_code_phase = code_phase_knots;
     gs::mix_block(&sv, 1, fs, sample0, n, iq);
 }
 

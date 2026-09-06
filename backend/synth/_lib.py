@@ -400,6 +400,40 @@ def debug_mix_range_ex(code, code_rate, code_phase0, code_doppler, carrier_freq,
     return a[0::2] + 1j * a[1::2]
 
 
+_F64 = ctypes.POINTER(ctypes.c_double)
+
+
+def _as_f64(seq):
+    a = np.ascontiguousarray(seq, dtype=np.float64)
+    return a.ctypes.data_as(_F64), a
+
+
+def debug_mix_traj(code, code_rate, code_phase0, carrier_freq, fs, sample0, n,
+                   knot_samples, carr_freq, carr_phase, code_rate_knots,
+                   code_phase_knots):
+    """SP-B trajectory mixer shim over gs::mix_block. The four knot sequences
+    must be equal length (= traj_nknots). Returns complex64, length n."""
+    lib = load_lib()
+    lib.synth_debug_mix_traj.restype = None
+    lib.synth_debug_mix_traj.argtypes = [
+        _I8, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double,
+        ctypes.c_uint64, ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+        _F64, _F64, _F64, _F64, _F32]
+    cptr, _kc = _as_i8(code)
+    cf, _k1 = _as_f64(carr_freq)
+    cph, _k2 = _as_f64(carr_phase)
+    cr, _k3 = _as_f64(code_rate_knots)
+    cph2, _k4 = _as_f64(code_phase_knots)
+    nk = len(_k1)
+    assert len(_k2) == len(_k3) == len(_k4) == nk
+    out = (ctypes.c_float * (2 * int(n)))()
+    lib.synth_debug_mix_traj(cptr, code_rate, code_phase0, carrier_freq, fs,
+                             int(sample0), int(n), int(nk), int(knot_samples),
+                             cf, cph, cr, cph2, out)
+    a = np.array(list(out), dtype=np.float32)
+    return a[0::2] + 1j * a[1::2]
+
+
 def debug_mix_parallel_ex(code, code_rate, code_phase0, code_doppler,
                           carrier_freq, fs, sample0, n, nthreads, *, sys=0,
                           sub_hz=0.0, sec=None, sec_len=0, sec_rate=0.0):
