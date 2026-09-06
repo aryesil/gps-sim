@@ -4,7 +4,9 @@ import ctypes
 import pathlib
 import sys
 
-ABI_VERSION = 11
+import numpy as np
+
+ABI_VERSION = 12
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
@@ -71,6 +73,10 @@ def _bind_run(lib: ctypes.CDLL) -> None:
     lib.synth_ca_code.restype = ctypes.c_int
     lib.synth_ca_code.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_int8),
                                   ctypes.c_int]
+    lib.synth_code.restype = ctypes.c_int
+    lib.synth_code.argtypes = [
+        ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_int8), ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int8), ctypes.c_int]
 
 
 def _bind_sat_state(lib: ctypes.CDLL) -> None:
@@ -150,3 +156,24 @@ def ca_code(prn: int) -> list[int]:
     if lib.synth_ca_code(prn, buf, 1023) != 0:
         raise ValueError(f"bad prn {prn}")
     return list(buf)
+
+
+def code(sys: int, prn: int, prim_len: int, sec_len: int = 0):
+    """L1-group code generator over the native ``synth_code`` symbol.
+
+    ``sys`` is the CODE-GEN enum (0 GPS, 1 QZSS, 2 SBAS, 3 BeiDou B1I,
+    4 GLONASS G1) -- SEPARATE from the propagation sys int. Returns
+    ``(primary, secondary)`` as ``np.int8`` arrays of ``{-1, +1}`` chips;
+    ``secondary`` is ``None`` when ``sec_len <= 0``.
+    """
+    lib = load_lib()
+    _p = ctypes.POINTER(ctypes.c_int8)
+    primary = np.zeros(int(prim_len), np.int8)
+    secondary = np.zeros(int(sec_len), np.int8) if sec_len > 0 else None
+    sec_ptr = secondary.ctypes.data_as(_p) if secondary is not None else None
+    rc = lib.synth_code(int(sys), int(prn),
+                        primary.ctypes.data_as(_p), int(prim_len),
+                        sec_ptr, int(sec_len))
+    if rc != 0:
+        raise ValueError(f"synth_code failed: sys={sys} prn={prn}")
+    return primary, (secondary if sec_len > 0 else None)
