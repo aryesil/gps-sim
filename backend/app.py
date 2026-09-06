@@ -22,6 +22,7 @@ from backend import (config, ephemeris, geometry, scenario, generator,
                      precise, ephemeris_source, ephemeris_fit, impairments,
                      channel_models)
 from backend.gpstime import GPSTime
+from backend.synth import signal_engine
 
 @contextlib.asynccontextmanager
 async def _lifespan(app: FastAPI):
@@ -423,6 +424,8 @@ def generate(body: dict):
         receiver_clock=body.get("receiver_clock"),
         multipath=body.get("multipath"),
         models_to_iq=bool(body.get("models_to_iq")),
+        engine=body.get("engine", "gps-sdr-sim"),
+        fading=body.get("fading"),
     )
     if req.impairments is not None:
         try:
@@ -439,7 +442,7 @@ def generate(body: dict):
     def events():
         try:
             q: list = []
-            outdir = generator.run(req, progress_cb=lambda f: q.append(f))
+            outdir = signal_engine.run(req, progress_cb=lambda f: q.append(f))
             for f in q:
                 yield f"data: {json.dumps({'progress': f})}\n\n"
             # generator.run aligns every satellite's toc/toe to the request's

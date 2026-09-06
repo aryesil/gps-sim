@@ -43,7 +43,7 @@ void synth_debug_one_sv(const int8_t *code, double code_rate, double code_phase0
 // frozen -- _lib.py mirrors it exactly.
 typedef struct {
     const int8_t *code;        // 1023 int8, owned by caller
-    double carrier_freq_hz;    // L1 + carrier Doppler at t=0
+    double carrier_freq_hz;    // carrier Doppler at t=0 (complex baseband; L1 is the recorder LO)
     double carrier_phase0_rad;
     double code_phase0_chips;
     double code_doppler_hz;    // constant over the run (Phase 1 approximation)

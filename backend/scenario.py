@@ -44,10 +44,16 @@ class ScenarioRequest:
     receiver_clock: dict | None = None
     multipath: dict | None = None
     models_to_iq: bool = False
+    # Signal-generation engine. "gps-sdr-sim" (default, external binary) or
+    # "native" (backend.synth, opt-in). Unknown values raise in signal_engine.
+    engine: str = "gps-sdr-sim"
+    # Deterministic per-SV fading, parsed by backend.synth.fading.FadingConfig.
+    # None -> no fading (native engine emits static per-SV gain).
+    fading: dict | None = None
 
 
 def _bytes_per_sample(fmt: str) -> int:
-    return 1 if fmt == "int8" else 2
+    return 1 if fmt == "int8" else 2   # int12 is carried in an int16 container
 
 
 def estimate_bytes(req: ScenarioRequest) -> int:

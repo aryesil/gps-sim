@@ -7,7 +7,7 @@ import pathlib
 
 from backend import config, ephemeris, geometry
 from backend.synth import _lib
-from backend.synth._lib import RunSpec, SvSpec, _bind_run
+from backend.synth._lib import RunSpec, SvSpec
 
 _KEPLER_KEYS = ("sqrtA e m0 delta_n omega omega0 omega_dot i0 idot cuc cus crc "
                 "crs cic cis toe toc af0 af1 af2").split()
@@ -45,7 +45,6 @@ def run(req, progress_cb=None) -> pathlib.Path:
     """Synthesize a full GPS L1 C/A run with the native engine. Returns the
     output directory holding ``gpssim.bin`` and ``meta.json``."""
     lib = _lib.load_lib()
-    _bind_run(lib)
 
     created = dt.datetime.now(dt.timezone.utc)
     outdir = config.OUT_DIR / created.strftime("%Y%m%dT%H%M%S%f")
