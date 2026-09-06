@@ -152,6 +152,37 @@ def test_preview_precise_explicit_fallback_when_out_of_coverage():
     assert "broadcast" in ws and ("fell back" in ws or "auto-download failed" in ws)
 
 
+def test_preview_precise_multignss_includes_galileo(monkeypatch):
+    # systems=["G","E"] + ephemeris_mode=precise: the multi-GNSS preview must
+    # run every requested system off the precise product (state-fn override),
+    # not fall back to a "precise is GPS-only" warning.
+    import numpy as np
+    from backend import app as appmod
+    from backend import geometry
+
+    rx = np.asarray(geometry.llh_to_ecef(RX["lat"], RX["lon"], RX["alt"]), float)
+    sat_pos = tuple(rx * 2.6)  # roughly overhead, comfortably above the mask
+
+    def _fake_satellites():
+        return [("G", n) for n in range(1, 11)] + [("E", 11), ("E", 12)]
+
+    def _fake_state_fns(provider, keys, week):
+        return ({k: (lambda sow: (sat_pos, (0.0, 0.0, 0.0), 0.0)) for k in keys},
+                [])
+
+    monkeypatch.setattr(appmod._precise_provider, "satellites", _fake_satellites)
+    monkeypatch.setattr(appmod.ephemeris_source, "build_precise_state_fns",
+                        _fake_state_fns)
+
+    r = client.post("/api/preview", json={
+        **RX, "start_utc": TOE_UTC, "rinex_path": BRDC,
+        "ephemeris_mode": "precise", "systems": ["G", "E"]})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert any(s["sys"] == "E" for s in j["satellites"]), j
+    assert any("precise" in w for w in j["warnings"]), j["warnings"]
+
+
 def test_preview_precise_gps_only_product_warns(monkeypatch):
     # When only a GPS-only SP3 product is available (no multi-GNSS),
     # _ensure_precise_loaded should emit a warning about non-GPS fallback.

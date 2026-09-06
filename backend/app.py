@@ -169,13 +169,25 @@ def _try_import(name: str) -> bool:
 
 
 def _preview_multi(body: dict, start: dt.datetime, rx,
-                   systems: tuple) -> dict:
+                   systems: tuple, week: int, sow: float) -> dict:
     """Geometry preview across multiple constellations (one correlated epoch).
-    Same response shape as /api/preview. Channel models / precise mode are
-    GPS-only and not applied here."""
+    Same response shape as /api/preview. ``week``/``sow`` are the already
+    computed GPS run-start epoch. Channel models are not applied here;
+    ``ephemeris_mode == "precise"`` runs every requested system off the SP3
+    product via per-key state-fn interpolants."""
+    mode = ephemeris_source.normalise_mode(body.get("ephemeris_mode"))
+    if mode == "precise":
+        precise_warns = list(_ensure_precise_loaded(
+            start, bool(body.get("fallback_to_broadcast"))))
+        if _precise_provider.loaded:
+            return _preview_multi_precise(body, start, rx, systems, week, sow,
+                                          precise_warns)
+        # fallback path: no precise product; degrade to the broadcast multi
+        # preview below, carrying the advisory warnings forward.
+    else:
+        precise_warns = []
+
     path = _resolve_rinex(body, start)
-    gps_start = start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
-    week, sow = ephemeris.gps_week_and_sow(gps_start)
     try:
         eph = ephemeris.parse_rinex_multi(path, systems, require=("G",))
     except ephemeris.EphemerisUnavailable as e:
@@ -196,13 +208,89 @@ def _preview_multi(body: dict, start: dt.datetime, rx,
         s["_los"] = o["_los"]
         sats.append(s)
     d = {k: _finite(v) for k, v in geometry.dop(ents, rx).items()}
-    warnings = [f"ephemeris: {pathlib.Path(path).name}",
-                f"multi-GNSS preview: {', '.join(sorted(got))}"]
+    warnings = precise_warns + [f"ephemeris: {pathlib.Path(path).name}",
+                                f"multi-GNSS preview: {', '.join(sorted(got))}"]
     if dropped:
         warnings.append(f"no records for {', '.join(dropped)} in this RINEX")
-    if ephemeris_source.normalise_mode(body.get("ephemeris_mode")) == "precise":
+    if channel_models.ChannelModels.from_request(body).any_enabled:
         warnings.append(
-            "multi-GNSS preview uses broadcast ephemeris (precise mode is GPS-only)")
+            "channel models are not applied to the multi-GNSS preview")
+    if len(sats) < 4:
+        warnings.append("fewer than 4 visible satellites — no hardware fix")
+    return {"satellites": sats, "dop": d, "warnings": warnings,
+            "channel_models": None}
+
+
+def _preview_multi_precise(body: dict, start: dt.datetime, rx,
+                           systems: tuple, week: int, sow: float,
+                           precise_warns: list) -> dict:
+    """Multi-GNSS geometry preview off the loaded SP3 product: every requested
+    system is evaluated via a per-key precise state-fn interpolant (same shape
+    as the native engine's precise-multi path). Systems the product does not
+    carry are dropped with a surfaced warning."""
+    req_set = set(systems)
+    try:
+        have = [tuple(k) for k in _precise_provider.satellites()]
+    except Exception:                            # pragma: no cover - defensive
+        have = []
+    keys = [k for k in have if k[0] in req_set]
+    covered = {k[0] for k in keys}
+    warnings = list(precise_warns)
+    for s in systems:
+        if s not in covered:
+            warnings.append(f"precise ephemeris has no {s} satellites; "
+                            "system omitted from this preview")
+
+    state_fns, skipped = ephemeris_source.build_precise_state_fns(
+        _precise_provider, keys, week)
+    for k in skipped:
+        warnings.append(f"precise ephemeris does not cover "
+                        f"{k[0]}{k[1]:02d}; satellite omitted")
+
+    # GLONASS is FDMA: recover each slot's channel number from the broadcast
+    # RINEX (the SP3 product does not carry it). Unusable -> drop R with a warn.
+    glo_k_by_key: dict = {}
+    r_keys = [k for k in state_fns if k[0] == "R"]
+    if r_keys:
+        r_eph: dict = {}
+        try:
+            r_eph = ephemeris.parse_rinex_multi(_resolve_rinex(body, start),
+                                                ("R",), require=())
+        except Exception as exc:                 # noqa: BLE001 - degrade, warn
+            warnings.append("precise preview: GLONASS needs broadcast FDMA "
+                            f"channel numbers but the RINEX is unusable "
+                            f"({exc}); GLONASS omitted")
+        for k in r_keys:
+            rec = r_eph.get(k) or {}
+            gk = rec.get("glo_k")
+            if gk is None or (isinstance(gk, float) and math.isnan(gk)):
+                warnings.append("precise preview: no FDMA channel for GLONASS "
+                                f"R{k[1]:02d}; satellite omitted")
+                state_fns.pop(k, None)
+            else:
+                glo_k_by_key[k] = int(gk)
+
+    stubs: dict = {}
+    for k in state_fns:
+        rec = {"system": k[0]}
+        if k[0] == "R":
+            rec["glo_k"] = glo_k_by_key[k]
+        stubs[k] = rec
+
+    ents = geometry.constellation_multi(stubs, rx, sow, signals.signal_for,
+                                        mask_deg=5.0, state_fn_by_key=state_fns)
+    sats = []
+    for o in ents:
+        s = {k: v for k, v in o.items() if k not in ("signal_id", "_los")}
+        s["sys"] = o["sys"]
+        s["svid"] = f"{o['sys']}{o['prn']:02d}"
+        s["band"] = o["signal_id"].band
+        s["_los"] = o["_los"]
+        sats.append(s)
+    d = {k: _finite(v) for k, v in geometry.dop(ents, rx).items()}
+    got = sorted({o["sys"] for o in ents})
+    warnings.insert(0, f"multi-GNSS preview (precise ephemeris): "
+                       f"{', '.join(got) or 'none visible'}")
     if channel_models.ChannelModels.from_request(body).any_enabled:
         warnings.append(
             "channel models are not applied to the multi-GNSS preview")
@@ -224,7 +312,9 @@ def preview(body: dict):
     # and precise mode are GPS-only and stay on the path below.
     req_systems = tuple(dict.fromkeys(body.get("systems") or ["G"]))
     if tuple(sorted(req_systems)) != ("G",):
-        return _preview_multi(body, start, rx, req_systems)
+        week_m, sow_m = ephemeris.gps_week_and_sow(
+            start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S))
+        return _preview_multi(body, start, rx, req_systems, week_m, sow_m)
 
     eph, eph_src = _resolve_eph(date, body.get("rinex_path"))
 
@@ -438,6 +528,16 @@ def _precise_nav_override(body: dict, start: dt.datetime):
         return None, auto_warns
     gps_start = start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
     week, sow = ephemeris.gps_week_and_sow(gps_start)
+
+    # Precise ephemeris for EVERY requested constellation (native engine only):
+    # hand the provider + run epoch straight to engine.run, which builds
+    # per-key SP3 state-fn interpolants. GPS-only or gps-sdr-sim keep the
+    # fitted-broadcast dict built below.
+    req_systems = tuple(dict.fromkeys(body.get("systems") or ["G"]))
+    if body.get("engine") == "native" and sorted(set(req_systems)) != ["G"]:
+        return ({"precise_provider": _precise_provider, "week": week,
+                 "sow": sow, "systems": req_systems}, auto_warns)
+
     prns = sorted(p for (s, p) in _precise_provider.satellites() if s == "G")
     try:
         eph, warns = ephemeris_fit.build_precise_broadcast(
