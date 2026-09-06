@@ -46,6 +46,21 @@ void synth_sat_state(const KeplerEph *e, double t_gps,
 // synth_sat_state_sys(e, 0, ...).
 void synth_sat_state_sys(const KeplerEph *e, int sys, double t_gps,
                          double *pos3, double *vel3, double *clk1);
+// GLONASS/SBAS broadcast state: an ECEF state vector plus a frame-constant
+// luni-solar acceleration in the rotating PZ-90.11 frame at the broadcast
+// epoch. Field order frozen -- _lib.py mirrors it exactly. x_m/y_m/z_m are
+// metres, vx..vz m/s, ax..az m/s^2, tau/gamma seconds and s/s, toe_ref the
+// broadcast epoch (seconds of week).
+typedef struct {
+    double x_m, y_m, z_m, vx, vy, vz, ax, ay, az, tau, gamma, toe_ref;
+} GloEph;
+// Propagate `e` to `t_gps` with the GLONASS ICD "simplified equations of
+// motion" RK4 integrator (~60 s steps, final partial step for the remainder;
+// dt_total == 0 returns the broadcast state unchanged). Writes ECEF position
+// (m) to pos3[0..2], ECEF velocity (m/s) to vel3[0..2], SV clock correction
+// (s) = -tau + gamma*dt_total to clk1[0].
+void synth_glonass_state(const GloEph *e, double t_gps,
+                         double *pos3, double *vel3, double *clk1);
 // Debug shim: fills iq_interleaved[0..2*n-1] with I,Q,I,Q,... samples of a
 // unit-amplitude complex carrier at freq_hz for sample rate fs, from a single
 // phase-continuous NCO starting at phase 0.

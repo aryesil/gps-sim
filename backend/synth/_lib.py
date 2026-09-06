@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-ABI_VERSION = 14
+ABI_VERSION = 15
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
@@ -21,6 +21,23 @@ class KeplerEph(ctypes.Structure):
     _fields_ = [(name, ctypes.c_double) for name in (
         "sqrtA e m0 delta_n omega omega0 omega_dot i0 idot cuc cus crc crs "
         "cic cis toe toc af0 af1 af2 _pad".split())]
+
+
+class GloEph(ctypes.Structure):
+    # Field order MUST match `GloEph` in native/abi.h exactly (frozen).
+    _fields_ = [(name, ctypes.c_double) for name in (
+        "x_m y_m z_m vx vy vz ax ay az tau gamma toe_ref".split())]
+
+
+def glo_struct(record: dict) -> "GloEph":
+    """Build a `GloEph` from a raw-parsed GLONASS/SBAS broadcast dict (mirrors
+    `engine.kepler_struct`). Optional luni-solar accel fields default to 0.0."""
+    s = GloEph()
+    for k in ("x_m", "y_m", "z_m", "vx", "vy", "vz", "tau", "gamma", "toe_ref"):
+        setattr(s, k, float(record[k]))
+    for k in ("ax", "ay", "az"):
+        setattr(s, k, float(record.get(k, 0.0)))
+    return s
 
 
 class FadingCfg(ctypes.Structure):
@@ -93,6 +110,9 @@ def _bind_sat_state(lib: ctypes.CDLL) -> None:
     lib.synth_sat_state_sys.restype = None
     lib.synth_sat_state_sys.argtypes = [ctypes.POINTER(KeplerEph), ctypes.c_int,
                                         ctypes.c_double, _dp, _dp, _dp]
+    lib.synth_glonass_state.restype = None
+    lib.synth_glonass_state.argtypes = [ctypes.POINTER(GloEph), ctypes.c_double,
+                                        _dp, _dp, _dp]
 
 
 def sat_state_sys(eph_struct: "KeplerEph", sys_int: int, t: float):
@@ -106,6 +126,18 @@ def sat_state_sys(eph_struct: "KeplerEph", sys_int: int, t: float):
     clk = ctypes.c_double()
     lib.synth_sat_state_sys(ctypes.byref(eph_struct), int(sys_int),
                             ctypes.c_double(t), pos, vel, ctypes.byref(clk))
+    return tuple(pos), tuple(vel), clk.value
+
+
+def glonass_state(glo_struct: "GloEph", t: float):
+    """Propagate a GloEph via the native GLONASS PZ-90 RK4 integrator. Returns
+    ``(pos3, vel3, clk)`` with pos/vel as 3-tuples of floats."""
+    lib = load_lib()
+    pos = (ctypes.c_double * 3)()
+    vel = (ctypes.c_double * 3)()
+    clk = ctypes.c_double()
+    lib.synth_glonass_state(ctypes.byref(glo_struct), ctypes.c_double(t),
+                            pos, vel, ctypes.byref(clk))
     return tuple(pos), tuple(vel), clk.value
 
 

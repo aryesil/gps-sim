@@ -2,8 +2,8 @@ import pathlib
 
 import numpy as np
 
-from backend import ephemeris
-from backend.synth import glonass
+from backend import ephemeris, geometry
+from backend.synth import _lib, glonass
 
 _MIXED = str(pathlib.Path(__file__).parent.parent / "fixtures" / "brdc_mixed.rnx")
 
@@ -60,3 +60,15 @@ def test_glonass_clock_is_linear():
     _, _, c100 = f(r["toe_ref"] + 100.0)
     assert abs(c0 - (-tau)) < 1e-12
     assert abs(c100 - (-tau + gamma * 100.0)) < 1e-9
+
+
+def test_cpp_glonass_matches_python():
+    r = _one()
+    st = _lib.glo_struct(r)          # helper mirrors engine.kepler_struct
+    for dt_s in (0.0, 120.0, 600.0, -300.0):
+        t = r["toe_ref"] + dt_s
+        p_c, v_c, c_c = _lib.glonass_state(st, t)
+        p_p, v_p, c_p = geometry.state_fn_for(r)(t)
+        assert np.max(np.abs(np.array(p_c) - p_p)) < 1e-3, dt_s
+        assert np.max(np.abs(np.array(v_c) - v_p)) < 1e-4, dt_s
+        assert abs(c_c - c_p) < 1e-9, dt_s
