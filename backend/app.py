@@ -22,7 +22,7 @@ from backend import (config, ephemeris, geometry, scenario, generator,
                      precise, ephemeris_source, ephemeris_fit, impairments,
                      channel_models)
 from backend.gpstime import GPSTime
-from backend.synth import signal_engine
+from backend.synth import signal_engine, signals
 
 @contextlib.asynccontextmanager
 async def _lifespan(app: FastAPI):
@@ -419,6 +419,13 @@ def generate(body: dict):
             raise HTTPException(422, f"fading: {e}")
     if body.get("sample_format") == "int12" and engine != "native":
         raise HTTPException(422, "sample_format 'int12' requires engine 'native'")
+    systems = body.get("systems", ["G"])
+    if not isinstance(systems, list) or not all(
+            isinstance(s, str) and s in signals.SYSTEMS for s in systems):
+        raise HTTPException(422, f"systems: unknown entry in {systems!r}")
+    if engine != "native" and sorted(set(systems)) != ["G"]:
+        raise HTTPException(422,
+            "gps-sdr-sim is GPS-only; use engine=native for other systems")
     nav_override, precise_warnings = _precise_nav_override(body, start)
     # In precise mode the broadcast nav file is never read; only resolve
     # (and possibly download) one when it will actually be used.
@@ -439,6 +446,7 @@ def generate(body: dict):
         models_to_iq=bool(body.get("models_to_iq")),
         engine=body.get("engine", "gps-sdr-sim"),
         fading=body.get("fading"),
+        systems=systems,
     )
     if req.impairments is not None:
         try:

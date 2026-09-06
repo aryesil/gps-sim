@@ -8,6 +8,8 @@ from backend import generator, scenario
 def run(req: scenario.ScenarioRequest, progress_cb=None,
         binary: str | None = None) -> pathlib.Path:
     if req.engine == "gps-sdr-sim":
+        if tuple(req.systems) != ("G",):
+            raise ValueError("gps-sdr-sim engine is GPS-only")
         return generator.run(req, progress_cb=progress_cb, binary=binary)
     if req.engine == "native":
         from backend.synth import engine as native_engine
