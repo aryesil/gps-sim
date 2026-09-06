@@ -136,28 +136,87 @@ def decode_ephemeris(subframes: dict) -> dict:
     return eph
 
 
+_L1_HZ = 1575.42e6
+
+
+def _prompt_per_ms(x_wiped, fs, ca, code_phase0_chips, code_rate):
+    """Complex prompt correlator output, one sample per 1 ms C/A period,
+    for a carrier-wiped signal and a given code chipping rate."""
+    k = np.arange(x_wiped.size, dtype=np.float64)
+    # acquire() reports the peak as a right shift of the local replica, so
+    # the aligned replica is the nominal code advanced by -code_phase0.
+    idx = np.floor(k * code_rate / fs - code_phase0_chips).astype(np.int64) % 1023
+    corr = x_wiped * ca[idx]
+    spms = fs / 1000.0
+    m = int(x_wiped.size // spms)
+    edges = np.floor(np.arange(m + 1) * spms).astype(np.int64)
+    csum = np.concatenate(([0.0 + 0j], np.cumsum(corr)))
+    return csum[edges[1:]] - csum[edges[:-1]]
+
+
 def demod_nav_bits(iq, fs, prn, code_phase0_chips, doppler_hz, *,
-                   n_bits: int = 1500, t0_s: float = 0.0):
-    """Hard nav bits (``int8`` {0,1}) from IQ: carrier wipe-off, prompt
-    correlation against a C/A replica, 1 ms accumulate, 20 ms integrate."""
+                   n_bits: int = 1500, align_ms: int = 0):
+    """Hard nav bits (``int8`` {0,1}) from IQ.
+
+    Steps: prompt correlation to 1 ms samples, residual-frequency search,
+    BPSK phase de-rotation, then 20 ms integration. ``align_ms`` skips a
+    leading partial bit so the 20 ms blocks land on transmitted bit
+    boundaries. Global sign ambiguity is left for :func:`find_frame`.
+    """
     from backend import inspector
 
     chip_hz = float(inspector.config.CA_CHIP_HZ)
-    spms = fs / 1000.0
-    n_ms = n_bits * 20
-    n = int(round(n_ms * spms))
-    x = np.asarray(iq[:n]).astype(np.complex128)
-    if x.size < n:
-        n_bits = x.size // int(round(20 * spms))
-        n = n_bits * 20 * int(round(spms)) if False else x.size
-    k = np.arange(x.size)
-    x = x * np.exp(-2j * np.pi * doppler_hz * (k / fs + t0_s))
-    idx = (np.floor(k * chip_hz / fs + code_phase0_chips).astype(np.int64)) % 1023
-    replica = inspector.ca_code(prn).astype(np.float64)[idx]
-    corr = x * replica
-    full_ms = corr.size // int(round(spms))
-    corr = corr[:full_ms * int(round(spms))].reshape(full_ms, int(round(spms)))
-    per_ms = corr.sum(axis=1)
-    full_bits = per_ms.size // 20
-    bit_acc = per_ms[:full_bits * 20].reshape(full_bits, 20).sum(axis=1)
-    return (np.real(bit_acc) < 0).astype(np.int8)
+    ca = inspector.ca_code(prn).astype(np.float64)
+    x = np.asarray(iq).astype(np.complex128)
+    k = np.arange(x.size, dtype=np.float64)
+    x = x * np.exp(-2j * np.pi * doppler_hz * k / fs)
+
+    # The engine holds Doppler constant, but the acquired carrier estimate
+    # carries a small error; the matching code-rate error walks the replica
+    # off over a 20 s capture. Grid-search the residual chipping rate for
+    # peak prompt energy.
+    base_rate = chip_hz * (1.0 + doppler_hz / _L1_HZ)
+    best_p, best_e = None, -1.0
+    for drate in np.linspace(-3.0, 3.0, 31):
+        cand = _prompt_per_ms(x, fs, ca, code_phase0_chips, base_rate + drate)
+        e = float(np.sum(np.abs(cand)))
+        if e > best_e:
+            best_e, best_p = e, cand
+    p = best_p
+    if align_ms:
+        p = p[align_ms:]
+    nb = min(n_bits, p.size // 20)
+    p = p[:nb * 20]
+    if nb == 0:
+        return np.zeros(0, dtype=np.int8)
+
+    # residual carrier frequency: coarse 1 ms-rate search, then a fine
+    # parabolic refine (the phase must stay coherent across the whole
+    # capture, so sub-0.05 Hz accuracy matters over 20 s).
+    m = np.arange(p.size, dtype=np.float64)
+
+    def _mag(f):
+        return np.abs(np.sum(p * np.exp(-2j * np.pi * f * m / 1000.0)))
+
+    grid = np.arange(-45.0, 45.01, 0.25)
+    mags = np.array([_mag(f) for f in grid])
+    j = int(np.argmax(mags))
+    best_f = grid[j]
+    if 0 < j < len(grid) - 1:
+        y0, y1, y2 = mags[j - 1], mags[j], mags[j + 1]
+        den = y0 - 2 * y1 + y2
+        if abs(den) > 1e-12:
+            best_f += 0.25 * 0.5 * (y0 - y2) / den
+    p = p * np.exp(-2j * np.pi * best_f * m / 1000.0)
+
+    bits = p.reshape(nb, 20).sum(axis=1)
+
+    # second-stage residual from the phase ramp of the data-wiped bit
+    # samples (bits**2 removes the +/-1 modulation), then a constant phase.
+    bi = np.arange(nb, dtype=np.float64)
+    ph = np.unwrap(np.angle(bits ** 2))
+    slope = np.polyfit(bi, ph, 1)[0] / 2.0        # rad per bit
+    bits = bits * np.exp(-1j * slope * bi)
+    phi = 0.5 * np.angle(np.sum(bits ** 2))
+    bits = bits * np.exp(-1j * phi)
+    return (np.real(bits) < 0).astype(np.int8)
