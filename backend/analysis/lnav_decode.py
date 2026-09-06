@@ -193,10 +193,19 @@ def demod_nav_bits(iq, fs, prn, code_phase0_chips, doppler_hz, *,
     # residual carrier frequency: coarse 1 ms-rate search, then a fine
     # parabolic refine (the phase must stay coherent across the whole
     # capture, so sub-0.05 Hz accuracy matters over 20 s).
+    #
+    # With continuous_doppler the residual carrier is a frequency *ramp*
+    # (Doppler rate), i.e. a quadratic phase over the capture -- a linear
+    # phase search cannot see the peak. Estimate the constant part from the
+    # first second only (small quadratic swing there), de-rotate, then let
+    # the degree-2 fit on bits**2 below absorb the ramp.
     m = np.arange(p.size, dtype=np.float64)
+    m_coarse = m[:min(p.size, 1000)]
+    p_coarse = p[:m_coarse.size]
 
     def _mag(f):
-        return np.abs(np.sum(p * np.exp(-2j * np.pi * f * m / 1000.0)))
+        return np.abs(np.sum(p_coarse * np.exp(-2j * np.pi * f * m_coarse
+                                               / 1000.0)))
 
     grid = np.arange(-45.0, 45.01, 0.25)
     mags = np.array([_mag(f) for f in grid])
@@ -211,12 +220,15 @@ def demod_nav_bits(iq, fs, prn, code_phase0_chips, doppler_hz, *,
 
     bits = p.reshape(nb, 20).sum(axis=1)
 
-    # second-stage residual from the phase ramp of the data-wiped bit
-    # samples (bits**2 removes the +/-1 modulation), then a constant phase.
+    # second-stage residual from the phase curve of the data-wiped bit
+    # samples (bits**2 removes the +/-1 modulation): a degree-2 fit absorbs
+    # both a residual carrier frequency and a residual Doppler *rate*
+    # (quadratic phase) left by continuous_doppler; then a constant phase.
     bi = np.arange(nb, dtype=np.float64)
     ph = np.unwrap(np.angle(bits ** 2))
-    slope = np.polyfit(bi, ph, 1)[0] / 2.0        # rad per bit
-    bits = bits * np.exp(-1j * slope * bi)
+    deg = 2 if nb >= 5 else 1
+    coef = np.polyfit(bi, ph, deg) / 2.0
+    bits = bits * np.exp(-1j * np.polyval(coef, bi))
     phi = 0.5 * np.angle(np.sum(bits ** 2))
     bits = bits * np.exp(-1j * phi)
     return (np.real(bits) < 0).astype(np.int8)

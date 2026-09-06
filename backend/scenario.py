@@ -76,6 +76,11 @@ class ScenarioRequest:
     # keep a constant symbol until SP-D.
     nav_message: bool = True
 
+    # Re-propagate every satellite's geometry per mixer block instead of
+    # holding the run-start Doppler constant over the whole run. False falls
+    # back to the Phase-1 constant-Doppler approximation.
+    continuous_doppler: bool = True
+
     def __post_init__(self):
         self.systems = _norm_systems(self.systems)
 

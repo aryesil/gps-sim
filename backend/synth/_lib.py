@@ -434,6 +434,28 @@ def debug_mix_traj(code, code_rate, code_phase0, carrier_freq, fs, sample0, n,
     return a[0::2] + 1j * a[1::2]
 
 
+def attach_trajectory(spec, knot_samples, carr_freq, carr_phase,
+                      code_rate, code_phase):
+    """Attach SP-B per-block trajectory knots to a SvSpec. The four knot
+    sequences must be equal length (one entry per mixer block). The ctypes
+    arrays are stashed on the struct as ``spec._traj_keep`` so they outlive
+    the run."""
+    n = len(carr_freq)
+    if not (len(carr_phase) == len(code_rate) == len(code_phase) == n):
+        raise ValueError("trajectory knot sequences differ in length")
+    cf = (ctypes.c_double * n)(*(float(x) for x in carr_freq))
+    cph = (ctypes.c_double * n)(*(float(x) for x in carr_phase))
+    cr = (ctypes.c_double * n)(*(float(x) for x in code_rate))
+    kp = (ctypes.c_double * n)(*(float(x) for x in code_phase))
+    spec.traj_nknots = n
+    spec.traj_knot_samples = int(knot_samples)
+    spec.traj_carr_freq = ctypes.cast(cf, _F64)
+    spec.traj_carr_phase = ctypes.cast(cph, _F64)
+    spec.traj_code_rate = ctypes.cast(cr, _F64)
+    spec.traj_code_phase = ctypes.cast(kp, _F64)
+    spec._traj_keep = (cf, cph, cr, kp)
+
+
 def debug_mix_parallel_ex(code, code_rate, code_phase0, code_doppler,
                           carrier_freq, fs, sample0, n, nthreads, *, sys=0,
                           sub_hz=0.0, sec=None, sec_len=0, sec_rate=0.0):

@@ -29,6 +29,12 @@ def kepler_struct(eph: dict) -> "_lib.KeplerEph":
 
 _QUANT = bands._QUANT  # single source of truth (backend.synth.bands)
 
+# Mixer block size (samples). One SP-B trajectory knot per mixer block, so the
+# value handed to ``_lib.attach_trajectory`` as ``knot_samples`` must match the
+# ``block_samples`` passed to ``_lib.fill_band`` -- share this constant so the
+# two never diverge.
+_BLOCK_SAMPLES = 65536
+
 # Constellation int -- matches the synth_code CONSTELLATION dispatch. This is the
 # key the mixer/fading use; it is NOT the same as the code_sys passed to
 # _lib.code (which selects a code VARIANT). For Galileo they intentionally
@@ -68,6 +74,46 @@ def _glo_g1_code():
             reg = [fb] + reg[:8]
         _GLO_G1_CODE = out
     return _GLO_G1_CODE
+
+
+def _trajectory_knots(state, rx, sow, fs, block_samples, total_samples,
+                      chip_rate_hz, carrier_hz, code_phase0_chips, code_len,
+                      signal=None, carrier_offset_hz=0.0):
+    """SP-B per-mixer-block trajectory knots for one satellite.
+
+    Samples ``geometry.observables`` at every mixer-block boundary and turns
+    the evolving geometric range into (a) the instantaneous carrier Doppler
+    and total code rate at that boundary and (b) the accumulated carrier
+    phase and absolute code phase since the run start. Knot 0 reduces to the
+    Phase-1 constant-Doppler seed exactly (``dr == 0``).
+
+    ``state`` is a broadcast-ephemeris dict or a state function (precise
+    path); ``carrier_offset_hz`` is the static FDMA/LO offset folded into
+    the Phase-1 ``carrier_freq_hz`` (non-zero for GLONASS).
+    """
+    # A broadcast record dict must be dispatched to its system's propagator
+    # (GLONASS/SBAS are not Keplerian); geometry.observables' own as_state_fn
+    # only knows the Kepler model. A callable (precise path) passes straight
+    # through.
+    if not callable(state):
+        state = geometry.state_fn_for(state)
+    nk = max(2, (int(total_samples) + int(block_samples) - 1)
+             // int(block_samples))
+    L = int(code_len)
+    eff = L - (float(code_phase0_chips) % L)
+    cf, cph, cr, kp = [], [], [], []
+    r0 = None
+    for j in range(nk):
+        tj = (j * block_samples) / fs
+        o = geometry.observables(state, rx, sow + tj, signal=signal)
+        if r0 is None:
+            r0 = o["geo_range_m"]
+        dr = o["geo_range_m"] - r0
+        cf.append(o["carrier_doppler_hz"] + carrier_offset_hz)
+        cph.append(-2.0 * math.pi * carrier_hz / config.C * dr)
+        cr.append(chip_rate_hz + o["code_doppler_hz"])
+        kp.append(eff + chip_rate_hz * tj - (chip_rate_hz / config.C) * dr)
+    return cf, cph, cr, kp
 
 
 def _sv_spec_for(entry, gain, nav=None):
@@ -279,6 +325,7 @@ def run(req, progress_cb=None) -> pathlib.Path:
             state_fn_by_key=state_fns)
         entries.sort(key=lambda e: (e["sys"], e["prn"]))
         for e in entries:
+            e["_state"] = state_fns.get((e["sys"], e["prn"]))
             e["prn"] = _native_prn(e["sys"], e["prn"])
         systems = tuple(sorted({e["sys"] for e in entries}))
     else:
@@ -312,6 +359,7 @@ def run(req, progress_cb=None) -> pathlib.Path:
                                                mask_deg=5.0)
         entries.sort(key=lambda e: (e["sys"], e["prn"]))
         for e in entries:
+            e["_state"] = eph.get((e["sys"], e["prn"]), eph.get(e["prn"]))
             e["prn"] = _native_prn(e["sys"], e["prn"])
 
     cfg = FadingConfig.from_dict(getattr(req, "fading", None))
@@ -369,6 +417,17 @@ def run(req, progress_cb=None) -> pathlib.Path:
                 _log.warning("engine.run: %s", keep)
                 warnings.append(str(keep))
                 continue
+            if (getattr(req, "continuous_doppler", True)
+                    and e.get("_state") is not None):
+                sig0 = e["signal_id"]
+                carr_off = spec.carrier_freq_hz - float(e["carrier_doppler_hz"])
+                cf, cph, cr, kp = _trajectory_knots(
+                    e["_state"], rx, sow, plan.fs, _BLOCK_SAMPLES,
+                    int(round(plan.fs * req.duration_s)),
+                    sig0.chip_rate_hz, sig0.carrier_hz,
+                    e["code_phase_chips"], sig0.code_len,
+                    signal=sig0, carrier_offset_hz=carr_off)
+                _lib.attach_trajectory(spec, _BLOCK_SAMPLES, cf, cph, cr, kp)
             spec.fading.model = fading_model_int
             spec.fading.sigma_db = cfg.sigma_db
             spec.fading.coherence_s = cfg.coherence_s
@@ -407,7 +466,7 @@ def run(req, progress_cb=None) -> pathlib.Path:
         total_samples = int(round(plan.fs * req.duration_s))
         bs = _lib.BandSpec()
         _lib.fill_band(bs, outdir / plan.out_file, plan.fs, plan.quant,
-                       total_samples, sv_list)
+                       total_samples, sv_list, block_samples=_BLOCK_SAMPLES)
         band_specs.append(bs)
         meta_bands.append({
             "id": plan.id, "centre_hz": plan.centre_hz, "fs": plan.fs,
@@ -443,7 +502,13 @@ def run(req, progress_cb=None) -> pathlib.Path:
             "engine": "native",
             "ephemeris": ephemeris_mode,
             "prns": [e["prn"] for e in entries if e["sys"] == "G"],
-            "phase1_approx": "observables at run start epoch, Doppler held constant over the run",
+            "trajectory": ("per-block re-propagation"
+                           if getattr(req, "continuous_doppler", True)
+                           else "constant Doppler at run start"),
+            "phase1_approx": ("per-block re-propagation"
+                              if getattr(req, "continuous_doppler", True)
+                              else "observables at run start epoch, "
+                                   "Doppler held constant over the run"),
             "nav": nav_prov,
             "fading": cfg.model,
             "svs": meta_svs,
