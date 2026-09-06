@@ -776,7 +776,8 @@ function wireChannelActions(id) {
               loadIqPlots(id, msg.done.outdir);
               attachIqScrubber(id, msg.done.outdir);
               if (st.lastSatellites) {
-                const cn0 = {}; msg.done.inspect.forEach(r => { cn0[r.prn] = r.metric_db; });
+                const cn0 = {};
+                (msg.done.inspect || []).forEach(r => { cn0[r.prn] = r.metric_db; });
                 drawSkyplot(`${id}-skyplot`, st.lastSatellites, cn0);
               }
             }

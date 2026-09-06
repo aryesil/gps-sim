@@ -1,6 +1,14 @@
 // frontend/plots.js
 window.drawInspectTable = function (tableId, rows) {
   const t = document.getElementById(tableId);
+  if (!rows || !rows.length) {
+    // No per-PRN L1 C/A correlation table: a precise multi-GNSS run skips
+    // that GPS-only check (it is not meaningful for a mixed stream). The
+    // waveform / spectrum plots below still load from gpssim.bin.
+    t.innerHTML = '<tr><td class="muted">no L1 C/A correlation table for '
+      + 'this run — see the waveform and spectrum plots below</td></tr>';
+    return;
+  }
   t.innerHTML = '<tr><th>PRN</th><th>exp chip</th><th>meas chip</th><th>Δchip</th>'
     + '<th>exp Hz</th><th>meas Hz</th><th>ΔHz</th><th>dB</th></tr>'
     + rows.map(r => `<tr><td>G${r.prn}</td><td>${r.expected_code_phase_chips.toFixed(2)}</td>`
