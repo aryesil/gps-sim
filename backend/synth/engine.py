@@ -6,7 +6,7 @@ import json
 import pathlib
 
 from backend import config, ephemeris, geometry
-from backend.synth import _lib
+from backend.synth import _lib, fs_policy
 from backend.synth._lib import RunSpec, SvSpec
 from backend.synth.fading import FadingConfig
 
@@ -83,11 +83,13 @@ def run(req, progress_cb=None) -> pathlib.Path:
         specs[i].fading.coherence_s = cfg.coherence_s
         specs[i].fading.seed = cfg.seed
 
+    fs = fs_policy.validate_fs(req.sample_rate, ["GPS_L1CA"])
+
     rs = RunSpec()
-    rs.fs = float(req.sample_rate)
+    rs.fs = fs
     rs.quant = _QUANT[req.sample_format]
     rs.dither = 0
-    rs.total_samples = int(round(req.sample_rate * req.duration_s))
+    rs.total_samples = int(round(fs * req.duration_s))
     rs.block_samples = 65536
     rs.nthreads = 0
 
@@ -103,7 +105,7 @@ def run(req, progress_cb=None) -> pathlib.Path:
         raise RuntimeError(f"synth_run failed ({rc})")
 
     meta = {
-        "sample_rate": req.sample_rate,
+        "sample_rate": fs,
         "sample_format": req.sample_format,
         "total_samples": int(rs.total_samples),
         "created_utc": created.isoformat(),
