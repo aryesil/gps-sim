@@ -26,16 +26,19 @@ _QUANT = {"int8": 0, "int12": 1, "int16": 2}
 
 def _visible_gps(req) -> list[tuple[int, dict]]:
     """Visible GPS PRNs (el_deg >= 5) with observables evaluated once at the
-    run mid-epoch -- the Phase 1 constant-Doppler approximation."""
+    run START epoch (t = sow), with Doppler held constant over the run -- the
+    Phase 1 constant-Doppler approximation. The C kernel anchors
+    ``code_phase0_chips`` at sample 0 (run start) and propagates it forward with
+    ``code_doppler_hz``, so the phase and its rate must share the start epoch."""
     eph = ephemeris.parse_rinex(req.rinex_path)
     gps_start = req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
     week, sow = ephemeris.gps_week_and_sow(gps_start)
     eph = ephemeris.align_epochs(eph, week, sow)
     rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
-    t_mid = sow + req.duration_s / 2.0
+    t0 = sow
     out = []
     for prn in sorted(eph):
-        o = geometry.observables(eph[prn], rx, t_mid)
+        o = geometry.observables(eph[prn], rx, t0)
         if o["el_deg"] >= 5.0:
             out.append((prn, o))
     return out
@@ -105,7 +108,7 @@ def run(req, progress_cb=None) -> pathlib.Path:
         "provenance": {
             "engine": "native",
             "prns": [p for p, _ in sats],
-            "phase1_approx": "constant Doppler at run mid-point",
+            "phase1_approx": "observables at run start epoch, Doppler held constant over the run",
         },
     }
     (outdir / "meta.json").write_text(json.dumps(meta, indent=2))
