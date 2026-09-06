@@ -8,6 +8,7 @@ import math
 import pathlib
 
 from backend import config, geometry
+from backend.analysis import lnav_encode
 from backend.ephem import ephemeris, ephemeris_source
 from backend.synth import _lib, bands, signals
 from backend.synth.fading import FadingConfig
@@ -69,7 +70,7 @@ def _glo_g1_code():
     return _GLO_G1_CODE
 
 
-def _sv_spec_for(entry, gain):
+def _sv_spec_for(entry, gain, nav=None):
     """Turn one ``constellation_multi`` entry into a ready ``_lib.SvSpec`` plus
     the ctypes buffers that must outlive it (``keep``). The full multi-system
     ``run()`` wiring lands in Task 16/17; here it is unit-tested directly."""
@@ -115,6 +116,12 @@ def _sv_spec_for(entry, gain):
     spec.nav_mode = 0
     spec.nav_bits = None
     spec.nav_nbits = 0
+    if nav is not None and sysc == "G":
+        nbuf, nbits = nav
+        spec.nav_mode = 1
+        spec.nav_bits = nbuf
+        spec.nav_nbits = nbits
+        keep.append(nbuf)
     spec.gain = gain
     spec.prn = entry["prn"]
     spec.sys = _SYS_INT[sysc]
@@ -310,6 +317,35 @@ def run(req, progress_cb=None) -> pathlib.Path:
     cfg = FadingConfig.from_dict(getattr(req, "fading", None))
     fading_model_int = 1 if cfg.model == "lognormal" else 0
 
+    # GPS LNAV navigation message: one 50 bps symbol stream per GPS PRN,
+    # built from that PRN's broadcast record (aligned to the run epoch) plus
+    # the RINEX header's Klobuchar/UTC parameters. Wired into SvSpec.nav_*
+    # for the KnownFrame modulation path in the C++ mixer.
+    nav_streams: dict = {}
+    nav_prov = "none"
+    if "G" in systems and getattr(req, "nav_message", True) and not precise_multi:
+        try:
+            hdr = ephemeris.rinex_header_iono_utc(req.rinex_path)
+        except Exception:                       # noqa: BLE001 - degrade
+            hdr = {}
+        try:
+            gps_eph = ephemeris.align_epochs(
+                ephemeris.parse_rinex(req.rinex_path), week, sow)
+        except Exception as exc:                 # noqa: BLE001 - degrade
+            warnings.append(f"LNAV: cannot load GPS broadcast records "
+                            f"({exc}); data symbol left constant")
+            gps_eph = {}
+        for prn, ep in gps_eph.items():
+            try:
+                arr = lnav_encode.nav_stream(ep, hdr, week, sow, req.duration_s)
+            except (KeyError, ValueError) as exc:
+                warnings.append(f"G{prn}: LNAV encode failed ({exc}); "
+                                "data symbol left constant")
+                continue
+            nbuf = (ctypes.c_int8 * len(arr))(*arr.tolist())
+            nav_streams[prn] = (nbuf, len(arr))
+        nav_prov = "lnav" if nav_streams else "none"
+
     plans = bands.plan_bands(entries, req)
     if not plans:
         raise RuntimeError("no visible satellites for any band")
@@ -324,7 +360,8 @@ def run(req, progress_cb=None) -> pathlib.Path:
         for e in plan.entries:
             el_deg = float(e.get("el_deg", 90.0))
             static_gain = _el_gain(el_deg)
-            spec, keep = _sv_spec_for(e, static_gain)
+            spec, keep = _sv_spec_for(e, static_gain,
+                                      nav=nav_streams.get(e["prn"]))
             if spec is None:
                 _log.warning("engine.run: %s", keep)
                 warnings.append(str(keep))
@@ -404,6 +441,7 @@ def run(req, progress_cb=None) -> pathlib.Path:
             "ephemeris": ephemeris_mode,
             "prns": [e["prn"] for e in entries if e["sys"] == "G"],
             "phase1_approx": "observables at run start epoch, Doppler held constant over the run",
+            "nav": nav_prov,
             "fading": cfg.model,
             "svs": meta_svs,
             "systems": sorted({e["sys"] for e in entries}),

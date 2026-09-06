@@ -70,6 +70,11 @@ class ScenarioRequest:
     # GNSS systems to synthesize (native engine). Normalised in __post_init__ to
     # a sorted unique tuple of RINEX letters (subset of signals.SYSTEMS).
     systems: tuple = ("G",)
+    # Modulate the IS-GPS-200 LNAV navigation message onto the native-engine
+    # GPS signal (subframes 1-5, TLM/HOW, standard parity). False reproduces
+    # the pre-SP-A output (constant data symbol). GPS only; other systems
+    # keep a constant symbol until SP-D.
+    nav_message: bool = True
 
     def __post_init__(self):
         self.systems = _norm_systems(self.systems)

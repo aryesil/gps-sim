@@ -273,6 +273,51 @@ def parse_rinex(path: str | pathlib.Path) -> dict[int, dict]:
     return parse_rinex_multi(path, ("G",))
 
 
+def _hdr_floats(s: str) -> list[float]:
+    import re
+
+    out = []
+    for tok in re.findall(r"[+-]?\d+\.?\d*(?:[DdEe][+-]?\d+)?", s):
+        try:
+            out.append(float(tok.replace("D", "E").replace("d", "E")))
+        except ValueError:
+            pass
+    return out
+
+
+def rinex_header_iono_utc(path: str | pathlib.Path) -> dict:
+    """Best-effort Klobuchar (GPSA/GPSB or RINEX-2 ION ALPHA/BETA) and UTC
+    (GPUT / DELTA-UTC) parameters from a nav-file header. Returns ``{}`` when
+    the header carries none. Used to fill LNAV subframe 4 page 18."""
+    out: dict = {}
+    try:
+        with open(path) as fh:
+            for line in fh:
+                label = line[60:].strip()
+                if "END OF HEADER" in line:
+                    break
+                head = line[:60]
+                tag4 = line[:4].strip().upper()
+                if label == "ION ALPHA" or tag4 == "GPSA":
+                    nums = _hdr_floats(head[4:] if tag4 == "GPSA" else head)
+                    if len(nums) >= 4:
+                        out["iono_alpha"] = nums[:4]
+                elif label == "ION BETA" or tag4 == "GPSB":
+                    nums = _hdr_floats(head[4:] if tag4 == "GPSB" else head)
+                    if len(nums) >= 4:
+                        out["iono_beta"] = nums[:4]
+                elif label.startswith("DELTA-UTC") or tag4 == "GPUT":
+                    nums = _hdr_floats(head[4:] if tag4 == "GPUT" else head)
+                    if len(nums) >= 2:
+                        utc = out.setdefault("utc", {})
+                        utc["A0"], utc["A1"] = nums[0], nums[1]
+                        if len(nums) >= 4:
+                            utc["tot"], utc["WNt"] = int(nums[2]), int(nums[3])
+    except OSError:
+        pass
+    return out
+
+
 def _rinex2_field(v: float) -> str:
     """A single 19-char scientific-notation field, gps-sdr-sim's fixed-width
     RINEX-2 nav parser reads at 19-char offsets and passes straight to atof()
