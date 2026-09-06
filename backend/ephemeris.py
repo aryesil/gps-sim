@@ -28,6 +28,25 @@ _VARMAP = {
 }
 
 
+_VARMAP_KEPLER = dict(_VARMAP)   # GPS map; QZSS + Galileo + BeiDou share it
+
+# ECEF-state systems (GLONASS "R", SBAS "S"): position/velocity/accel vector
+# plus clock terms, expressed directly in km / km s^-1 / km s^-2 by RINEX 3.
+# "glo_k" (FreqNum) is the GLONASS FDMA channel number -- carried from the
+# start for a later task even though the state integrator does not need it.
+_VARMAP_STATE = {
+    "x_km": "X", "y_km": "Y", "z_km": "Z",
+    "vx": "dX", "vy": "dY", "vz": "dZ",
+    "ax": "dX2", "ay": "dY2", "az": "dZ2",
+    "tau": "SVclockBias", "gamma": "SVrelFreqBias",
+    "frame_time": "MessageFrameTime",
+    "glo_k": "FreqNum",
+}
+
+_KEPLER_SYS = frozenset("GJEC")
+_STATE_SYS = frozenset("RS")
+
+
 _GPS_EPOCH = dt.datetime(1980, 1, 6)
 _WEEK_SECONDS = 604800.0
 
@@ -74,9 +93,15 @@ def align_epochs(eph_by_prn: dict[int, dict], week: int, sow: float) -> dict[int
     out = {}
     for prn, e in eph_by_prn.items():
         e2 = dict(e)
-        e2["toc"] = sow
-        e2["toe"] = sow
-        e2["gps_week"] = week
+        if "toe" not in e2 and "toe_ref" in e2:
+            # ECEF-state record (GLONASS / SBAS): the state vector is already
+            # at its own broadcast epoch, so record that epoch as GPS SoW and
+            # leave the vector untouched.
+            e2["toe_ref"] = sow
+        else:
+            e2["toc"] = sow
+            e2["toe"] = sow
+            e2["gps_week"] = week
         out[prn] = e2
     return out
 
@@ -116,42 +141,82 @@ def _download(date: dt.date) -> pathlib.Path | None:
     return None
 
 
-def parse_rinex(path: str | pathlib.Path) -> dict[int, dict]:
-    nav = gr.load(str(path), use="G")
+def _pick_epoch(sub, noon_gps: float, sysc: str):
+    """Select one broadcast record for a satellite, nearest the file's midday.
+
+    Keplerian systems compare on absolute GPS time (week*604800 + toe) so a
+    week rollover inside the file cannot select the wrong set; ECEF-state
+    systems have no toe, so compare the record epoch itself.
+    """
+    if sysc in _KEPLER_SYS:
+        best_i, best_d = 0, None
+        for i in range(int(sub.time.size)):
+            r = sub.isel(time=i)
+            wk = float(r["GPSWeek"].values) if "GPSWeek" in r else 0.0
+            toe = float(r["Toe"].values) if "Toe" in r else 0.0
+            d = abs(wk * _WEEK_SECONDS + toe - noon_gps)
+            if best_d is None or d < best_d:
+                best_i, best_d = i, d
+        return sub.isel(time=best_i)
+    times = [_gps_seconds(_to_datetime(t)) for t in sub.time.values]
+    best_i = min(range(len(times)), key=lambda i: abs(times[i] - noon_gps))
+    return sub.isel(time=best_i)
+
+
+def parse_rinex_multi(path: str | pathlib.Path, systems=("G",)) -> dict:
+    """Parse a RINEX 2/3 nav file into per-satellite broadcast records.
+
+    ``systems`` is an ordered iterable of RINEX system letters. When it is
+    exactly ``("G",)`` the result is keyed by bare ``int`` PRN (back-compat
+    with :func:`parse_rinex`); otherwise it is keyed by ``(sys_char, prn)``.
+    Keplerian systems (G J E C) carry the ``_VARMAP_KEPLER`` fields plus
+    ``toc``; ECEF-state systems (R S) carry the ``_VARMAP_STATE`` fields plus
+    ``toe_ref``. Every record also carries ``"system"`` and ``"prn"``.
+    """
+    systems = tuple(dict.fromkeys(systems))          # dedupe, keep order
+    nav = gr.load(str(path), use=list(systems))
     # File's calendar day -> that day's noon UTC, as continuous GPS seconds.
     mid_day = _to_datetime(nav.time.values[len(nav.time) // 2])
     noon = dt.datetime(mid_day.year, mid_day.month, mid_day.day, 12, 0, 0)
     noon_gps = _gps_seconds(noon)
-    out: dict[int, dict] = {}
+    out: dict = {}
     for sv in nav.sv.values:
-        if not str(sv).startswith("G"):
+        s = str(sv)[0]
+        if s not in systems:
             continue
         prn = int(str(sv)[1:])
         sub = nav.sel(sv=sv).dropna(dim="time", how="all")
         if sub.time.size == 0:
             continue
-        # Pick the epoch whose toe is nearest the file's midday. Compare on
-        # absolute GPS time (week*604800 + toe) so a week rollover in the file
-        # cannot select the wrong set.
-        best_i, best_d = 0, None
-        for i in range(int(sub.time.size)):
-            r = sub.isel(time=i)
-            toe_gps = float(r["GPSWeek"].values) * _WEEK_SECONDS + float(r["Toe"].values)
-            d = abs(toe_gps - noon_gps)
-            if best_d is None or d < best_d:
-                best_i, best_d = i, d
-        rec = sub.isel(time=best_i)
-        e: dict[str, float] = {}
-        for key, var in _VARMAP.items():
-            if var is None:
+        rec = _pick_epoch(sub, noon_gps, s)
+        e: dict = {"system": s, "prn": prn}
+        vmap = _VARMAP_KEPLER if s in _KEPLER_SYS else _VARMAP_STATE
+        for key, var in vmap.items():
+            if var is None or var not in rec:
                 continue
             e[key] = float(rec[var].values)
-        # toc is the record's own clock reference epoch (distinct field from toe).
-        e["toc"] = _seconds_of_week(_to_datetime(rec.time.values))
-        out[prn] = e
+        epoch_sow = _seconds_of_week(_to_datetime(rec.time.values))
+        if s in _KEPLER_SYS:
+            # toc is the record's own clock reference epoch (distinct from toe).
+            e["toc"] = epoch_sow
+        else:
+            e["toe_ref"] = epoch_sow
+        out[prn if systems == ("G",) else (s, prn)] = e
     if not out:
-        raise EphemerisUnavailable("no GPS ephemeris in file")
+        raise EphemerisUnavailable(
+            f"no ephemeris for systems {list(systems)!r} in {path}")
+    missing = [s for s in systems
+               if not any((k[0] if isinstance(k, tuple) else "G") == s
+                          for k in out)]
+    if missing:
+        raise EphemerisUnavailable(
+            f"systems {missing!r} not present in {path}")
     return out
+
+
+def parse_rinex(path: str | pathlib.Path) -> dict[int, dict]:
+    """GPS-only facade over :func:`parse_rinex_multi` -- output unchanged."""
+    return parse_rinex_multi(path, ("G",))
 
 
 def _rinex2_field(v: float) -> str:
