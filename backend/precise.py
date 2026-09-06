@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import math
 import pathlib
+import re
 from dataclasses import dataclass, field
 
 from backend.gpstime import GPSTime, WEEK_SECONDS
@@ -441,7 +442,43 @@ class PreciseEphemerisProvider:
         return f
 
 
-def download_sp3(gps_week: int, dow: int, cache_dir, mirrors: list[str]) -> str:
+_SP3_SYS_LETTERS = "GRECJ"
+
+
+def _sp3_systems(data: bytes) -> set[str]:
+    """Return the set of GNSS system letters an SP3 blob carries.
+
+    Cheap and format-tolerant (SP3-a/c/d): scan the ``+`` satellite-id
+    header block first, then the ``P`` position records. Any letter in
+    ``GRECJ`` counts; SBAS ('S') and unknown letters are ignored.
+    """
+    out: set[str] = set()
+    try:
+        text = data.decode("latin-1", "replace")
+    except Exception:                              # pragma: no cover - defensive
+        return out
+    for line in text.splitlines():
+        head2 = line[:2]
+        if head2 == "+ ":                          # '+   10   G01G02...'
+            for m in re.finditer(r"([GRECJ])\d{2}", line):
+                out.add(m.group(1))
+        elif line[:1] == "P" and len(line) >= 4:
+            c = line[1]
+            if c in _SP3_SYS_LETTERS:
+                out.add(c)
+        elif line[:1] == "*" and out:
+            # header sat-id block is done and it already told us the
+            # systems; no need to walk every P record of a big file.
+            break
+    return out
+
+
+def _cov_tag(systems: set[str]) -> str:
+    return "GRECJ" if (systems - {"G"}) else "G"
+
+
+def download_sp3(gps_week: int, dow: int, cache_dir, mirrors: list[str],
+                 *, want_multignss: bool = False) -> str:
     """Best-effort SP3 fetch. Disabled unless ``mirrors`` is non-empty
     (config.PRECISE_SP3_MIRRORS). Mirror templates may use any of
     ``{gpsweek}`` / ``{gps_week}`` (4-digit GPS week), ``{dow}`` (day of
@@ -480,12 +517,33 @@ def download_sp3(gps_week: int, dow: int, cache_dir, mirrors: list[str]) -> str:
         return "RAP"
 
     stem = f"IGS_{gps_week:04d}_{dow}"
+
+    def _cache_hit_ok(path) -> bool:
+        """A cached file is usable unless we need multi-GNSS and this file
+        is known/observed to be GPS-only."""
+        if not want_multignss:
+            return True
+        name = path.name
+        if name.endswith("_G.sp3"):
+            return False                           # coverage-tagged GPS-only
+        if name.endswith("_GRECJ.sp3"):
+            return True
+        try:                                       # legacy/un-tagged: peek
+            return _sp3_systems(path.read_bytes()) != {"G"}
+        except OSError:
+            return False
+
     # Serve the best already-cached tier for this day (final > rapid >
-    # ultra-rapid); the legacy un-tagged name counts as rapid-grade.
+    # ultra-rapid); coverage-tagged names are preferred, the legacy
+    # un-tagged name counts as rapid-grade.
     for tag in ("FIN", "RAP", "ULT"):
-        for name in (f"{stem}_{tag}.sp3",) + (("%s.sp3" % stem,) if tag == "RAP" else ()):
+        names = [f"{stem}_{tag}_GRECJ.sp3", f"{stem}_{tag}_G.sp3",
+                 f"{stem}_{tag}.sp3"]
+        if tag == "RAP":
+            names.append(f"{stem}.sp3")
+        for name in names:
             p = cache / name
-            if p.is_file() and p.stat().st_size > 0:
+            if p.is_file() and p.stat().st_size > 0 and _cache_hit_ok(p):
                 return str(p)
 
     import gzip as _gz
@@ -493,6 +551,7 @@ def download_sp3(gps_week: int, dow: int, cache_dir, mirrors: list[str]) -> str:
     import requests as _rq
 
     last = None
+    gps_only_fallback: str | None = None
     for tmpl in mirrors:
         url = tmpl.format(**_fmt)
         try:
@@ -507,9 +566,17 @@ def download_sp3(gps_week: int, dow: int, cache_dir, mirrors: list[str]) -> str:
         if not data[:2] in (b"#c", b"#d", b"#a", b"#b"):
             last = f"{url}: not an SP3 file"
             continue
-        dest = cache / f"{stem}_{_tier(url)}.sp3"
+        cov = _cov_tag(_sp3_systems(data))
+        dest = cache / f"{stem}_{_tier(url)}_{cov}.sp3"
         dest.write_bytes(data)
-        return str(dest)
+        if not want_multignss or cov == "GRECJ":
+            return str(dest)
+        # GPS-only product while multi-GNSS was asked for: remember it but
+        # keep probing the remaining mirrors for a real MGEX product.
+        if gps_only_fallback is None:
+            gps_only_fallback = str(dest)
+    if gps_only_fallback is not None:
+        return gps_only_fallback
     raise PreciseProductError(f"all SP3 mirrors failed ({last})")
 
 
