@@ -417,6 +417,8 @@ def generate(body: dict):
             FadingConfig.from_dict(body["fading"])
         except ValueError as e:
             raise HTTPException(422, f"fading: {e}")
+    if body.get("sample_format") == "int12" and engine != "native":
+        raise HTTPException(422, "sample_format 'int12' requires engine 'native'")
     nav_override, precise_warnings = _precise_nav_override(body, start)
     # In precise mode the broadcast nav file is never read; only resolve
     # (and possibly download) one when it will actually be used.

@@ -28,7 +28,10 @@ struct Nco {
         // Wraps negative frequencies correctly via unsigned modular arithmetic.
         double frac = hz / fs;
         frac -= std::floor(frac);
-        inc = static_cast<uint32_t>(frac * 4294967296.0 + 0.5);
+        // frac is in [0,1), but a tiny negative hz/fs can round up to exactly
+        // 1.0 -> 4294967296.5, which is out of uint32_t range (float->unsigned
+        // UB). llround + mask wraps cleanly instead.
+        inc = static_cast<uint32_t>(std::llround(frac * 4294967296.0) & 0xFFFFFFFFll);
     }
     inline std::complex<float> next() {
         std::complex<float> v = expLut()[phase >> 20];

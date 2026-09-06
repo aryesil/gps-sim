@@ -53,6 +53,20 @@ void synth_debug_nav(int mode, const int8_t *bits, int nbits,
 void synth_debug_one_sv(const int8_t *code, double code_rate, double code_phase0,
                         double code_doppler, double carrier_freq, double fs,
                         int n, float *iq);
+// Debug shim: like synth_debug_one_sv but from an arbitrary absolute sample
+// index `sample0` via gs::mix_block. Zeroes iq[0..2*n-1] first. Lets a test
+// compare a single-shot span against the same span built from disjoint ranges.
+void synth_debug_mix_range(const int8_t *code, double code_rate,
+                           double code_phase0, double code_doppler,
+                           double carrier_freq, double fs, uint64_t sample0,
+                           int n, float *iq);
+// Debug shim: one SV through gs::mix_block_parallel with an explicit thread
+// count (mix_block_parallel zeroes iq itself). Lets a test compare nthreads=1
+// against nthreads>1 over the same span.
+void synth_debug_mix_parallel(const int8_t *code, double code_rate,
+                              double code_phase0, double code_doppler,
+                              double carrier_freq, double fs, uint64_t sample0,
+                              int n, int nthreads, float *iq);
 // Per-SV channel spec for a full run. `code` points at 1023 int8 values in
 // {-1,+1}, owned by the caller for the whole synth_run call. Field order is
 // frozen -- _lib.py mirrors it exactly.
