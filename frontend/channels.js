@@ -195,6 +195,7 @@ window.addChannel = function () {
         </div>
         <div class="tab-content" data-tab="status">
           <table id="${id}-inspect-table"></table>
+          <table id="${id}-svpower-table"></table>
           <div class="iq-inspect">
             <div class="iq-block">
               <div class="iq-label">Acquisition metric</div>
@@ -772,6 +773,7 @@ function wireChannelActions(id) {
             if (msg.done) {
               st.lastOutdir = msg.done.outdir;
               drawInspectTable(`${id}-inspect-table`, msg.done.inspect);
+              drawSvPowerTable(`${id}-svpower-table`, msg.done.svs, msg.done.bands);
               drawCorrelationBars(`${id}-iq-correlation`, msg.done.inspect);
               loadIqPlots(id, msg.done.outdir);
               attachIqScrubber(id, msg.done.outdir);

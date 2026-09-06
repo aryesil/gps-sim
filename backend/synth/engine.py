@@ -321,7 +321,9 @@ def run(req, progress_cb=None) -> pathlib.Path:
         sv_list = []
         band_sys = set()
         for e in plan.entries:
-            spec, keep = _sv_spec_for(e, _el_gain(e.get("el_deg", 90.0)))
+            el_deg = float(e.get("el_deg", 90.0))
+            static_gain = _el_gain(el_deg)
+            spec, keep = _sv_spec_for(e, static_gain)
             if spec is None:
                 _log.warning("engine.run: %s", keep)
                 warnings.append(str(keep))
@@ -337,7 +339,16 @@ def run(req, progress_cb=None) -> pathlib.Path:
             sv_meta = {"sys": e["sys"], "prn": e["prn"],
                        "code_len": sig.code_len,
                        "chip_hz": sig.chip_rate_hz,
-                       "code_doppler_hz": e["code_doppler_hz"]}
+                       "code_doppler_hz": e["code_doppler_hz"],
+                       "el_deg": round(el_deg, 2),
+                       "az_deg": round(float(e.get("az_deg", 0.0)), 2),
+                       # static elevation amplitude taper applied to this SV;
+                       # per-block lognormal fading (sigma_db below) rides on
+                       # top of it in the C++ mixer, so the realised power is
+                       # time-varying around this level.
+                       "gain": round(static_gain, 4),
+                       "gain_db": round(20.0 * math.log10(static_gain), 2),
+                       "fading_sigma_db": cfg.sigma_db if fading_model_int else 0.0}
             gk = e.get("glo_k")
             if e["sys"] == "R" and gk is not None and not (
                     isinstance(gk, float) and math.isnan(gk)):

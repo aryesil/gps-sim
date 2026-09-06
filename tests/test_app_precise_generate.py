@@ -248,6 +248,44 @@ def test_generate_precise_multi_finishes_with_done_not_error(with_sp3, monkeypat
     assert '"inspect": null' in r.text
 
 
+def test_generate_multi_gnss_done_carries_svs_and_skips_gps_only_inspect(
+        no_sp3, monkeypatch):
+    """A broadcast multi-constellation run: the GPS-only L1 C/A correlation
+    table is not meaningful, so 'inspect' is null, and the 'done' event must
+    instead carry the full per-system SV list (with per-SV gain) and bands
+    read back from meta.json so the status panel shows every generated SV."""
+    from backend import config as cfg
+    import json as _json
+
+    def fake_run(req, progress_cb=None, binary=None):
+        if progress_cb:
+            progress_cb(1.0)
+        od = cfg.OUT_DIR / "test_multi_gnss_svs_out"
+        od.mkdir(parents=True, exist_ok=True)
+        (od / "gpssim.bin").write_bytes(b"\x00\x00\x00\x00")
+        (od / "meta.json").write_text(_json.dumps({
+            "bands": [{"id": "L1", "systems": ["C", "E", "G"]}],
+            "provenance": {"systems": ["C", "E", "G"], "svs": [
+                {"sys": "G", "prn": 5, "el_deg": 70.0, "gain_db": -0.9,
+                 "fading_sigma_db": 2.0, "code_doppler_hz": 1.2},
+                {"sys": "E", "prn": 11, "el_deg": 20.0, "gain_db": -3.7,
+                 "fading_sigma_db": 2.0, "code_doppler_hz": -0.8},
+            ]}}))
+        return od
+
+    monkeypatch.setattr(app_mod.signal_engine, "run", fake_run)
+    r = client.post("/api/generate", json={
+        "start_utc": START.isoformat(), "duration_s": 5,
+        "lat": 41.0, "lon": 29.0, "alt": 100.0,
+        "engine": "native", "systems": ["G", "E", "C"],
+        "rinex_path": BRDC})
+    assert r.status_code == 200, r.text
+    assert '"error"' not in r.text, r.text
+    assert '"inspect": null' in r.text
+    assert '"sys": "E"' in r.text and '"prn": 11' in r.text
+    assert '"systems": ["C", "E", "G"]' in r.text
+
+
 def test_generate_broadcast_sets_no_override(with_sp3, monkeypatch):
     seen = {}
     monkeypatch.setattr(app_mod.generator, "run",

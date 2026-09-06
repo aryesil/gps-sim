@@ -676,6 +676,10 @@ def generate(body: dict):
     def events():
         precise_multi = (isinstance(req.nav_override, dict)
                          and "precise_provider" in req.nav_override)
+        # inspector.compare / geometry.constellation are GPS L1 C/A only. For any
+        # multi-constellation run the per-PRN correlation table is neither
+        # possible nor meaningful; the status panel is fed from meta.json instead.
+        multi_gnss = sorted(set(getattr(req, "systems", None) or ["G"])) != ["G"]
         try:
             q: list = []
             outdir = signal_engine.run(req, progress_cb=lambda f: q.append(f))
@@ -688,7 +692,7 @@ def generate(body: dict):
             # from the same aligned copy here or this comparison reports
             # huge, misleading errors whenever the real epoch was far from
             # the requested start.
-            if precise_multi:
+            if precise_multi or multi_gnss:
                 # The precise multi-GNSS payload is a provider handle, not a
                 # per-PRN broadcast dict -- it cannot feed geometry.constellation.
                 # The post-run L1 C/A correlation check is GPS-only anyway and
@@ -716,9 +720,21 @@ def generate(body: dict):
             # bar is stuck forever. Always send a terminal event instead.
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
             return
+        svs, meta_bands, meta_systems = [], [], []
+        try:
+            _m = json.loads((outdir / "meta.json").read_text())
+            _prov = _m.get("provenance", {})
+            svs = _prov.get("svs", [])
+            meta_systems = _prov.get("systems", [])
+            meta_bands = _m.get("bands", [])
+        except Exception:                        # noqa: BLE001 - meta optional
+            pass
         done = {"done": {"outdir": outdir.name,
                          "size_bytes": (outdir / "gpssim.bin").stat().st_size,
                          "inspect": table,
+                         "svs": svs,
+                         "bands": meta_bands,
+                         "systems": meta_systems,
                          "ephemeris_mode": "precise" if req.nav_override is not None else "broadcast",
                          "warnings": precise_warnings}}
         yield f"data: {json.dumps(done)}\n\n"
