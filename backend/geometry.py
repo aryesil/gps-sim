@@ -275,6 +275,11 @@ def constellation_multi(eph_by_key, rx_ecef, t_rx: float, signal_for,
         if o["el_deg"] < mask_deg:
             continue
         o["sys"], o["prn"], o["signal_id"] = sys, prn, sig
+        if sys == "R":
+            # glo_k (FDMA channel number) lives on the ephemeris record, not the
+            # observables dict; carry it so the synth layer can apply the FDMA
+            # carrier offset. Missing -> None (SV skipped downstream, explicitly).
+            o["glo_k"] = rec.get("glo_k")
         out.append(o)
     return out
 

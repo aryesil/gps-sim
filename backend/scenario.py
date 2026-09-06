@@ -4,6 +4,23 @@ import datetime as dt
 from dataclasses import dataclass
 
 from backend import config
+from backend.synth import signals
+
+
+def _norm_systems(systems) -> tuple:
+    """Normalise a ``systems`` value to a sorted, unique tuple of RINEX system
+    letters. Every letter must be in ``signals.SYSTEMS`` or ``ValueError``."""
+    if systems is None:
+        systems = ("G",)
+    if isinstance(systems, str):
+        systems = (systems,)
+    out = tuple(sorted(set(systems)))
+    if not out:
+        raise ValueError("systems must be non-empty")
+    bad = [s for s in out if s not in signals.SYSTEMS]
+    if bad:
+        raise ValueError(f"unknown systems {bad!r}; valid: {signals.SYSTEMS}")
+    return out
 
 
 @dataclass
@@ -50,6 +67,12 @@ class ScenarioRequest:
     # Deterministic per-SV fading, parsed by backend.synth.fading.FadingConfig.
     # None -> no fading (native engine emits static per-SV gain).
     fading: dict | None = None
+    # GNSS systems to synthesize (native engine). Normalised in __post_init__ to
+    # a sorted unique tuple of RINEX letters (subset of signals.SYSTEMS).
+    systems: tuple = ("G",)
+
+    def __post_init__(self):
+        self.systems = _norm_systems(self.systems)
 
 
 def _bytes_per_sample(fmt: str) -> int:

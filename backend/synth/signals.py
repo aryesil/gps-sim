@@ -31,7 +31,7 @@ SIGNALS = {
 SYSTEMS = ("G", "R", "E", "C", "J", "S")
 
 _SIGNAL_FOR = {"G": "GPS_L1CA", "J": "QZSS_L1CA", "S": "SBAS_L1",
-               "E": "GAL_E1", "C": "BDS_B1I"}      # no "R" yet
+               "E": "GAL_E1", "C": "BDS_B1I", "R": "GLO_G1"}
 
 
 def signal_for(sys: str) -> Signal:

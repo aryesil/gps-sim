@@ -3,12 +3,15 @@ from __future__ import annotations
 import ctypes
 import datetime as dt
 import json
+import logging
+import math
 import pathlib
 
 from backend import config, ephemeris, geometry
-from backend.synth import _lib, fs_policy
-from backend.synth._lib import RunSpec, SvSpec
+from backend.synth import _lib, bands, signals
 from backend.synth.fading import FadingConfig
+
+_log = logging.getLogger(__name__)
 
 _KEPLER_KEYS = ("sqrtA e m0 delta_n omega omega0 omega_dot i0 idot cuc cus crc "
                 "crs cic cis toe toc af0 af1 af2").split()
@@ -31,6 +34,39 @@ _QUANT = {"int8": 0, "int12": 1, "int16": 2}
 _SYS_INT = {"G": 0, "J": 1, "S": 2, "C": 3, "R": 4, "E": 5}
 _E1_IS_PILOT = True     # E1C pilot for acquisition; E1B when nav bits added
 
+# RINEX per-system satellite numbers -> native synth_code PRN domain.
+#   QZSS  Jnn  -> PRN 192+nn  (J01 = 193, native range 193..202)
+#   SBAS  Snn  -> PRN 100+nn  (S20 = 120, native range 120..158)
+# G/E/C already agree with the native domain; R (GLONASS) is FDMA so its code
+# is common to all slots and the number is irrelevant to code generation.
+_PRN_OFFSET = {"J": 192, "S": 100}
+
+
+def _native_prn(sysc: str, prn: int) -> int:
+    return prn + _PRN_OFFSET.get(sysc, 0)
+
+
+_GLO_G1_CODE = None
+
+
+def _glo_g1_code():
+    """GLONASS G1 C/A ranging code: a single 511-chip m-sequence (common to
+    every slot -- GLONASS is FDMA, not CDMA). 9-stage LFSR, polynomial
+    1 + x^5 + x^9, all-ones seed, output tapped at stage 7. Returned as an
+    int8 {-1,+1} array. Cached. (Generated in Python: native ``synth_code``
+    has no GLONASS branch and rejects prim_len < 1023.)"""
+    global _GLO_G1_CODE
+    if _GLO_G1_CODE is None:
+        import numpy as np
+        reg = [1] * 9
+        out = np.empty(511, dtype=np.int8)
+        for i in range(511):
+            out[i] = 1 if reg[6] else -1
+            fb = reg[4] ^ reg[8]
+            reg = [fb] + reg[:8]
+        _GLO_G1_CODE = out
+    return _GLO_G1_CODE
+
 
 def _sv_spec_for(entry, gain):
     """Turn one ``constellation_multi`` entry into a ready ``_lib.SvSpec`` plus
@@ -38,6 +74,10 @@ def _sv_spec_for(entry, gain):
     ``run()`` wiring lands in Task 16/17; here it is unit-tested directly."""
     sig = entry["signal_id"]
     sysc = entry["sys"]
+    if sysc == "R":
+        k = entry.get("glo_k")
+        if k is None or (isinstance(k, float) and math.isnan(k)):
+            return None, f"GLONASS PRN {entry.get('prn')}: missing glo_k, skipped"
     prim_len = sig.code_len
     if sysc == "E":
         code_sys = 6 if _E1_IS_PILOT else 5   # code VARIANT, not constellation
@@ -49,12 +89,19 @@ def _sv_spec_for(entry, gain):
         code_sys = _SYS_INT[sysc]
         sec_len = 0
 
-    prim, sec = _lib.code(code_sys, entry["prn"], prim_len, sec_len)
+    if sysc == "R":
+        prim, sec = _glo_g1_code(), None
+    else:
+        prim, sec = _lib.code(code_sys, entry["prn"], prim_len, sec_len)
     spec = _lib.SvSpec()
     pbuf = (ctypes.c_int8 * prim_len)(*prim.tolist())
     spec.code = pbuf
     keep = [pbuf]
     spec.carrier_freq_hz = entry["carrier_doppler_hz"]
+    if sysc == "R":
+        # FDMA: the G1 recorder LO sits at 1602.0 MHz; this SV's carrier is
+        # offset by k * 562.5 kHz plus its geometric Doppler.
+        spec.carrier_freq_hz += signals.glo_channel_offset_hz(int(entry["glo_k"]))
     spec.carrier_phase0_rad = 0.0
     spec.code_phase0_chips = entry["code_phase_chips"]
     spec.code_doppler_hz = entry["code_doppler_hz"]
@@ -102,70 +149,97 @@ def _visible_gps(req) -> list[tuple[int, dict]]:
 
 
 def run(req, progress_cb=None) -> pathlib.Path:
-    """Synthesize a full GPS L1 C/A run with the native engine. Returns the
-    output directory holding ``gpssim.bin`` and ``meta.json``."""
-    lib = _lib.load_lib()
+    """Synthesize a multi-GNSS run with the native engine. Produces one IQ file
+    per RF band (``gpssim.bin`` for L1, ``gpssim_g1.bin`` for the GLONASS G1
+    FDMA band) plus ``meta.json``. Returns the output directory.
+
+    GPS-only (``req.systems == ("G",)``) is byte-identical to the Phase-1
+    single-band path: one L1 band, one ``gpssim.bin``.
+    """
+    _lib.load_lib()
 
     created = dt.datetime.now(dt.timezone.utc)
     outdir = config.OUT_DIR / created.strftime("%Y%m%dT%H%M%S%f")
     outdir.mkdir(parents=True, exist_ok=True)
-    out_bin = outdir / "gpssim.bin"
 
-    sats = _visible_gps(req)
+    systems = tuple(getattr(req, "systems", None) or ("G",))
+
+    # All systems align to the one GPS SoW run-start epoch: align_epochs rewrites
+    # every Keplerian toc/toe and every R/S toe_ref to `sow`, so GLONASS (which
+    # propagates on `t_gps - toe_ref`) lines up on the GPS scale with the rest.
+    gps_start = req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
+    week, sow = ephemeris.gps_week_and_sow(gps_start)
+    eph = ephemeris.parse_rinex_multi(req.rinex_path, systems)
+    eph = ephemeris.align_epochs(eph, week, sow)
+    rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
+    entries = geometry.constellation_multi(eph, rx, sow, signals.signal_for,
+                                           mask_deg=5.0)
+    entries.sort(key=lambda e: (e["sys"], e["prn"]))
+    for e in entries:
+        e["prn"] = _native_prn(e["sys"], e["prn"])
+
     cfg = FadingConfig.from_dict(getattr(req, "fading", None))
     fading_model_int = 1 if cfg.model == "lognormal" else 0
-    code_bufs = []                       # keep C-side code pointers alive
-    specs = (SvSpec * len(sats))()
-    for i, (prn, o) in enumerate(sats):
-        cbuf = (ctypes.c_int8 * 1023)()
-        if lib.synth_ca_code(prn, cbuf, 1023) != 0:
-            raise RuntimeError(f"synth_ca_code failed for PRN {prn}")
-        code_bufs.append(cbuf)
-        specs[i].code = cbuf
-        # Baseband recording: the SV carrier rotates only at the Doppler rate
-        # (the L1 centre frequency is the recorder's LO and mixes to 0). This
-        # matches Task 7's single-SV kernel and inspector.acquire's search.
-        specs[i].carrier_freq_hz = o["carrier_doppler_hz"]
-        specs[i].carrier_phase0_rad = 0.0
-        specs[i].code_phase0_chips = o["code_phase_chips"]
-        specs[i].code_doppler_hz = o["code_doppler_hz"]
-        specs[i].nav_mode = 0
-        specs[i].nav_bits = None
-        specs[i].nav_nbits = 0
-        specs[i].gain = 1.0
-        specs[i].prn = prn
-        specs[i].fading.model = fading_model_int
-        specs[i].fading.sigma_db = cfg.sigma_db
-        specs[i].fading.coherence_s = cfg.coherence_s
-        specs[i].fading.seed = cfg.seed
 
-    fs = fs_policy.validate_fs(req.sample_rate, ["GPS_L1CA"])
+    plans = bands.plan_bands(entries, req)
+    if not plans:
+        raise RuntimeError("no visible satellites for any band")
 
-    rs = RunSpec()
-    rs.fs = fs
-    rs.quant = _QUANT[req.sample_format]
-    rs.dither = 0
-    rs.total_samples = int(round(fs * req.duration_s))
-    rs.block_samples = 65536
-    rs.nthreads = 0
+    band_specs = []
+    keep_alive = []
+    meta_bands = []
+    meta_svs = []
+    for plan in plans:
+        sv_list = []
+        band_sys = set()
+        for e in plan.entries:
+            spec, keep = _sv_spec_for(e, 1.0)
+            if spec is None:
+                _log.warning("engine.run: %s", keep)
+                continue
+            spec.fading.model = fading_model_int
+            spec.fading.sigma_db = cfg.sigma_db
+            spec.fading.coherence_s = cfg.coherence_s
+            spec.fading.seed = cfg.seed
+            sv_list.append(spec)
+            keep_alive.append(keep)
+            band_sys.add(e["sys"])
+            sig = e["signal_id"]
+            meta_svs.append({"sys": e["sys"], "prn": e["prn"],
+                             "code_len": sig.code_len,
+                             "chip_hz": sig.chip_rate_hz})
+        if not sv_list:
+            continue
+        total_samples = int(round(plan.fs * req.duration_s))
+        bs = _lib.BandSpec()
+        _lib.fill_band(bs, outdir / plan.out_file, plan.fs, plan.quant,
+                       total_samples, sv_list)
+        band_specs.append(bs)
+        meta_bands.append({
+            "id": plan.id, "centre_hz": plan.centre_hz, "fs": plan.fs,
+            "file": plan.out_file, "systems": sorted(band_sys),
+        })
+
+    if not band_specs:
+        raise RuntimeError("no satellites survived band planning")
 
     cb = None
     if progress_cb is not None:
-        @_lib._PROGRESS_CB
-        def cb(frac, _user):            # noqa: F811 -- ctypes callback
+        def cb(frac, _user=None):        # _lib wraps this in a 2-arg CFUNCTYPE
             progress_cb(float(frac))
 
-    rc = lib.synth_run(str(out_bin).encode(), ctypes.byref(rs), specs,
-                       len(sats), cb, None)
+    rc = _lib.run_bands(band_specs, cb)
     if rc != 0:
-        raise RuntimeError(f"synth_run failed ({rc})")
+        raise RuntimeError(f"synth_run_bands failed ({rc})")
 
+    l1_plan = next((p for p in plans if p.id == "L1"), plans[0])
+    l1_total = int(round(l1_plan.fs * req.duration_s))
     meta = {
-        "sample_rate": fs,
+        "sample_rate": l1_plan.fs,
         "sample_format": req.sample_format,
-        "total_samples": int(rs.total_samples),
+        "total_samples": l1_total,
         "created_utc": created.isoformat(),
-        "output": "gpssim.bin",
+        "output": l1_plan.out_file,
         "config": {
             "lat": req.lat, "lon": req.lon, "alt": req.alt,
             "start_utc": req.start.isoformat(), "duration_s": req.duration_s,
@@ -173,10 +247,12 @@ def run(req, progress_cb=None) -> pathlib.Path:
         },
         "provenance": {
             "engine": "native",
-            "prns": [p for p, _ in sats],
+            "prns": [e["prn"] for e in entries if e["sys"] == "G"],
             "phase1_approx": "observables at run start epoch, Doppler held constant over the run",
             "fading": cfg.model,
+            "svs": meta_svs,
         },
+        "bands": meta_bands,
     }
     (outdir / "meta.json").write_text(json.dumps(meta, indent=2))
     return outdir
