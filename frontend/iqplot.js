@@ -44,19 +44,53 @@ window.drawConstellation = function (canvasId, i, q) {
   }
 };
 
+// Accepts either the legacy form (canvasId, freqs, db) -- a single series
+// with no RF offset -- or (canvasId, seriesArray) where each entry is
+// {freqs, db, centre_hz, label, color}. Multiple series share ONE x-axis in
+// absolute RF Hz = centre_hz + f_baseband, so carriers on different bands
+// (L1 1575.42 MHz, GLONASS G1 1602 MHz) are both visible at once.
 window.drawSpectrum = function (canvasId, freqs, db) {
-  _lastSpectrum[canvasId] = { freqs, db };
+  let series;
+  if (Array.isArray(freqs) && freqs.length && typeof freqs[0] === 'object') {
+    series = freqs.map(s => ({
+      freqs: s.freqs, db: s.db,
+      centre_hz: s.centre_hz || 0,
+      label: s.label || '', color: s.color || '#06c',
+    }));
+  } else {
+    series = [{ freqs, db, centre_hz: 0, label: '', color: '#06c' }];
+  }
+  const merged = series.map(s => ({
+    abs: s.freqs.map(f => s.centre_hz + f),
+    db: s.db, label: s.label, color: s.color,
+  }));
+  _lastSpectrum[canvasId] = { series: merged };
+
   const c = document.getElementById(canvasId), g = c.getContext('2d');
   g.clearRect(0, 0, c.width, c.height);
-  const lo = Math.min(...db), hi = Math.max(...db);
-  const span = Math.max(1e-6, hi - lo);
-  g.strokeStyle = '#06c'; g.beginPath();
-  db.forEach((v, k) => {
-    const x = (k / db.length) * c.width;
-    const y = c.height - ((v - lo) / span) * c.height;
-    k === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+  let xmin = Infinity, xmax = -Infinity, lo = Infinity, hi = -Infinity;
+  merged.forEach(s => {
+    s.abs.forEach(f => { if (f < xmin) xmin = f; if (f > xmax) xmax = f; });
+    s.db.forEach(v => { if (v < lo) lo = v; if (v > hi) hi = v; });
   });
-  g.stroke();
+  const xspan = Math.max(1e-6, xmax - xmin);
+  const span = Math.max(1e-6, hi - lo);
+  merged.forEach(s => {
+    g.strokeStyle = s.color; g.beginPath();
+    s.db.forEach((v, k) => {
+      const x = ((s.abs[k] - xmin) / xspan) * c.width;
+      const y = c.height - ((v - lo) / span) * c.height;
+      k === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+    });
+    g.stroke();
+  });
+  // legend (top-left): colour swatch + label per series
+  merged.forEach((s, k) => {
+    if (!s.label) return;
+    const ly = 10 + k * 12;
+    g.fillStyle = s.color; g.fillRect(4, ly - 6, 8, 8);
+    g.fillStyle = '#333'; g.fillText(s.label, 16, ly + 1);
+  });
 };
 
 window.attachSpectrumHover = function (canvasId, readoutId) {
@@ -64,10 +98,13 @@ window.attachSpectrumHover = function (canvasId, readoutId) {
     const last = _lastSpectrum[canvasId];
     if (!last) return;
     const c = ev.target, rect = c.getBoundingClientRect();
-    const k = Math.round(((ev.clientX - rect.left) / rect.width) * (last.freqs.length - 1));
-    if (k < 0 || k >= last.freqs.length) return;
+    const frac = (ev.clientX - rect.left) / rect.width;
+    const s = last.series[0];
+    if (!s) return;
+    const k = Math.round(frac * (s.abs.length - 1));
+    if (k < 0 || k >= s.abs.length) return;
     document.getElementById(readoutId).textContent =
-      `${(last.freqs[k] / 1e3).toFixed(1)} kHz: ${last.db[k].toFixed(1)} dB`;
+      `${(s.abs[k] / 1e6).toFixed(3)} MHz: ${s.db[k].toFixed(1)} dB`;
   });
 };
 
@@ -180,7 +217,22 @@ window.loadIqPlots = async function (channelId, outdir, offset) {
   const d = await r.json();
   drawWaveform(`${channelId}-iq-waveform`, d.i, d.q);
   drawConstellation(`${channelId}-iq-constellation`, d.i, d.q);
-  drawSpectrum(`${channelId}-iq-spectrum`, d.spectrum_freq_hz, d.spectrum_db);
+  if (Array.isArray(d.bands) && d.bands.length >= 1) {
+    // "all bands together": overlay every RF band's spectrum on one shared
+    // absolute-frequency axis. Waveform/constellation stay on the primary
+    // band only (top-level d.i/d.q) -- overlaying different-fs time series
+    // is not meaningful.
+    drawSpectrum(`${channelId}-iq-spectrum`, d.bands.map((b, k) => ({
+      freqs: b.spectrum_freq_hz, db: b.spectrum_db, centre_hz: b.centre_hz,
+      label: b.id + ' (' + (b.systems || []).join('') + ')',
+      color: ['#06c', '#c60', '#093', '#a06'][k % 4],
+    })));
+    const wf = document.getElementById(`${channelId}-iq-waveform-readout`);
+    const primary = d.bands.find(b => b.id === 'L1') || d.bands[0];
+    if (wf && primary) wf.textContent = primary.id + ': ' + wf.textContent;
+  } else {
+    drawSpectrum(`${channelId}-iq-spectrum`, d.spectrum_freq_hz, d.spectrum_db);
+  }
 
   const slider = document.getElementById(`${channelId}-iq-scrub`);
   const readout = document.getElementById(`${channelId}-iq-scrub-readout`);

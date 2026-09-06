@@ -750,11 +750,42 @@ def iqplot(outdir: str, n: int = 2000, offset: int = 0):
     od = config.OUT_DIR / outdir
     meta = json.loads((od / "meta.json").read_text())
     bin_path = od / "gpssim.bin"
+    off = max(0, offset)
     # spectrum() needs a full 4096-sample window (its default nfft) even when
     # the caller only wants a shorter waveform/constellation preview, or the
     # PSD gets zero-padded (widened main lobe, misleading plot) whenever n<4096.
+
+    bands_meta = meta.get("bands")
+    if isinstance(bands_meta, list) and bands_meta:
+        out_bands = []
+        for band in bands_meta:
+            bpath = od / band["file"]
+            if not bpath.exists():
+                continue
+            biq = inspector.read_iq(bpath, meta["sample_format"],
+                                    max_samples=max(n, 4096), offset_samples=off)
+            bfreqs, bdb = inspector.spectrum(biq, band["fs"])
+            out_bands.append({
+                "id": band["id"], "centre_hz": band["centre_hz"], "fs": band["fs"],
+                "systems": band.get("systems", []),
+                "i": biq.real[:n].tolist(), "q": biq.imag[:n].tolist(),
+                "spectrum_freq_hz": bfreqs.tolist(), "spectrum_db": bdb.tolist(),
+                "total_samples": inspector.iq_sample_count(bpath, meta["sample_format"]),
+            })
+        if out_bands:
+            primary = next((b for b in out_bands if b["id"] == "L1"), out_bands[0])
+            return {
+                "bands": out_bands,
+                "i": primary["i"], "q": primary["q"],
+                "spectrum_freq_hz": primary["spectrum_freq_hz"],
+                "spectrum_db": primary["spectrum_db"],
+                "offset": offset, "sample_rate": primary["fs"],
+                "sample_format": meta["sample_format"],
+                "total_samples": primary["total_samples"],
+            }
+
     iq = inspector.read_iq(bin_path, meta["sample_format"],
-                           max_samples=max(n, 4096), offset_samples=max(0, offset))
+                           max_samples=max(n, 4096), offset_samples=off)
     freqs, power_db = inspector.spectrum(iq, meta["sample_rate"])
     return {
         "i": iq.real[:n].tolist(), "q": iq.imag[:n].tolist(),
