@@ -79,3 +79,45 @@ def test_subframe_word_boundaries_parity_check():
 def test_subframe_rejects_wrong_word_count():
     with pytest.raises(ValueError):
         le.subframe([[0] * 24] * 7, tow_count=1, subframe_id=1)
+
+
+# --- Task 3: subframe 1 ------------------------------------------------
+
+_EPH = {
+    "af0": -1.23e-4, "af1": 4.5e-12, "af2": 0.0, "toc": 100800.0,
+    "tgd": -5.1e-9, "iodc": 42, "health": 0,
+    "iode": 42, "crs": -12.3, "delta_n": 4.9e-9, "m0": 0.75,
+    "cuc": -6.1e-7, "e": 0.012, "cus": 7.2e-6, "sqrtA": 5153.6,
+    "toe": 100800.0, "cic": 1.1e-8, "omega0": -1.9, "cis": -9.0e-8,
+    "i0": 0.96, "crc": 210.0, "omega": 0.55, "omega_dot": -8.1e-9,
+    "idot": 1.3e-10,
+}
+
+
+def _source_words(sf):
+    """Recover the 10 words' 24 source data bits from a 300-bit subframe."""
+    d29 = d30 = 0
+    words = []
+    for i in range(10):
+        w = sf[i * 30:(i + 1) * 30]
+        words.append([b ^ d30 for b in w[:24]])
+        d29, d30 = w[28], w[29]
+    return words
+
+
+def test_subframe1_length_and_preamble():
+    sf = le.subframe1(_EPH, week=200, tow_count=100)
+    assert len(sf) == 300 and sf[:8] == le.PREAMBLE
+
+
+def test_subframe1_week_number_field():
+    w = _source_words(le.subframe1(_EPH, week=200, tow_count=100))
+    assert int("".join(map(str, w[2][0:10])), 2) == 200
+
+
+def test_subframe1_toc_and_af0_scales():
+    w = _source_words(le.subframe1(_EPH, week=200, tow_count=100))
+    toc_raw = int("".join(map(str, w[7][8:24])), 2)
+    assert toc_raw == round(_EPH["toc"] / 16)
+    af0_raw = int("".join(map(str, w[9][0:22])), 2)
+    assert af0_raw == le.twos(_EPH["af0"], 2 ** -31, 22)

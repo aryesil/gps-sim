@@ -115,3 +115,24 @@ def subframe(words_src, tow_count: int, subframe_id: int,
         out += w
         d29, d30 = w[28], w[29]
     return out
+
+
+# --- Subframe 1: clock, health, URA, IODC, Tgd, Toc -------------------
+
+def subframe1(eph: dict, week: int, tow_count: int) -> list[int]:
+    """300 bits. Uses eph keys af0/af1/af2 (s, s/s, s/s^2), toc (s),
+    tgd (s), iodc, health. URA index fixed at 0, CA/P-on-L2 = 01,
+    L2-P-data flag = 0."""
+    iodc = int(eph.get("iodc", 0)) & 0x3FF
+    health = int(eph.get("health", 0)) & 0x3F
+    w3 = (bits_of(week & 0x3FF, 10) + [0, 1] + bits_of(0, 4)
+          + bits_of(health, 6) + bits_of(iodc >> 8, 2))
+    w4 = [0] + bits_of(0, 23)
+    w5 = bits_of(0, 24)
+    w6 = bits_of(0, 24)
+    w7 = bits_of(0, 16) + bits_of(twos(eph["tgd"], 2 ** -31, 8), 8)
+    w8 = bits_of(iodc & 0xFF, 8) + bits_of(round(eph["toc"] / 16) & 0xFFFF, 16)
+    w9 = (bits_of(twos(eph["af2"], 2 ** -55, 8), 8)
+          + bits_of(twos(eph["af1"], 2 ** -43, 16), 16))
+    w10 = bits_of(twos(eph["af0"], 2 ** -31, 22), 22) + [0, 0]
+    return subframe([w3, w4, w5, w6, w7, w8, w9, w10], tow_count, 1)
