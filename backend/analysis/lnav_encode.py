@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import math as _math
 
+import numpy as _np
+
 # IS-GPS-200 Table 20-XIV parity equations. 1-indexed source data bits.
 _EQ = {
     25: (1, 2, 3, 5, 6, 10, 11, 12, 13, 14, 17, 18, 20, 23),
@@ -265,3 +267,41 @@ def subframe5(page: int, eph_by_prn: dict, tow_count: int) -> list[int]:
     prn = page if 1 <= page <= 24 else None
     alm = (eph_by_prn or {}).get(prn) if prn else None
     return subframe(_almanac_words(alm, prn or 0), tow_count, 5)
+
+
+# --- Frame + run-length stream --------------------------------------
+
+NAV_BIT_HZ = 50
+
+
+def frame_bits(eph: dict, header, week: int, tow_count: int,
+               sf45_page: int, eph_by_prn: dict | None = None) -> list[int]:
+    """1500 bits: SF1, SF2, SF3, SF4[page], SF5[page]. Each subframe's
+    TOW-count increments by one."""
+    ebp = eph_by_prn or {}
+    return (subframe1(eph, week, tow_count)
+            + subframe2(eph, tow_count + 1)
+            + subframe3(eph, tow_count + 2)
+            + subframe4(sf45_page, ebp, header, tow_count + 3)
+            + subframe5(sf45_page, ebp, tow_count + 4))
+
+
+def nav_stream(eph: dict, header, week: int, tow0_sow: float,
+               duration_s: float, eph_by_prn: dict | None = None):
+    """Run-length LNAV symbol stream as ``numpy.int8`` in {+1, -1}.
+
+    The first subframe boundary sits on the 6-second TOW grid at or
+    before ``tow0_sow``; symbols run for ``duration_s`` plus a 30-second
+    guard. Data bit 0 -> +1, bit 1 -> -1. Deterministic for a fixed
+    (eph, header, week, tow0, duration).
+    """
+    start = int(tow0_sow // 6) * 6
+    tc0 = start // 6
+    need = int(NAV_BIT_HZ * (_math.ceil(duration_s) + 30))
+    n_frames = need // 1500 + 2
+    bits: list[int] = []
+    for k in range(n_frames):
+        bits += frame_bits(eph, header, week, tc0 + k * 5,
+                           (k % 25) + 1, eph_by_prn)
+    arr = _np.array([1 if b == 0 else -1 for b in bits[:need]], dtype=_np.int8)
+    return arr

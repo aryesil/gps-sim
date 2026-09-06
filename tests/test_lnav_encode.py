@@ -1,5 +1,6 @@
 import math
 
+import numpy as np
 import pytest
 
 from backend.analysis import lnav_encode as le
@@ -187,3 +188,30 @@ def test_all_25_pages_assemble_for_both_subframes():
     for p in range(1, 26):
         assert len(le.subframe4(p, {}, None, 1)) == 300
         assert len(le.subframe5(p, {}, 1)) == 300
+
+
+# --- Task 6: frame_bits + nav_stream --------------------------------
+
+def test_frame_bits_is_1500_and_five_preambles():
+    f = le.frame_bits(_EPH, _HDR, week=200, tow_count=100, sf45_page=1)
+    assert len(f) == 1500
+    for k in range(5):
+        assert f[k * 300:k * 300 + 8] == le.PREAMBLE
+
+
+def test_nav_stream_length_and_values():
+    s = le.nav_stream(_EPH, _HDR, week=200, tow0_sow=100801.7, duration_s=10)
+    assert s.dtype == np.int8
+    assert set(np.unique(s)).issubset({-1, 1})
+    assert len(s) == 50 * (10 + 30)
+
+
+def test_nav_stream_starts_on_6s_grid_with_preamble():
+    s = le.nav_stream(_EPH, _HDR, week=200, tow0_sow=100801.0, duration_s=6)
+    assert list(s[:8]) == [1 if b == 0 else -1 for b in le.PREAMBLE]
+
+
+def test_nav_stream_is_deterministic():
+    a = le.nav_stream(_EPH, _HDR, 200, 100801.0, 6)
+    b = le.nav_stream(_EPH, _HDR, 200, 100801.0, 6)
+    assert np.array_equal(a, b)
