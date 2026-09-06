@@ -76,9 +76,36 @@ def _glo_g1_code():
     return _GLO_G1_CODE
 
 
+def _route_rx_fn(route, duration_s):
+    """``f(t_rel) -> (rx_ecef, rx_vel_ecef)`` for a waypoint ``route``.
+
+    Position is the linearly-interpolated waypoint LLH converted to ECEF
+    (``scenario.route_llh_at`` -- the same sampler ``gps-sdr-sim``'s motion
+    CSV uses); velocity is a central finite difference (one-sided at the run
+    ends). Used per mixer block so the moving receiver's own range rate
+    reaches the Doppler.
+    """
+    import numpy as np
+    from backend import scenario
+
+    dur = float(duration_s)
+
+    def pos(t):
+        return np.asarray(geometry.llh_to_ecef(
+            *scenario.route_llh_at(route, dur, t)), float)
+
+    def f(t):
+        lo = max(0.0, t - 0.5)
+        hi = min(dur, t + 0.5)
+        v = (pos(hi) - pos(lo)) / (hi - lo) if hi > lo else np.zeros(3)
+        return pos(t), v
+
+    return f
+
+
 def _trajectory_knots(state, rx, sow, fs, block_samples, total_samples,
                       chip_rate_hz, carrier_hz, code_phase0_chips, code_len,
-                      signal=None, carrier_offset_hz=0.0):
+                      signal=None, carrier_offset_hz=0.0, rx_fn=None):
     """SP-B per-mixer-block trajectory knots for one satellite.
 
     Samples ``geometry.observables`` at every mixer-block boundary and turns
@@ -105,7 +132,12 @@ def _trajectory_knots(state, rx, sow, fs, block_samples, total_samples,
     r0 = None
     for j in range(nk):
         tj = (j * block_samples) / fs
-        o = geometry.observables(state, rx, sow + tj, signal=signal)
+        if rx_fn is not None:
+            rxj, vrxj = rx_fn(tj)
+        else:
+            rxj, vrxj = rx, (0.0, 0.0, 0.0)
+        o = geometry.observables(state, rxj, sow + tj, rx_vel=vrxj,
+                                 signal=signal)
         if r0 is None:
             r0 = o["geo_range_m"]
         dr = o["geo_range_m"] - r0
@@ -235,6 +267,16 @@ def run(req, progress_cb=None) -> pathlib.Path:
     systems = tuple(getattr(req, "systems", None) or ("G",))
     warnings: list[str] = []
 
+    # Dynamic waypoint route: move the receiver along `route` and re-evaluate
+    # geometry per mixer block. `rx_fn(t_rel) -> (ecef, vel_ecef)`; None keeps
+    # the fixed marker position. A route forces the per-block trajectory path
+    # (a moving receiver with frozen geometry is meaningless).
+    route = getattr(req, "route", None)
+    rx_fn = _route_rx_fn(route, req.duration_s) if route else None
+    if route and not getattr(req, "continuous_doppler", True):
+        warnings.append("route set with continuous_doppler=False; per-block "
+                        "re-propagation forced on so the receiver can move")
+
     # All systems align to the one GPS SoW run-start epoch: align_epochs rewrites
     # every Keplerian toc/toe and every R/S toe_ref to `sow`, so GLONASS (which
     # propagates on `t_gps - toe_ref`) lines up on the GPS scale with the rest.
@@ -319,7 +361,8 @@ def run(req, progress_cb=None) -> pathlib.Path:
                 rec["glo_k"] = glo_k_by_key[k]
             stubs[k] = rec
 
-        rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
+        rx = (rx_fn(0.0)[0] if rx_fn is not None
+              else geometry.llh_to_ecef(req.lat, req.lon, req.alt))
         entries = geometry.constellation_multi(
             stubs, rx, p_sow, signals.signal_for, mask_deg=5.0,
             state_fn_by_key=state_fns)
@@ -354,7 +397,8 @@ def run(req, progress_cb=None) -> pathlib.Path:
                 systems = tuple(s for s in systems if s in got)
 
         eph = ephemeris.align_epochs(eph, week, sow)
-        rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
+        rx = (rx_fn(0.0)[0] if rx_fn is not None
+              else geometry.llh_to_ecef(req.lat, req.lon, req.alt))
         entries = geometry.constellation_multi(eph, rx, sow, signals.signal_for,
                                                mask_deg=5.0)
         entries.sort(key=lambda e: (e["sys"], e["prn"]))
@@ -417,7 +461,7 @@ def run(req, progress_cb=None) -> pathlib.Path:
                 _log.warning("engine.run: %s", keep)
                 warnings.append(str(keep))
                 continue
-            if (getattr(req, "continuous_doppler", True)
+            if ((getattr(req, "continuous_doppler", True) or rx_fn is not None)
                     and e.get("_state") is not None):
                 sig0 = e["signal_id"]
                 carr_off = spec.carrier_freq_hz - float(e["carrier_doppler_hz"])
@@ -426,7 +470,7 @@ def run(req, progress_cb=None) -> pathlib.Path:
                     int(round(plan.fs * req.duration_s)),
                     sig0.chip_rate_hz, sig0.carrier_hz,
                     e["code_phase_chips"], sig0.code_len,
-                    signal=sig0, carrier_offset_hz=carr_off)
+                    signal=sig0, carrier_offset_hz=carr_off, rx_fn=rx_fn)
                 _lib.attach_trajectory(spec, _BLOCK_SAMPLES, cf, cph, cr, kp)
             spec.fading.model = fading_model_int
             spec.fading.sigma_db = cfg.sigma_db
@@ -509,6 +553,8 @@ def run(req, progress_cb=None) -> pathlib.Path:
                               if getattr(req, "continuous_doppler", True)
                               else "observables at run start epoch, "
                                    "Doppler held constant over the run"),
+            "route": ({"waypoints": len(route), "mode": "linear-interp"}
+                      if route else "static"),
             "nav": nav_prov,
             "fading": cfg.model,
             "svs": meta_svs,

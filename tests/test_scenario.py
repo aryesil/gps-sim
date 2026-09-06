@@ -62,6 +62,29 @@ def test_write_motion_csv_requires_route(tmp_path):
         scenario.write_motion_csv(_req(), tmp_path / "m.csv")
 
 
+def test_route_llh_at_endpoints_and_midpoint():
+    route = [(41.0, 29.0, 100.0), (41.2, 29.4, 200.0)]
+    assert scenario.route_llh_at(route, 30, 0.0) == route[0]
+    assert scenario.route_llh_at(route, 30, 30.0) == pytest.approx(route[1])
+    # ~halfway through the run is ~halfway along the single segment (the
+    # k/(n-1) mapping puts it a hair past 0.5, same as the motion CSV).
+    mid = scenario.route_llh_at(route, 30, 15.0)
+    assert mid == pytest.approx((41.1, 29.2, 150.0), rel=5e-3)
+    assert route[0][0] < mid[0] < route[1][0]
+
+
+def test_route_llh_at_hits_middle_waypoint():
+    route = [(0.0, 0.0, 0.0), (10.0, 20.0, 30.0), (0.0, 0.0, 0.0)]
+    assert scenario.route_llh_at(route, 40, 20.0) == pytest.approx(route[1],
+                                                                   rel=5e-3)
+
+
+def test_route_llh_at_clamps_out_of_range():
+    route = [(1.0, 2.0, 3.0), (4.0, 5.0, 6.0)]
+    assert scenario.route_llh_at(route, 10, -5.0) == route[0]
+    assert scenario.route_llh_at(route, 10, 999.0) == pytest.approx(route[1])
+
+
 def test_estimate_bytes():
     assert scenario.estimate_bytes(_req(duration_s=10, sample_rate=2.6e6)) == 2 * 2 * 2_600_000 * 10
     assert scenario.estimate_bytes(_req(duration_s=10, sample_format="int8")) == 2 * 1 * 2_600_000 * 10

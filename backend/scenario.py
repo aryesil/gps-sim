@@ -130,22 +130,37 @@ def build_args(req: ScenarioRequest, out_bin: str, motion_csv: str | None) -> li
     return args
 
 
+def route_llh_at(route, duration_s, t: float) -> tuple[float, float, float]:
+    """Receiver ``(lat, lon, alt)`` at run time ``t`` seconds for a waypoint
+    ``route``. Linear interpolation of the waypoints spread evenly across
+    ``duration_s`` -- the same motion semantics ``gps-sdr-sim`` gets from the
+    ``-x`` motion CSV. ``t`` outside ``[0, duration_s]`` clamps to the route
+    endpoints. Shared by :func:`write_motion_csv` and the native engine's
+    per-block geometry loop so the two never diverge.
+    """
+    if not route or len(route) < 2:
+        raise ValueError("route needs at least two waypoints")
+    seg = len(route) - 1
+    n = int(round(duration_s * 10))
+    k = t * 10.0
+    f = (k / max(n - 1, 1)) * seg
+    f = min(max(f, 0.0), float(seg))
+    i = min(int(f), seg - 1)
+    frac = f - i
+    a, b = route[i], route[i + 1]
+    return (a[0] + (b[0] - a[0]) * frac,
+            a[1] + (b[1] - a[1]) * frac,
+            a[2] + (b[2] - a[2]) * frac)
+
+
 def write_motion_csv(req: ScenarioRequest, path) -> None:
     if not req.route or len(req.route) < 2:
         raise ValueError("route needs at least two waypoints")
     n = req.duration_s * 10
-    wp = req.route
-    seg = len(wp) - 1
     lines = []
     for k in range(n):
         t = k / 10.0
-        f = k / max(n - 1, 1) * seg
-        i = min(int(f), seg - 1)
-        frac = f - i
-        a, b = wp[i], wp[i + 1]
-        lat = a[0] + (b[0] - a[0]) * frac
-        lon = a[1] + (b[1] - a[1]) * frac
-        alt = a[2] + (b[2] - a[2]) * frac
+        lat, lon, alt = route_llh_at(req.route, req.duration_s, t)
         lines.append(f"{t:.1f},{lat:.9f},{lon:.9f},{alt:.3f}")
     with open(path, "w") as fh:
         fh.write("\n".join(lines) + "\n")
