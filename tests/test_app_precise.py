@@ -247,7 +247,8 @@ def test_preview_precise_gps_only_product_warns(monkeypatch):
         gps_product.epoch_times = [475200.0]
         return gps_product
 
-    def _fake_download_sp3(gps_week, dow, cache_dir, mirrors):
+    def _fake_download_sp3(gps_week, dow, cache_dir, mirrors, *,
+                           want_multignss=False):
         return SP3  # return the fixture path so it exists
 
     monkeypatch.setattr(appmod.precise, "download_sp3", _fake_download_sp3)

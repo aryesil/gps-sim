@@ -57,15 +57,16 @@ def test_precise_auto_downloads_sp3_for_start_utc(no_sp3, monkeypatch):
     fitted nav from it."""
     calls = []
 
-    def fake_dl(week, dow, cache_dir, mirrors):
-        calls.append((week, dow))
+    def fake_dl(week, dow, cache_dir, mirrors, *, want_multignss=False):
+        calls.append((week, dow, want_multignss))
         return SP3
 
     monkeypatch.setattr(app_mod.precise, "download_sp3", fake_dl)
     ov, warns = app_mod._precise_nav_override({"ephemeris_mode": "precise"}, START)
     # central day + the day either side are fetched and merged
     assert len(calls) == 3
-    assert any(w == 2433 for w, _ in calls)               # GPS week of 2026-08-28
+    assert any(w == 2433 for w, *_ in calls)              # GPS week of 2026-08-28
+    assert all(wm is False for *_, wm in calls)           # GPS-only request
     assert set(ov) == set(range(1, 11))
     assert any("auto-downloaded" in w.lower() for w in warns)
     app_mod._precise_provider._sp3 = None
@@ -95,6 +96,53 @@ def test_precise_builds_fitted_nav_matching_the_product(with_sp3):
     assert worst < 5.0
     # Fitted records carry solved perturbations, not just a stamped toe.
     assert any(abs(e["crs"]) > 1e-6 or abs(e["cus"]) > 1e-9 for e in ov.values())
+
+
+def test_precise_nav_override_threads_want_multignss(no_sp3, monkeypatch):
+    """A precise request for more than GPS must tell download_sp3 that a
+    multi-GNSS (MGEX) product is needed, so a GPS-only fallback is not
+    cache-shadowed."""
+    calls = []
+
+    def fake_dl(week, dow, cache_dir, mirrors, *, want_multignss=False):
+        calls.append(want_multignss)
+        return SP3
+
+    monkeypatch.setattr(app_mod.precise, "download_sp3", fake_dl)
+    app_mod._precise_nav_override(
+        {"ephemeris_mode": "precise", "engine": "native",
+         "systems": ["G", "E", "C"]}, START)
+    assert calls and all(wm is True for wm in calls)
+
+    calls.clear()
+    app_mod._precise_provider._sp3 = None
+    app_mod._precise_nav_override(
+        {"ephemeris_mode": "precise", "systems": ["G"]}, START)
+    assert calls and all(wm is False for wm in calls)
+    app_mod._precise_provider._sp3 = None
+
+
+def test_ensure_precise_loaded_refetches_gps_only_when_multignss_wanted(
+        with_sp3, monkeypatch):
+    """A GPS-only product already loaded and covering the epoch must NOT
+    short-circuit the early return when multi-GNSS coverage is needed."""
+    calls = []
+
+    def fake_dl(week, dow, cache_dir, mirrors, *, want_multignss=False):
+        calls.append(want_multignss)
+        return SP3  # still GPS-only; loaded product stays, louder warn fires
+
+    monkeypatch.setattr(app_mod.precise, "download_sp3", fake_dl)
+    monkeypatch.setattr(app_mod.config, "PRECISE_SP3_MIRRORS", ["https://x/{gpsweek}"])
+
+    # want_multignss=False: loaded GPS-only product covers -> no download
+    warns = app_mod._ensure_precise_loaded(START, True, want_multignss=False)
+    assert calls == []
+
+    # want_multignss=True: early return skipped -> refetch attempted
+    warns = app_mod._ensure_precise_loaded(START, True, want_multignss=True)
+    assert calls and all(wm is True for wm in calls)
+    assert any("MGEX" in w for w in warns)
 
 
 # ---- HTTP surface --------------------------------------------------------

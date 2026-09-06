@@ -246,9 +246,12 @@ def test_download_sp3_ultra_rapid_templating_and_cache_tiering(tmp_path, monkeyp
     ]
     out = _p.download_sp3(WEEK, 4, tmp_path, mirrors)
     assert seen[-1].endswith("0000_02D_15M_ORB.SP3.gz")   # {hh} -> "00"
-    assert pathlib.Path(out).name == f"IGS_{WEEK:04d}_4_ULT.sp3"
+    # fetched files now carry a coverage tag (_G / _GRECJ); this fixture is
+    # GPS-only so the ultra-rapid product lands as ..._ULT_G.sp3.
+    assert pathlib.Path(out).name == f"IGS_{WEEK:04d}_4_ULT_G.sp3"
 
-    # a manually cached final product for the same day wins over the ULT cache
+    # a manually cached final product under the legacy un-tagged name still
+    # wins over the ULT cache on the probe path
     (tmp_path / f"IGS_{WEEK:04d}_4_FIN.sp3").write_bytes(raw)
     again = _p.download_sp3(WEEK, 4, tmp_path, mirrors)
     assert pathlib.Path(again).name == f"IGS_{WEEK:04d}_4_FIN.sp3"
@@ -285,3 +288,75 @@ def test_parse_sp3_keeps_grecj_drops_sbas():
     p = precise.parse_sp3(_SP3_MGEX, source="mgex-test")
     assert set(p.systems()) == {"G", "E", "C", "R", "J"}
     assert ("E", 11) in p.records and ("S", 20) not in p.records
+
+
+# --- coverage-aware download_sp3 (Defect 1, no network) -----------------
+def test_sp3_systems_detects_grecj_vs_gps_only():
+    from backend.precise import _sp3_systems
+
+    assert _sp3_systems(SP3.read_bytes()) == {"G"}          # fixture is GPS-only
+    mgex = _sp3_systems(_SP3_MGEX.encode())
+    assert "G" in mgex and mgex - {"G"}                     # has R/E/C/J too
+    assert "S" not in mgex
+
+
+class _Resp:
+    def __init__(self, body): self.content = body
+    def raise_for_status(self): pass
+
+
+def test_download_sp3_want_multignss_prefers_grecj_over_gps_only_mirror(
+        tmp_path, monkeypatch):
+    import gzip
+    from backend import precise as _p
+    import requests as _rq
+
+    gps_only = SP3.read_bytes()
+    grecj = _SP3_MGEX.encode()
+
+    def _fake_get(url, timeout=0):
+        if "MGEX" in url:
+            return _Resp(gzip.compress(grecj))
+        return _Resp(gps_only)
+
+    monkeypatch.setattr(_rq, "get", _fake_get)
+    mirrors = [
+        "https://a/{gpsweek}/IGS0OPSRAP_{yyyy}{doy}.sp3",       # GPS-only, first
+        "https://b/{gpsweek}/GFZ0MGEXRAP_{yyyy}{doy}.SP3.gz",   # GRECJ, second
+    ]
+    out = _p.download_sp3(WEEK, 4, tmp_path, mirrors, want_multignss=True)
+    assert pathlib.Path(out).name.endswith("_GRECJ.sp3")
+    assert set(_p.parse_sp3(pathlib.Path(out)).systems()) >= {"G", "E", "C"}
+
+    # want_multignss=False keeps the old "first plausible SP3 wins" behaviour
+    out2 = _p.download_sp3(WEEK, 5, tmp_path, mirrors, want_multignss=False)
+    assert pathlib.Path(out2).name.endswith("_G.sp3")
+
+
+def test_download_sp3_want_multignss_does_not_serve_stale_gps_only_cache(
+        tmp_path, monkeypatch):
+    import gzip
+    from backend import precise as _p
+    import requests as _rq
+
+    # a legacy un-tagged cache file for this day, GPS-only content
+    (tmp_path / f"IGS_{WEEK:04d}_4.sp3").write_bytes(SP3.read_bytes())
+
+    def _fake_get(url, timeout=0):
+        return _Resp(gzip.compress(_SP3_MGEX.encode()))
+
+    monkeypatch.setattr(_rq, "get", _fake_get)
+    mirrors = ["https://b/{gpsweek}/WUM0MGEXRAP_{yyyy}{doy}.SP3.gz"]
+    out = _p.download_sp3(WEEK, 4, tmp_path, mirrors, want_multignss=True)
+    assert pathlib.Path(out).name.endswith("_GRECJ.sp3")
+    assert "R" in set(_p.parse_sp3(pathlib.Path(out)).systems())
+
+    # the freshly cached GRECJ product is now the best hit on the probe path
+    again = _p.download_sp3(WEEK, 4, tmp_path, mirrors)
+    assert pathlib.Path(again).name.endswith("_GRECJ.sp3")
+
+    # a lone GPS-only legacy cache (no GRECJ sibling) is still served when
+    # multi-GNSS is not requested
+    (tmp_path / f"IGS_{WEEK:04d}_6.sp3").write_bytes(SP3.read_bytes())
+    leg = _p.download_sp3(WEEK, 6, tmp_path, mirrors)
+    assert pathlib.Path(leg).name == f"IGS_{WEEK:04d}_6.sp3"
