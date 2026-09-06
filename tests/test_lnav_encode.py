@@ -157,3 +157,33 @@ def test_subframe3_i0_split():
     w = _source_words(le.subframe3(_EPH, tow_count=100))
     raw = _u(w[4][16:24] + w[5][0:24])
     assert raw == le.twos(_EPH["i0"] / math.pi, 2 ** -31, 32)
+
+
+# --- Task 5: subframes 4 & 5 ----------------------------------------
+
+_HDR = {"iono_alpha": [1.1e-8, 0.0, -5.96e-8, 0.0],
+        "iono_beta": [88064.0, 0.0, -196608.0, 0.0],
+        "utc": {"A0": 1.86e-9, "A1": 3.5e-15, "tot": 319488, "WNt": 200,
+                "dtLS": 18, "WNlsf": 201, "DN": 7, "dtLSF": 18}}
+
+
+def test_sf4_page18_length_and_preamble():
+    sf = le.subframe4(18, {}, _HDR, tow_count=1)
+    assert len(sf) == 300 and sf[:8] == le.PREAMBLE
+
+
+def test_sf4_page18_alpha0_scale():
+    w = _source_words(le.subframe4(18, {}, _HDR, tow_count=1))
+    a0 = _u(w[2][8:16])
+    assert a0 == le.twos(_HDR["iono_alpha"][0], 2 ** -30, 8)
+
+
+def test_sf5_page_almanac_present_and_zeroed():
+    assert len(le.subframe5(3, {3: _EPH}, tow_count=1)) == 300
+    assert len(le.subframe5(3, {}, tow_count=1)) == 300
+
+
+def test_all_25_pages_assemble_for_both_subframes():
+    for p in range(1, 26):
+        assert len(le.subframe4(p, {}, None, 1)) == 300
+        assert len(le.subframe5(p, {}, 1)) == 300

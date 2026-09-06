@@ -186,3 +186,82 @@ def subframe3(eph: dict, tow_count: int) -> list[int]:
     w9 = bits_of(odot, 24)
     w10 = bits_of(iode, 8) + bits_of(idot, 14) + [0, 0]
     return subframe([w3, w4, w5, w6, w7, w8, w9, w10], tow_count, 3)
+
+
+# --- Subframes 4 & 5: 25-page support / almanac cycle ----------------
+#
+# SP-A produces these structurally: a receiver decoding a fix needs only
+# SF1-3. SF4 page 18 carries the real Klobuchar iono + UTC parameters
+# when the RINEX header supplies them; almanac pages carry a
+# reduced-precision element set for the PRN they map to, or zeroed fields
+# when no source exists.
+
+def _almanac_words(alm: dict | None, sv_id: int) -> list[list[int]]:
+    a = alm or {}
+
+    def g(k, d=0.0):
+        return a.get(k, d)
+
+    e = twos(g("e"), 2 ** -21, 16)
+    toa = int(round(g("toa") / 4096)) & 0xFF
+    di = twos(g("i0", 0.0) / _math.pi, 2 ** -19, 16) if a else 0
+    odot = twos(g("omega_dot") / _math.pi, 2 ** -38, 16) if a else 0
+    health = int(g("health", 0)) & 0xFF
+    sqrta = int(round(g("sqrtA") / 2 ** -11)) & 0xFFFFFF
+    om0 = twos(g("omega0") / _math.pi, 2 ** -23, 24) if a else 0
+    w = twos(g("omega") / _math.pi, 2 ** -23, 24) if a else 0
+    m0 = twos(g("m0") / _math.pi, 2 ** -23, 24) if a else 0
+    af0 = twos(g("af0"), 2 ** -20, 11)
+    af1 = twos(g("af1"), 2 ** -38, 11)
+    w3 = [0, 1] + bits_of(sv_id & 0x3F, 6) + bits_of(e, 16)
+    w4 = bits_of(toa, 8) + bits_of(di, 16)
+    w5 = bits_of(odot, 16) + bits_of(health, 8)
+    w6 = bits_of(sqrta, 24)
+    w7 = bits_of(om0, 24)
+    w8 = bits_of(w, 24)
+    w9 = bits_of(m0, 24)
+    w10 = bits_of(af0, 11) + bits_of(af1, 11) + [0, 0]
+    return [w3, w4, w5, w6, w7, w8, w9, w10]
+
+
+def _iono_utc_words(header: dict | None) -> list[list[int]]:
+    h = header or {}
+    al = list(h.get("iono_alpha", [0, 0, 0, 0])) + [0, 0, 0, 0]
+    be = list(h.get("iono_beta", [0, 0, 0, 0])) + [0, 0, 0, 0]
+    u = h.get("utc", {}) or {}
+    w3 = ([0, 1] + bits_of(56, 6) + bits_of(twos(al[0], 2 ** -30, 8), 8)
+          + bits_of(twos(al[1], 2 ** -27, 8), 8))
+    w4 = (bits_of(twos(al[2], 2 ** -24, 8), 8) + bits_of(twos(al[3], 2 ** -24, 8), 8)
+          + bits_of(twos(be[0], 2 ** 11, 8), 8))
+    w5 = (bits_of(twos(be[1], 2 ** 14, 8), 8) + bits_of(twos(be[2], 2 ** 16, 8), 8)
+          + bits_of(twos(be[3], 2 ** 16, 8), 8))
+    a1 = twos(u.get("A1", 0.0), 2 ** -50, 24)
+    a0 = twos(u.get("A0", 0.0), 2 ** -30, 32)
+    w6 = bits_of(a1, 24)
+    w7 = bits_of(a0 >> 8, 24)
+    w8 = (bits_of(a0 & 0xFF, 8) + bits_of((int(u.get("tot", 0)) >> 12) & 0xFF, 8)
+          + bits_of(int(u.get("WNt", 0)) & 0xFF, 8))
+    w9 = (bits_of(twos(u.get("dtLS", 0), 1, 8), 8) + bits_of(int(u.get("WNlsf", 0)) & 0xFF, 8)
+          + bits_of(int(u.get("DN", 0)) & 0xFF, 8))
+    w10 = bits_of(twos(u.get("dtLSF", 0), 1, 8), 8) + bits_of(0, 14) + [0, 0]
+    return [w3, w4, w5, w6, w7, w8, w9, w10]
+
+
+# SF4 almanac pages 2-5, 7-10 -> PRN 25..32 (IS-GPS-200 Table 20-V).
+_SF4_ALM = {2: 25, 3: 26, 4: 27, 5: 28, 7: 29, 8: 30, 9: 31, 10: 32}
+
+
+def subframe4(page: int, eph_by_prn: dict, header, tow_count: int) -> list[int]:
+    if page == 18:
+        return subframe(_iono_utc_words(header), tow_count, 4)
+    prn = _SF4_ALM.get(page)
+    if prn is not None:
+        return subframe(_almanac_words((eph_by_prn or {}).get(prn), prn),
+                        tow_count, 4)
+    return subframe([bits_of(0, 24) for _ in range(8)], tow_count, 4)
+
+
+def subframe5(page: int, eph_by_prn: dict, tow_count: int) -> list[int]:
+    prn = page if 1 <= page <= 24 else None
+    alm = (eph_by_prn or {}).get(prn) if prn else None
+    return subframe(_almanac_words(alm, prn or 0), tow_count, 5)
