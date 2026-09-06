@@ -193,21 +193,35 @@ window.drawCorrelationBars = function (canvasId, rows, svs, t_s) {
     });
   } else { return; }
   items.sort((a, b) => (a.label < b.label ? -1 : 1));
-  // Zoom the y-axis to the actual spread -- for GPS metric_db the peak/floor
-  // ratio saturates near the same value, and for gain_db the elevation
-  // taper spread is only a few dB; a min-anchored window (>= 6 dB) keeps the
-  // per-SV differences legible.
+  const isGain = !(rows && rows.length);
   const w = W / items.length;
   const vals = items.map(x => x.val);
-  const hi = Math.max(...vals) + 1;
-  const lo = Math.min(Math.min(...vals) - 2, hi - 6);
+  // Gain mode: FIXED -18..+6 dB axis so every PRN's bar moves on its own as
+  // the scrubber advances. A data-fit axis (min/max each redraw) rescaled
+  // the whole chart every frame, which read as "all bars move together".
+  // GPS metric_db mode keeps the min-anchored zoom -- its per-PRN spread is
+  // tiny and would be invisible on a fixed axis.
+  let lo, hi;
+  if (isGain) { lo = -18; hi = 6; }
+  else { hi = Math.max(...vals) + 1; lo = Math.min(Math.min(...vals) - 2, hi - 6); }
   const span = Math.max(1e-6, hi - lo);
+  const yOf = v => H - 10 - ((Math.max(lo, Math.min(hi, v)) - lo) / span) * (H - 22);
+  if (isGain) {
+    // reference gridlines at 0 / -6 / -12 dB
+    g.strokeStyle = '#ddd'; g.fillStyle = '#999';
+    [0, -6, -12].forEach(db => {
+      const y = yOf(db);
+      g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
+      g.fillText(db + ' dB', W - 34, y - 2);
+    });
+  }
+  const base = yOf(isGain ? lo : lo);
   items.forEach((x, k) => {
-    const h = Math.max(0, (x.val - lo) / span) * (H - 22);
+    const y = yOf(x.val);
     g.fillStyle = x.color;
-    g.fillRect(k * w + 2, H - h - 10, Math.max(1, w - 4), h);
+    g.fillRect(k * w + 2, y, Math.max(1, w - 4), Math.max(0, base - y));
     g.fillStyle = '#333';
-    g.fillText(x.val.toFixed(1), k * w + 2, H - h - 13);
+    g.fillText(x.val.toFixed(1), k * w + 2, y - 3);
     g.fillStyle = '#666';
     g.fillText(x.label, k * w + 2, H - 2);
   });
