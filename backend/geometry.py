@@ -8,6 +8,21 @@ from backend import config
 _A_WGS84 = 6378137.0
 _E2_WGS84 = 6.69437999014e-3
 
+# Per-system orbital constants. "G" (GPS) and "J" (QZSS) share the GPS
+# WGS84 values so a broadcast dict with no "system" key reproduces today's
+# GPS numbers exactly. "E" (Galileo) and "C" (BeiDou) use their own
+# datum constants.
+SYS_PARAMS = {
+    "G": {"mu": config.MU,      "omega_e_dot": config.OMEGA_E_DOT, "f_rel": config.F_REL},
+    "J": {"mu": config.MU,      "omega_e_dot": config.OMEGA_E_DOT, "f_rel": config.F_REL},
+    "E": {"mu": 3.986004418e14, "omega_e_dot": 7.2921151467e-5,    "f_rel": -4.442807309e-10},
+    "C": {"mu": 3.986004418e14, "omega_e_dot": 7.2921150e-5,       "f_rel": -4.442807633e-10},
+}
+
+# BeiDou GEO/IGSO PRNs use the GEO reference-frame rotation (BDS-SIS-ICD-B1I).
+_BDS_GEO_PRNS = frozenset(range(1, 6)) | frozenset(range(59, 64))
+_BDS_GEO_INC_RAD = 0.15
+
 
 def llh_to_ecef(lat_deg: float, lon_deg: float, h_m: float) -> tuple[float, float, float]:
     lat = np.radians(lat_deg)
@@ -29,9 +44,10 @@ def _kepler_E(m: float, e: float) -> float:
     return E
 
 
-def _orbit(eph: dict, tk: float):
+def _orbit(eph: dict, tk: float, mu: float = config.MU,
+          omega_e_dot: float = config.OMEGA_E_DOT):
     A = eph["sqrtA"] ** 2
-    n0 = np.sqrt(config.MU / A ** 3)
+    n0 = np.sqrt(mu / A ** 3)
     n = n0 + eph["delta_n"]
     M = eph["m0"] + n * tk
     E = _kepler_E(M, eph["e"])
@@ -44,8 +60,8 @@ def _orbit(eph: dict, tk: float):
     i = eph["i0"] + eph["idot"] * tk + eph["cis"] * s2 + eph["cic"] * c2
     xp = r * np.cos(u)
     yp = r * np.sin(u)
-    Omega = (eph["omega0"] + (eph["omega_dot"] - config.OMEGA_E_DOT) * tk
-             - config.OMEGA_E_DOT * eph["toe"])
+    Omega = (eph["omega0"] + (eph["omega_dot"] - omega_e_dot) * tk
+             - omega_e_dot * eph["toe"])
     return xp, yp, i, Omega, E
 
 
@@ -58,22 +74,59 @@ def _ecef_from_orbit(xp, yp, i, Omega):
     return np.array([x, y, z])
 
 
+def _bds_geo_ecef(xp, yp, i, Omega_geo, wdot_tk):
+    """BeiDou GEO/IGSO position, per BDS-SIS-ICD-B1I section 5.2.4.12.
+
+    GEO satellites are propagated with the node ``Omega_geo`` that keeps the
+    full ``omega_dot * tk`` term (no ``-omega_e_dot * tk`` earth-rotation
+    subtraction), giving a position in a custom inertial-like frame. That
+    frame is carried into CGCS2000 by ``Rz(omega_e_dot * tk) . Rx(-5 deg)``,
+    where ``Rx`` / ``Rz`` are the ICD coordinate (frame) rotation matrices.
+    """
+    xg, yg, zg = _ecef_from_orbit(xp, yp, i, Omega_geo)
+    phi = np.radians(-5.0)
+    cx, sx = np.cos(phi), np.sin(phi)
+    # Rx(-5 deg): frame rotation about X
+    x1 = xg
+    y1 = cx * yg + sx * zg
+    z1 = -sx * yg + cx * zg
+    cz, sz = np.cos(wdot_tk), np.sin(wdot_tk)
+    # Rz(omega_e_dot * tk): frame rotation about Z
+    return np.array([cz * x1 + sz * y1, -sz * x1 + cz * y1, z1])
+
+
 def sat_state(eph: dict, t_gps: float):
+    sysp = SYS_PARAMS.get(eph.get("system", "G"), SYS_PARAMS["G"])
+    mu, wdot, frel = sysp["mu"], sysp["omega_e_dot"], sysp["f_rel"]
     tk = t_gps - eph["toe"]
     if tk > 302400:
         tk -= 604800
     elif tk < -302400:
         tk += 604800
-    xp, yp, i, Omega, E = _orbit(eph, tk)
-    pos = _ecef_from_orbit(xp, yp, i, Omega)
+    is_bds_geo = eph.get("system") == "C" and (
+        eph.get("prn") in _BDS_GEO_PRNS or abs(eph["i0"]) < _BDS_GEO_INC_RAD)
+
+    def _p(ttk):
+        xp, yp, i, Omega, _E = _orbit(eph, ttk, mu, wdot)
+        if is_bds_geo:
+            return _bds_geo_ecef(xp, yp, i, Omega + wdot * ttk, wdot * ttk)
+        return _ecef_from_orbit(xp, yp, i, Omega)
+
+    xp, yp, i, Omega, E = _orbit(eph, tk, mu, wdot)
+    pos = _p(tk)
     dt = 0.5
-    p0 = _ecef_from_orbit(*_orbit(eph, tk - dt)[:4])
-    p1 = _ecef_from_orbit(*_orbit(eph, tk + dt)[:4])
-    vel = (p1 - p0) / (2 * dt)
+    vel = (_p(tk + dt) - _p(tk - dt)) / (2 * dt)
     tsv = t_gps - eph["toc"]
     clk = (eph["af0"] + eph["af1"] * tsv + eph["af2"] * tsv ** 2
-           + config.F_REL * eph["e"] * eph["sqrtA"] * np.sin(E))
+           + frel * eph["e"] * eph["sqrtA"] * np.sin(E))
     return pos, vel, float(clk)
+
+
+def keplerian_state(record: dict):
+    """Return ``f(t_gps) -> (pos_ecef, vel_ecef, clk_s)`` for a broadcast
+    ``record``. ``record`` may carry ``"system"`` (``"G" "J" "E" "C"``);
+    absent means ``"G"`` and reproduces the GPS numbers exactly."""
+    return lambda t_gps: sat_state(record, t_gps)
 
 
 def _rotate_z(v: np.ndarray, theta: float) -> np.ndarray:
