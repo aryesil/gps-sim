@@ -24,6 +24,62 @@ def kepler_struct(eph: dict) -> "_lib.KeplerEph":
 
 _QUANT = {"int8": 0, "int12": 1, "int16": 2}
 
+# Constellation int -- matches the synth_code CONSTELLATION dispatch. This is the
+# key the mixer/fading use; it is NOT the same as the code_sys passed to
+# _lib.code (which selects a code VARIANT). For Galileo they intentionally
+# differ: spec.sys == 5 (Galileo) while code_sys == 6 (E1C pilot).
+_SYS_INT = {"G": 0, "J": 1, "S": 2, "C": 3, "R": 4, "E": 5}
+_E1_IS_PILOT = True     # E1C pilot for acquisition; E1B when nav bits added
+
+
+def _sv_spec_for(entry, gain):
+    """Turn one ``constellation_multi`` entry into a ready ``_lib.SvSpec`` plus
+    the ctypes buffers that must outlive it (``keep``). The full multi-system
+    ``run()`` wiring lands in Task 16/17; here it is unit-tested directly."""
+    sig = entry["signal_id"]
+    sysc = entry["sys"]
+    prim_len = sig.code_len
+    if sysc == "E":
+        code_sys = 6 if _E1_IS_PILOT else 5   # code VARIANT, not constellation
+        sec_len = 25 if _E1_IS_PILOT else 0
+    elif sysc == "C":
+        code_sys = 3
+        sec_len = 20
+    else:
+        code_sys = _SYS_INT[sysc]
+        sec_len = 0
+
+    prim, sec = _lib.code(code_sys, entry["prn"], prim_len, sec_len)
+    spec = _lib.SvSpec()
+    pbuf = (ctypes.c_int8 * prim_len)(*prim.tolist())
+    spec.code = pbuf
+    keep = [pbuf]
+    spec.carrier_freq_hz = entry["carrier_doppler_hz"]
+    spec.carrier_phase0_rad = 0.0
+    spec.code_phase0_chips = entry["code_phase_chips"]
+    spec.code_doppler_hz = entry["code_doppler_hz"]
+    spec.nav_mode = 0
+    spec.nav_bits = None
+    spec.nav_nbits = 0
+    spec.gain = gain
+    spec.prn = entry["prn"]
+    spec.sys = _SYS_INT[sysc]
+    spec.sub_carrier_hz = sig.sub_carrier_hz
+    if sec_len and sec is not None:
+        sbuf = (ctypes.c_int8 * sec_len)(*sec.tolist())
+        spec.sec_code = sbuf
+        spec.sec_len = sec_len
+        # B1I NH20: 20 chips, one per 1 ms primary period -> 1000 Hz.
+        # E1C CS25: 25 chips, one per 4 ms E1C primary code -> 250 Hz.
+        spec.sec_rate_hz = 250.0 if sysc == "E" else 1000.0
+        keep.append(sbuf)
+    else:
+        spec.sec_code = None
+        spec.sec_len = 0
+        spec.sec_rate_hz = 0.0
+    # spec.fading left zeroed: SvSpec() zero-inits and FadingCfg model 0 = off.
+    return spec, keep
+
 
 def _visible_gps(req) -> list[tuple[int, dict]]:
     """Visible GPS PRNs (el_deg >= 5) with observables evaluated once at the
