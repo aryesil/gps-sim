@@ -41,6 +41,12 @@ static int run_one_band(const BandSpec &b,
         ch[i].sec_code = specs[i].sec_code;
         ch[i].sec_len = specs[i].sec_len;
         ch[i].sec_rate_hz = specs[i].sec_rate_hz;
+        ch[i].traj_nknots = specs[i].traj_nknots;
+        ch[i].traj_knot_samples = specs[i].traj_knot_samples;
+        ch[i].traj_carr_freq = specs[i].traj_carr_freq;
+        ch[i].traj_carr_phase = specs[i].traj_carr_phase;
+        ch[i].traj_code_rate = specs[i].traj_code_rate;
+        ch[i].traj_code_phase = specs[i].traj_code_phase;
     }
     // Static per-SV gain, before any per-block fading is folded in.
     std::vector<float> base_gain(static_cast<size_t>(nsv));
