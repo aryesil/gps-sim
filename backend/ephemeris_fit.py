@@ -377,7 +377,7 @@ def build_precise_broadcast(provider, prns, epoch: GPSTime, *,
     warning list -- never substituted with a broadcast record. Raises
     ``EphemerisFitError`` if not one PRN could be fitted.
     """
-    have = set(provider.satellites())
+    have = {p for (s, p) in provider.satellites() if s == "G"}
     out: dict[int, dict] = {}
     warnings: list[str] = []
     fits: list[dict] = []

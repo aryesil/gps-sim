@@ -80,7 +80,7 @@ def build_state_fns(
                [f"ephemeris: broadcast (FELL BACK -- epoch outside precise coverage "
                 f"{cov_lo.to_datetime().isoformat()}Z..{cov_hi.to_datetime().isoformat()}Z)"]
 
-    have = set(provider.satellites())
+    have = {p for (s, p) in provider.satellites() if s == "G"}
     out: dict[int, Callable | dict] = {}
     warnings: list[str] = [f"ephemeris: precise ({provider.product.source})"]
     fell_back: list[int] = []

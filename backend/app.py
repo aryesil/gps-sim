@@ -435,7 +435,7 @@ def _precise_nav_override(body: dict, start: dt.datetime):
         return None, auto_warns
     gps_start = start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
     week, sow = ephemeris.gps_week_and_sow(gps_start)
-    prns = sorted(_precise_provider.satellites())
+    prns = sorted(p for (s, p) in _precise_provider.satellites() if s == "G")
     try:
         eph, warns = ephemeris_fit.build_precise_broadcast(
             _precise_provider, prns, GPSTime(week, sow), strict=not fallback)

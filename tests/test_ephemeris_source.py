@@ -53,7 +53,7 @@ def test_precise_with_unloaded_provider_fails(eph):
 
 
 def test_precise_mode_returns_callables(eph, provider):
-    prns = provider.satellites()
+    prns = [p for (s, p) in provider.satellites() if s == "G"]
     out, warns = build_state_fns("precise", prns, GPSTime(WEEK, TOE), eph,
                                  provider=provider)
     assert all(callable(v) for v in out.values())
@@ -63,25 +63,25 @@ def test_precise_mode_returns_callables(eph, provider):
 def test_precise_epoch_out_of_coverage_fails_hard(eph, provider):
     far = GPSTime(WEEK + 2, TOE)
     with pytest.raises(EphemerisModeError):
-        build_state_fns("precise", provider.satellites(), far, eph, provider=provider)
+        build_state_fns("precise", [p for (s, p) in provider.satellites() if s == "G"], far, eph, provider=provider)
 
 
 def test_precise_out_of_coverage_with_explicit_fallback(eph, provider):
     far = GPSTime(WEEK + 2, TOE)
-    out, warns = build_state_fns("precise", provider.satellites(), far, eph,
+    out, warns = build_state_fns("precise", [p for (s, p) in provider.satellites() if s == "G"], far, eph,
                                  provider=provider, fallback_to_broadcast=True)
     assert all(isinstance(v, dict) for v in out.values())
     assert any("FELL BACK" in w for w in warns)
 
 
 def test_missing_prn_errors_by_default(eph, provider):
-    prns = provider.satellites() + [30]        # 30 absent from the SP3 fixture
+    prns = [p for (s, p) in provider.satellites() if s == "G"] + [30]        # 30 absent from the SP3 fixture
     with pytest.raises(EphemerisModeError):
         build_state_fns("precise", prns, GPSTime(WEEK, TOE), eph, provider=provider)
 
 
 def test_missing_prn_skip_is_not_a_silent_fallback(eph, provider):
-    prns = provider.satellites() + [30]
+    prns = [p for (s, p) in provider.satellites() if s == "G"] + [30]
     out, warns = build_state_fns("precise", prns, GPSTime(WEEK, TOE), eph,
                                  provider=provider, on_missing="skip")
     assert 30 not in out                        # omitted, NOT substituted
