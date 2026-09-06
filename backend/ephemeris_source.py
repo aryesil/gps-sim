@@ -104,3 +104,31 @@ def build_state_fns(
     if skipped:
         warnings.append(f"{len(skipped)} PRN(s) not in precise product, omitted: {skipped}")
     return out, warnings
+
+
+def build_precise_state_fns(provider, keys, week):
+    """Build ``f(sow) -> (pos_ecef, vel_ecef, clk_bias_s)`` interpolants from a
+    precise (SP3) ``provider`` for a collection of constellation ``keys``.
+
+    ``keys`` are ``(sysc, prn)`` tuples (a bare int is treated as ``("G", prn)``).
+    Returns ``({key: fn}, skipped)`` where ``skipped`` lists the keys the precise
+    product does not cover for ``week`` -- a not-covered key is swallowed and
+    surfaced in the list, never raised. Callers decide whether a given skipped
+    key is a hard failure (REQUIRED system) or an acceptable degrade.
+    """
+    try:
+        have = {tuple(sp) for sp in provider.satellites()}
+    except Exception:
+        have = set()
+    out: dict = {}
+    skipped: list = []
+    for key in keys:
+        nk = ("G", key) if isinstance(key, int) else tuple(key)
+        if nk not in have:
+            skipped.append(key)
+            continue
+        try:
+            out[key] = provider.state_fn(key, week=week)
+        except (_precise.PreciseProductError, KeyError, ValueError):
+            skipped.append(key)
+    return out, skipped

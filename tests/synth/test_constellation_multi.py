@@ -32,3 +32,18 @@ def test_constellation_multi_gps_only_matches_visible_gps():
     for p, o in ref:
         assert abs(by_prn[p]["code_phase_chips"] - o["code_phase_chips"]) < 1e-6
         assert abs(by_prn[p]["carrier_doppler_hz"] - o["carrier_doppler_hz"]) < 1e-6
+
+
+def test_constellation_multi_uses_state_fn_override():
+    rx = geometry.llh_to_ecef(41.0, 29.0, 100.0)
+    called = {}
+
+    def fake_fn(sow):
+        called["hit"] = True
+        return ([2.0e7, 0.0, 1.5e7], [0.0, 0.0, 0.0], 0.0)
+
+    ents = geometry.constellation_multi(
+        {("E", 11): {"system": "E"}}, rx, 0.0,
+        signals.signal_for,
+        mask_deg=0.0, state_fn_by_key={("E", 11): fake_fn})
+    assert called.get("hit") and ents and ents[0]["sys"] == "E"

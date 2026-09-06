@@ -262,16 +262,24 @@ def state_fn_for(record: dict):
 
 
 def constellation_multi(eph_by_key, rx_ecef, t_rx: float, signal_for,
-                        mask_deg: float = 5.0) -> list[dict]:
+                        mask_deg: float = 5.0, state_fn_by_key=None) -> list[dict]:
     """Evaluate one correlated epoch across systems. ``eph_by_key`` maps
     ``(sys, prn)`` -> broadcast dict; each returned entry is the
-    ``observables`` dict plus ``"sys"``, ``"prn"``, ``"signal_id"``."""
+    ``observables`` dict plus ``"sys"``, ``"prn"``, ``"signal_id"``.
+
+    When ``state_fn_by_key`` is given, each visible key's satellite state
+    comes from ``state_fn_by_key[key]`` (an ``f(sow) -> (pos, vel, clk)``,
+    e.g. a precise-ephemeris interpolant) instead of ``state_fn_for(rec)``.
+    ``rec`` may then be a bare ``{"system": sysc}`` stub (plus
+    ``{"glo_k": k}`` for ``R``). With ``state_fn_by_key=None`` the
+    behaviour is byte-identical to the broadcast-only path."""
     out = []
     for key, rec in eph_by_key.items():
         sys = key[0] if isinstance(key, tuple) else "G"
         prn = key[1] if isinstance(key, tuple) else key
         sig = signal_for(sys)
-        o = observables(state_fn_for(rec), rx_ecef, t_rx, signal=sig)
+        sf = state_fn_by_key[key] if state_fn_by_key is not None else state_fn_for(rec)
+        o = observables(sf, rx_ecef, t_rx, signal=sig)
         if o["el_deg"] < mask_deg:
             continue
         o["sys"], o["prn"], o["signal_id"] = sys, prn, sig
