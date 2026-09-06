@@ -8,6 +8,8 @@ and the 24 transmitted data bits are the source bits XORed with D30*.
 """
 from __future__ import annotations
 
+import math as _math
+
 # IS-GPS-200 Table 20-XIV parity equations. 1-indexed source data bits.
 _EQ = {
     25: (1, 2, 3, 5, 6, 10, 11, 12, 13, 14, 17, 18, 20, 23),
@@ -136,3 +138,51 @@ def subframe1(eph: dict, week: int, tow_count: int) -> list[int]:
           + bits_of(twos(eph["af1"], 2 ** -43, 16), 16))
     w10 = bits_of(twos(eph["af0"], 2 ** -31, 22), 22) + [0, 0]
     return subframe([w3, w4, w5, w6, w7, w8, w9, w10], tow_count, 1)
+
+
+# --- Subframes 2 & 3: Keplerian ephemeris (radians -> semicircles) ----
+
+def _split(raw: int, n_hi: int, n_lo: int):
+    return bits_of(raw >> n_lo, n_hi), bits_of(raw & ((1 << n_lo) - 1), n_lo)
+
+
+def subframe2(eph: dict, tow_count: int) -> list[int]:
+    iode = int(eph.get("iode", 0)) & 0xFF
+    crs = twos(eph["crs"], 2 ** -5, 16)
+    dn = twos(eph["delta_n"] / _math.pi, 2 ** -43, 16)
+    m0_hi, m0_lo = _split(twos(eph["m0"] / _math.pi, 2 ** -31, 32), 8, 24)
+    cuc = twos(eph["cuc"], 2 ** -29, 16)
+    e_hi, e_lo = _split(twos(eph["e"], 2 ** -33, 32), 8, 24)
+    cus = twos(eph["cus"], 2 ** -29, 16)
+    a_hi, a_lo = _split(twos(eph["sqrtA"], 2 ** -19, 32), 8, 24)
+    toe = round(eph["toe"] / 16) & 0xFFFF
+    w3 = bits_of(iode, 8) + bits_of(crs, 16)
+    w4 = bits_of(dn, 16) + m0_hi
+    w5 = m0_lo
+    w6 = bits_of(cuc, 16) + e_hi
+    w7 = e_lo
+    w8 = bits_of(cus, 16) + a_hi
+    w9 = a_lo
+    w10 = bits_of(toe, 16) + [0] + bits_of(0, 5) + [0, 0]
+    return subframe([w3, w4, w5, w6, w7, w8, w9, w10], tow_count, 2)
+
+
+def subframe3(eph: dict, tow_count: int) -> list[int]:
+    cic = twos(eph["cic"], 2 ** -29, 16)
+    om0_hi, om0_lo = _split(twos(eph["omega0"] / _math.pi, 2 ** -31, 32), 8, 24)
+    cis = twos(eph["cis"], 2 ** -29, 16)
+    i0_hi, i0_lo = _split(twos(eph["i0"] / _math.pi, 2 ** -31, 32), 8, 24)
+    crc = twos(eph["crc"], 2 ** -5, 16)
+    w_hi, w_lo = _split(twos(eph["omega"] / _math.pi, 2 ** -31, 32), 8, 24)
+    odot = twos(eph["omega_dot"] / _math.pi, 2 ** -43, 24)
+    iode = int(eph.get("iode", 0)) & 0xFF
+    idot = twos(eph["idot"] / _math.pi, 2 ** -43, 14)
+    w3 = bits_of(cic, 16) + om0_hi
+    w4 = om0_lo
+    w5 = bits_of(cis, 16) + i0_hi
+    w6 = i0_lo
+    w7 = bits_of(crc, 16) + w_hi
+    w8 = w_lo
+    w9 = bits_of(odot, 24)
+    w10 = bits_of(iode, 8) + bits_of(idot, 14) + [0, 0]
+    return subframe([w3, w4, w5, w6, w7, w8, w9, w10], tow_count, 3)

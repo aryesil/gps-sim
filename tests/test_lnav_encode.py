@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from backend.analysis import lnav_encode as le
@@ -121,3 +123,37 @@ def test_subframe1_toc_and_af0_scales():
     assert toc_raw == round(_EPH["toc"] / 16)
     af0_raw = int("".join(map(str, w[9][0:22])), 2)
     assert af0_raw == le.twos(_EPH["af0"], 2 ** -31, 22)
+
+
+# --- Task 4: subframes 2 & 3 -----------------------------------------
+
+def _u(bits):
+    v = 0
+    for b in bits:
+        v = (v << 1) | b
+    return v
+
+
+def test_subframe2_iode_and_sqrta():
+    w = _source_words(le.subframe2(_EPH, tow_count=100))
+    assert _u(w[2][0:8]) == _EPH["iode"]
+    sqrta_raw = _u(w[7][16:24] + w[8][0:24])
+    assert sqrta_raw == round(_EPH["sqrtA"] / 2 ** -19)
+
+
+def test_subframe2_m0_semicircle_conversion():
+    w = _source_words(le.subframe2(_EPH, tow_count=100))
+    raw = _u(w[3][16:24] + w[4][0:24])
+    assert raw == le.twos(_EPH["m0"] / math.pi, 2 ** -31, 32)
+
+
+def test_subframe3_omega_dot_24bit():
+    w = _source_words(le.subframe3(_EPH, tow_count=100))
+    raw = _u(w[8][0:24])
+    assert raw == le.twos(_EPH["omega_dot"] / math.pi, 2 ** -43, 24)
+
+
+def test_subframe3_i0_split():
+    w = _source_words(le.subframe3(_EPH, tow_count=100))
+    raw = _u(w[4][16:24] + w[5][0:24])
+    assert raw == le.twos(_EPH["i0"] / math.pi, 2 ** -31, 32)
