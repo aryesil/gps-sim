@@ -20,7 +20,15 @@ def test_precise_defaults():
     # Ships free, anonymous (no-login) IGS product mirrors by default; a
     # download is still only performed on an explicit request.
     assert len(cfg.PRECISE_SP3_MIRRORS) >= 2
-    assert all(m.startswith("https://") for m in cfg.PRECISE_SP3_MIRRORS)
+    # All entries are HTTP(S) URLs. HTTPS is preferred; the ESA
+    # navigation-office operational archive is served over plain HTTP only
+    # (its TLS chain does not verify) and carries public orbit products
+    # with no credentials, so http:// is allowed for that host.
+    assert all(m.startswith(("https://", "http://")) for m in cfg.PRECISE_SP3_MIRRORS)
+    assert all(
+        m.startswith("https://") or "navigation-office.esa.int" in m
+        for m in cfg.PRECISE_SP3_MIRRORS
+    )
     assert all("cddis" not in m for m in cfg.PRECISE_SP3_MIRRORS)  # needs Earthdata login
     assert any("RAP" in m for m in cfg.PRECISE_SP3_MIRRORS)       # rapid
     assert any("FIN" in m for m in cfg.PRECISE_SP3_MIRRORS)       # final

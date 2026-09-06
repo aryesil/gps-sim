@@ -44,7 +44,7 @@ RINEX_MIRRORS = [
 
 # Precise-ephemeris analysis subsystem (backend/precise.py). SP3 products
 # are loaded from a local path by default. PRECISE_SP3_MIRRORS defaults to
-# anonymous, no-login IGS product mirrors (BKG, IGN); a download is still
+# anonymous, no-login product mirrors (ESA navigation-office, IGN, BKG); a download is still
 # only performed when the operator explicitly requests one (the
 # /api/precise/load "download" field). Set the env var to override the
 # list, or to "" to disable SP3 downloads entirely. Templates may use
@@ -57,19 +57,22 @@ RINEX_MIRRORS = [
 # ultra-rapid (IGU, ~3-9 h, 2-day file whose second half is *predicted*)
 # as the last resort for epochs too recent for rapid/final.
 _DEFAULT_SP3_MIRRORS = (
-    # --- multi-GNSS (MGEX) products, GRECJ -- tried first so the precise
-    # path never settles for a GPS-only orbit when a mixed one exists.
-    # BKG (igs.bkg.bund.de) is reachable from networks where igs.ign.fr
-    # times out, so the BKG-hosted MGEX copies lead; the IGN ones follow
-    # as a secondary for deployments with the opposite reachability.
-    "https://igs.bkg.bund.de/root_ftp/MGEX/products/{gpsweek}/"
-    "GFZ0MGXRAP_{yyyy}{doy}0000_01D_05M_ORB.SP3.gz,"
-    "https://igs.bkg.bund.de/root_ftp/MGEX/products/{gpsweek}/"
-    "WUM0MGXRAP_{yyyy}{doy}0000_01D_01M_ORB.SP3.gz,"
-    "https://igs.bkg.bund.de/root_ftp/MGEX/products/{gpsweek}/"
-    "WUM0MGXFIN_{yyyy}{doy}0000_01D_15M_ORB.SP3.gz,"
-    "https://igs.bkg.bund.de/root_ftp/MGEX/products/{gpsweek}/"
-    "COD0MGXFIN_{yyyy}{doy}0000_01D_05M_ORB.SP3.gz,"
+    # --- multi-GNSS products (GPS+GLONASS+Galileo+BeiDou) -- tried first so
+    # the precise path never settles for a GPS-only orbit when a mixed one
+    # exists (download_sp3(want_multignss=True) keeps probing past a
+    # GPS-only hit). ESA/ESOC's operational solution (navigation-office.esa
+    # .int) is a plain-HTTP, no-login archive that is reachable from many
+    # networks where igs.ign.fr times out and where BKG only carries the
+    # GPS-only IGS Operational combination; its ESA0OPS orbits carry
+    # G/R/E (and C on recent days). The IGN MGEX copies (GFZ0MGXRAP,
+    # WUM0MGXFIN, true GRECJ) follow as a secondary for deployments with
+    # the opposite reachability. Networks that can reach neither should set
+    # PRECISE_SP3_MIRRORS to a reachable MGEX mirror or load an SP3 by hand
+    # via /api/precise/load.
+    "http://navigation-office.esa.int/products/gnss-products/{gpsweek}/"
+    "ESA0OPSRAP_{yyyy}{doy}0000_01D_05M_ORB.SP3.gz,"
+    "http://navigation-office.esa.int/products/gnss-products/{gpsweek}/"
+    "ESA0OPSFIN_{yyyy}{doy}0000_01D_05M_ORB.SP3.gz,"
     "https://igs.ign.fr/pub/igs/products/mgex/{gpsweek}/"
     "GFZ0MGXRAP_{yyyy}{doy}0000_01D_05M_ORB.SP3.gz,"
     "https://igs.ign.fr/pub/igs/products/mgex/{gpsweek}/"
