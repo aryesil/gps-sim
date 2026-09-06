@@ -138,7 +138,46 @@ window.loadCorrelationCurve = async function (canvasId, readoutId, outdir, prn) 
 // meta.json provenance.svs, one bar per satellite across every system,
 // coloured by constellation.
 const _BAR_SYS_COLOR = { G:'#2a6', R:'#c30', E:'#093', C:'#c60', J:'#606', S:'#888' };
-window.drawCorrelationBars = function (canvasId, rows, svs) {
+
+// JS port of backend/synth/native/fading.cpp (splitmix64 + smoothstep between
+// coherence knots). Keyed only on (seed, prn, knot), so evaluating it here at
+// any run time t_s reproduces the exact per-block lognormal gain the C++ mixer
+// folded into the IQ -- lets the per-SV power bars track the waveform scrubber.
+const _M64 = (1n << 64n) - 1n;
+function _mix64(x) {
+  x = (x + 0x9E3779B97F4A7C15n) & _M64;
+  x = ((x ^ (x >> 30n)) * 0xBF58476D1CE4E5B9n) & _M64;
+  x = ((x ^ (x >> 27n)) * 0x94D049BB133111EBn) & _M64;
+  return (x ^ (x >> 31n)) & _M64;
+}
+function _u01(h) { return Number(h >> 11n) * (1 / 9007199254740992); }
+function _fadeGauss(seed, prn, knot) {
+  const kn = (BigInt(knot) * 0x100000001B3n) & _M64;
+  const base = _mix64((BigInt.asUintN(64, BigInt(seed))
+    ^ (BigInt(prn) << 40n) ^ kn) & _M64);
+  const u1 = _u01(_mix64(base)) + 1e-12;
+  const u2 = _u01(_mix64(base ^ 0xABCDEFn));
+  return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+}
+window.fadingGainDb = function (sv, t_s) {
+  const sigma = sv.fading_sigma_db, coh = sv.fading_coherence_s;
+  if (!sv.fading_model || !(sigma > 0) || !(coh > 0)) return 0;
+  const x = t_s / coh, k0 = Math.floor(x), frac = x - k0;
+  const g0 = _fadeGauss(sv.fading_seed, sv.prn, k0);
+  const g1 = _fadeGauss(sv.fading_seed, sv.prn, k0 + 1);
+  const w = frac * frac * (3 - 2 * frac);
+  return sigma * 1.1602387022306428 * (g0 * (1 - w) + g1 * w);
+};
+
+// channelId -> per-SV list (meta.json provenance.svs), for the scrubber to
+// redraw the power bars at each sample position. null for GPS-only runs
+// (those show the real acquisition metric instead).
+const _svPowerModel = {};
+window.setSvPowerModel = function (channelId, svs) {
+  _svPowerModel[channelId] = (svs && svs.length) ? svs : null;
+};
+
+window.drawCorrelationBars = function (canvasId, rows, svs, t_s) {
   const { g, W, H } = fitCanvas(canvasId);
   g.clearRect(0, 0, W, H);
   g.font = '10px system-ui, sans-serif';
@@ -147,8 +186,9 @@ window.drawCorrelationBars = function (canvasId, rows, svs) {
     items = rows.map(r => ({ label: 'G' + r.prn, val: r.metric_db, color: '#2a6' }));
   } else if (svs && svs.length) {
     items = svs.map(s => {
-      const v = (typeof s.gain_db === 'number') ? s.gain_db
+      let v = (typeof s.gain_db === 'number') ? s.gain_db
         : (typeof s.gain === 'number' ? 20 * Math.log10(s.gain) : 0);
+      if (typeof t_s === 'number') v += fadingGainDb(s, t_s);
       return { label: s.sys + s.prn, val: v, color: _BAR_SYS_COLOR[s.sys] || '#2a6' };
     });
   } else { return; }
@@ -246,7 +286,10 @@ window.loadIqPlots = async function (channelId, outdir, offset) {
     })));
     const wf = document.getElementById(`${channelId}-iq-waveform-readout`);
     const primary = d.bands.find(b => b.id === 'L1') || d.bands[0];
-    if (wf && primary) wf.textContent = primary.id + ': ' + wf.textContent;
+    // Set, do not prepend: this runs on every scrubber `oninput`, and
+    // prepending stacked "L1: L1: L1: ..." without bound. The hover handler
+    // overwrites this line with the per-sample readout anyway.
+    if (wf && primary) wf.textContent = 'primary band: ' + primary.id;
   } else {
     drawSpectrum(`${channelId}-iq-spectrum`, d.spectrum_freq_hz, d.spectrum_db);
   }
@@ -268,6 +311,18 @@ window.loadIqPlots = async function (channelId, outdir, offset) {
     readout.textContent =
       `t=${(d.offset / d.sample_rate).toFixed(2)}s / ${(d.total_samples / d.sample_rate).toFixed(2)}s` +
       `   RMS ${(20 * Math.log10(rms / fs)).toFixed(1)} dBFS`;
+  }
+
+  // Per-SV signal power at this scrub position: re-evaluate the fading model
+  // at t = offset / sample_rate so the bars breathe with the waveform as the
+  // scrubber is dragged, instead of showing a single frozen snapshot.
+  const model = _svPowerModel[channelId];
+  if (model && d.sample_rate) {
+    const t = d.offset / d.sample_rate;
+    drawCorrelationBars(`${channelId}-iq-correlation`, null, model, t);
+    const lbl = document.getElementById(`${channelId}-iq-correlation-label`);
+    if (lbl) lbl.textContent =
+      `Per-SV signal power @ t=${t.toFixed(2)}s (gain + fading, dB)`;
   }
 };
 

@@ -348,7 +348,14 @@ def run(req, progress_cb=None) -> pathlib.Path:
                        # time-varying around this level.
                        "gain": round(static_gain, 4),
                        "gain_db": round(20.0 * math.log10(static_gain), 2),
-                       "fading_sigma_db": cfg.sigma_db if fading_model_int else 0.0}
+                       # fading model parameters, so a client can reproduce the
+                       # exact per-block lognormal gain the C++ mixer applied
+                       # (backend/synth/native/fading.cpp) at any run time t and
+                       # show the per-SV power varying as the IQ is scrubbed.
+                       "fading_model": fading_model_int,
+                       "fading_sigma_db": cfg.sigma_db if fading_model_int else 0.0,
+                       "fading_coherence_s": cfg.coherence_s,
+                       "fading_seed": int(cfg.seed)}
             gk = e.get("glo_k")
             if e["sys"] == "R" and gk is not None and not (
                     isinstance(gk, float) and math.isnan(gk)):

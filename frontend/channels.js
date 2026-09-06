@@ -775,12 +775,15 @@ function wireChannelActions(id) {
               drawInspectTable(`${id}-inspect-table`, msg.done.inspect);
               drawSvPowerTable(`${id}-svpower-table`, msg.done.svs, msg.done.bands);
               const corrLabel = document.getElementById(`${id}-iq-correlation-label`);
+              const gpsOnlyInspect = !!(msg.done.inspect && msg.done.inspect.length);
               if (corrLabel) {
-                corrLabel.textContent = (msg.done.inspect && msg.done.inspect.length)
+                corrLabel.textContent = gpsOnlyInspect
                   ? 'Acquisition metric (dB)'
-                  : 'Per-SV signal power (gain dB, all constellations)';
+                  : 'Per-SV signal power (gain + fading, dB)';
               }
-              drawCorrelationBars(`${id}-iq-correlation`, msg.done.inspect, msg.done.svs);
+              // Multi-GNSS: let the scrubber drive the power bars (fading vs t).
+              setSvPowerModel(id, gpsOnlyInspect ? null : msg.done.svs);
+              drawCorrelationBars(`${id}-iq-correlation`, msg.done.inspect, msg.done.svs, 0);
               loadIqPlots(id, msg.done.outdir);
               attachIqScrubber(id, msg.done.outdir);
               if (st.lastSatellites) {
