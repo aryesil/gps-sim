@@ -39,21 +39,15 @@ void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
         eff = L - eff;
         if (eff >= L) eff -= L;
 
-        // BOC(1,1) square sub-carrier NCO, seeded per SV per block from the
-        // ABSOLUTE sample index (abs_t0), exactly like the carrier NCO above
-        // (final review B1 discipline). sub_frac is folded to [0,1) so the
-        // plain cast is non-negative; the 2^32 scaling matches BocNco::set_freq.
-        BocNco boc;
+        // BOC(1,1): the sub-carrier is code-phase-locked -- two half-chips per
+        // code chip. Deriving the sign from the running code phase `cp` (which
+        // already carries code Doppler and is absolute-sample-seeded) keeps the
+        // sub-carrier coherent with the code across Doppler, streaming blocks and
+        // parallel chunks (final review B1 discipline). An independent nominal-
+        // rate NCO slipped ~code_doppler chips/s vs the code.
         const bool use_boc = sv.sub_carrier_hz > 0.0;
-        if (use_boc) {
-            boc.set_freq(sv.sub_carrier_hz, fs);
-            double sub_frac = sv.sub_carrier_hz * abs_t0;
-            sub_frac -= std::floor(sub_frac);
-            boc.phase = static_cast<uint32_t>(sub_frac * 4294967296.0);
-        }
         const int8_t *__restrict sec = sv.sec_code;
         const int sec_len = sv.sec_len;
-        const double sec_rate = sv.sec_rate_hz;
 
         for (int k = 0; k < n; ++k) {
             double t = abs_t0 + k * dt;
@@ -66,13 +60,20 @@ void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
             if (ci < 0) ci += L;
             float chip = static_cast<float>(code[ci]);
             if (sec_len > 0) {
-                // Absolute `t` here too => the secondary index is
-                // phase-continuous across streaming blocks and parallel chunks.
-                long si = static_cast<long>(t * sec_rate) % sec_len;
+                // One secondary chip spans exactly one primary code period, so
+                // index by elapsed primary periods derived from the absolute
+                // code phase `cp` -- phase-continuous across streaming blocks and
+                // parallel chunks, with transitions aligned to code-period edges.
+                long period =
+                    static_cast<long>(std::floor(cp / static_cast<double>(L)));
+                long si = period % sec_len;
                 if (si < 0) si += sec_len;
                 chip *= static_cast<float>(sec[si]);
             }
-            if (use_boc) chip *= static_cast<float>(boc.sign());
+            if (use_boc) {
+                long hc = static_cast<long>(std::floor(2.0 * cp));
+                if (hc & 1L) chip = -chip;
+            }
             float navsym = static_cast<float>(nav_symbol(nav, t));
             std::complex<float> c = carr.next();
             float d = g * chip * navsym;

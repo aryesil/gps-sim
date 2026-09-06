@@ -168,7 +168,7 @@ def _try_import(name: str) -> bool:
         return False
 
 
-def _preview_multi(body: dict, start: dt.datetime, rx, tow: float,
+def _preview_multi(body: dict, start: dt.datetime, rx,
                    systems: tuple) -> dict:
     """Geometry preview across multiple constellations (one correlated epoch).
     Same response shape as /api/preview. Channel models / precise mode are
@@ -200,6 +200,12 @@ def _preview_multi(body: dict, start: dt.datetime, rx, tow: float,
                 f"multi-GNSS preview: {', '.join(sorted(got))}"]
     if dropped:
         warnings.append(f"no records for {', '.join(dropped)} in this RINEX")
+    if ephemeris_source.normalise_mode(body.get("ephemeris_mode")) == "precise":
+        warnings.append(
+            "multi-GNSS preview uses broadcast ephemeris (precise mode is GPS-only)")
+    if channel_models.ChannelModels.from_request(body).any_enabled:
+        warnings.append(
+            "channel models are not applied to the multi-GNSS preview")
     if len(sats) < 4:
         warnings.append("fewer than 4 visible satellites — no hardware fix")
     return {"satellites": sats, "dop": d, "warnings": warnings,
@@ -218,7 +224,7 @@ def preview(body: dict):
     # and precise mode are GPS-only and stay on the path below.
     req_systems = tuple(dict.fromkeys(body.get("systems") or ["G"]))
     if tuple(sorted(req_systems)) != ("G",):
-        return _preview_multi(body, start, rx, tow, req_systems)
+        return _preview_multi(body, start, rx, req_systems)
 
     eph, eph_src = _resolve_eph(date, body.get("rinex_path"))
 

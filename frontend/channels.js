@@ -326,7 +326,12 @@ function wireChannelActions(id) {
   function _updateEngineConstellationState() {
     const isNative = document.getElementById(`${id}-engine`).value === 'native';
     ['R', 'E', 'C', 'J', 'S'].forEach(s => {
-      document.getElementById(`${id}-sys-${s}`).disabled = !isNative;
+      const box = document.getElementById(`${id}-sys-${s}`);
+      box.disabled = !isNative;
+      // gps-sdr-sim is GPS-only: also clear the boxes so _engineBody() stops
+      // emitting `systems` and /api/generate no longer 422s. Switching back to
+      // native only re-enables them (no auto-check).
+      if (!isNative) box.checked = false;
     });
   }
   document.getElementById(`${id}-engine`).addEventListener('change', _updateEngineConstellationState);

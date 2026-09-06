@@ -8,26 +8,23 @@ term, the J2 zonal term, and -- because the integration frame co-rotates with
 the Earth -- centrifugal (OMEGA**2 * x,y) and Coriolis (+/- 2 OMEGA v) terms,
 with the broadcast ax/ay/az added as a frame-constant luni-solar acceleration.
 
-Time scale note (unresolved here -- TODO Task 16, correlated-epoch wiring):
+Time scale:
     georinex returns GLONASS broadcast epochs on the UTC(SU) scale, so a raw
     parsed record's ``toe_ref`` (from ``ephemeris.parse_rinex_multi``) is UTC
     seconds-of-week, whereas ``t_gps`` passed to ``f()`` is GPS seconds-of-week
     (GPS = UTC + config.GPS_UTC_LEAP_S, currently 18 s).
 
     This integrator only ever uses ``dt_total = t_gps - toe_ref`` -- a true
-    elapsed interval whenever both endpoints share a scale. In the production
-    path that holds: ``ephemeris.align_epochs`` rewrites an R/S record's
-    ``toe_ref`` to the requested GPS start SoW before propagation, so the
-    subtraction is GPS-minus-GPS. In the raw-parse path (used by these unit
-    tests) both endpoints are UTC-scale because callers evaluate relative to
-    ``toe_ref`` itself.
-
-    The unhandled case is a *raw, unaligned* GLONASS record evaluated at a
-    genuine GPS SoW alongside GPS satellites -- there ``dt_total`` would carry
-    an ~18 s error (~60 km). Task 16 must guarantee alignment (or subtract
-    ``config.GPS_UTC_LEAP_S`` here) before mixing GLONASS into a correlated
-    multi-GNSS epoch. No leap term is applied unconditionally because
-    ``f(toe_ref)`` must return the broadcast state exactly (dt_total == 0).
+    elapsed interval whenever both endpoints share a scale. The correlated
+    multi-GNSS path guarantees that: ``engine.run`` calls
+    ``ephemeris.align_epochs`` to rewrite every R/S record's ``toe_ref`` to the
+    GPS start SoW before ``constellation_multi``, so the subtraction is
+    GPS-minus-GPS. In the raw-parse path (used by these unit tests) both
+    endpoints are UTC-scale because callers evaluate relative to ``toe_ref``
+    itself. No leap term is applied unconditionally because ``f(toe_ref)`` must
+    return the broadcast state exactly (dt_total == 0); a raw, unaligned record
+    evaluated at a genuine GPS SoW would carry the ~18 s (~60 km) offset, which
+    is why alignment is done upstream rather than here.
 """
 
 from __future__ import annotations

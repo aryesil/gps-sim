@@ -287,7 +287,9 @@ def code(sys: int, prn: int, prim_len: int, sec_len: int = 0):
     """L1-group code generator over the native ``synth_code`` symbol.
 
     ``sys`` is the CODE-GEN enum (0 GPS, 1 QZSS, 2 SBAS, 3 BeiDou B1I,
-    4 GLONASS G1) -- SEPARATE from the propagation sys int. Returns
+    6 Galileo E1C) -- SEPARATE from the propagation sys int. There is no
+    native GLONASS branch (any other value returns rc -1); GLONASS G1 is
+    generated in Python by ``engine._glo_g1_code``. Returns
     ``(primary, secondary)`` as ``np.int8`` arrays of ``{-1, +1}`` chips;
     ``secondary`` is ``None`` when ``sec_len <= 0``.
     """

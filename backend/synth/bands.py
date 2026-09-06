@@ -44,9 +44,6 @@ def plan_bands(entries, req) -> list[BandPlan]:
     if l1:
         sig_ids = sorted({_signal_key(e["signal_id"]) for e in l1})
         fs = fs_policy.validate_fs(req.sample_rate, sig_ids)
-        floor = fs_policy.band_floor("L1", sig_ids)
-        if fs < floor:                       # validate_fs already guards, belt+braces
-            raise ValueError(f"L1 sample_rate {fs:.0f} < floor {floor:.0f}")
         plans.append(BandPlan("L1", _L1_CENTRE_HZ, fs, quant, l1, "gpssim.bin"))
     if g1:
         floor = fs_policy.band_floor("G1", ["GLO_G1"], ks=range(-7, 7))

@@ -25,7 +25,7 @@ def kepler_struct(eph: dict) -> "_lib.KeplerEph":
     return s
 
 
-_QUANT = {"int8": 0, "int12": 1, "int16": 2}
+_QUANT = bands._QUANT  # single source of truth (backend.synth.bands)
 
 # Constellation int -- matches the synth_code CONSTELLATION dispatch. This is the
 # key the mixer/fading use; it is NOT the same as the code_sys passed to
@@ -230,6 +230,7 @@ def run(req, progress_cb=None) -> pathlib.Path:
             spec, keep = _sv_spec_for(e, _el_gain(e.get("el_deg", 90.0)))
             if spec is None:
                 _log.warning("engine.run: %s", keep)
+                warnings.append(str(keep))
                 continue
             spec.fading.model = fading_model_int
             spec.fading.sigma_db = cfg.sigma_db
@@ -241,7 +242,8 @@ def run(req, progress_cb=None) -> pathlib.Path:
             sig = e["signal_id"]
             sv_meta = {"sys": e["sys"], "prn": e["prn"],
                        "code_len": sig.code_len,
-                       "chip_hz": sig.chip_rate_hz}
+                       "chip_hz": sig.chip_rate_hz,
+                       "code_doppler_hz": e["code_doppler_hz"]}
             gk = e.get("glo_k")
             if e["sys"] == "R" and gk is not None and not (
                     isinstance(gk, float) and math.isnan(gk)):

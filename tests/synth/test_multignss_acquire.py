@@ -44,7 +44,8 @@ def test_each_l1_system_acquires_in_one_correlated_capture(tmp_path, monkeypatch
         if e["sys"] == "R":
             continue
         r = _corr.acquire(iq, l1["fs"], e["sys"], e["prn"],
-                          code_len=e["code_len"], chip_hz=e["chip_hz"])
+                          code_len=e["code_len"], chip_hz=e["chip_hz"],
+                          boc=(e["sys"] == "E"))
         hits.setdefault(e["sys"], 0)
         metrics.setdefault(e["sys"], []).append(round(r["metric_db"], 1))
         if r["metric_db"] > _METRIC_DB:
@@ -53,10 +54,9 @@ def test_each_l1_system_acquires_in_one_correlated_capture(tmp_path, monkeypatch
     assert present, "no L1 SVs in the capture"
 
     # 1023-chip / 1.023 Mcps systems (GPS, QZSS, SBAS) are synthesized exactly
-    # by the frozen native band engine and acquire cleanly. Galileo E1 shares
-    # the 1.023 Mcps chip rate, so a plain E1C-primary correlation (no BOC
-    # replica) still peaks well clear of the floor despite the 4092-vs-1023
-    # code-length truncation in run_one_band.
+    # by the frozen native band engine and acquire cleanly. Galileo E1 is mixed
+    # at its real 4092-chip code_len (ABI 17, Task 16b) as a code-locked BOC(1,1)
+    # signal, so it is correlated here with a BOC(1,1) replica (boc=True above).
     for s in ("G", "J", "S", "E"):
         if s in present:
             assert hits.get(s, 0) >= 1, (s, metrics)
@@ -66,6 +66,45 @@ def test_each_l1_system_acquires_in_one_correlated_capture(tmp_path, monkeypatch
     # rate and must clear the same threshold as the others.
     if "C" in present:
         assert hits.get("C", 0) >= 1, ("C", metrics)
+
+
+def test_galileo_e1_needs_boc_replica(tmp_path, monkeypatch):
+    """Galileo E1 is code-locked BOC(1,1). On a capture with non-zero code
+    Doppler, a BOC(1,1) replica must acquire well above the floor AND materially
+    above the plain-primary (no-BOC) correlation.
+
+    Measured (2026-09-01 12:00, lat 41 lon 29, 4 s @ 6 Msps, E PRN 3,
+    code_doppler_hz ~= 0.25):
+        boc=True  metric ~= 32.97 dB
+        boc=False metric ~= 24.21 dB
+        delta     ~=  8.76 dB  (>> the 3 dB gate)
+    """
+    import json
+
+    from backend import inspector
+    from tests.synth import _corr
+
+    outdir = _run(tmp_path, monkeypatch, ("E",))
+    meta = json.loads((outdir / "meta.json").read_text())
+    l1 = next(b for b in meta["bands"] if b["id"] == "L1")
+    iq = inspector.read_iq(outdir / l1["file"], "int16",
+                           max_samples=int(l1["fs"] * 0.020))
+    esvs = [s for s in meta["provenance"]["svs"] if s["sys"] == "E"]
+    assert esvs, "no Galileo SV in the capture"
+    assert any(abs(s.get("code_doppler_hz", 0.0)) > 1e-6 for s in esvs), \
+        "expected non-zero code Doppler for at least one Galileo SV"
+
+    checked = 0
+    for e in esvs:
+        common = dict(code_len=e["code_len"], chip_hz=e["chip_hz"])
+        with_boc = _corr.acquire(iq, l1["fs"], "E", e["prn"], boc=True, **common)
+        no_boc = _corr.acquire(iq, l1["fs"], "E", e["prn"], boc=False, **common)
+        if with_boc["metric_db"] < _METRIC_DB:
+            continue
+        checked += 1
+        assert with_boc["metric_db"] - no_boc["metric_db"] >= 3.0, (
+            e["prn"], with_boc["metric_db"], no_boc["metric_db"])
+    assert checked >= 1, "no Galileo SV cleared the acquisition threshold"
 
 
 def test_glonass_g1_acquires_in_the_g1_band(tmp_path, monkeypatch):
