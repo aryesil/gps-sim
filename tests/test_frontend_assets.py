@@ -115,6 +115,17 @@ def test_channel_models_panel_present_and_opt_in():
     assert '_renderModelSummary(d.channel_models)' in js
 
 
+def test_signal_engine_panel_present_and_opt_in():
+    js = (F / "channels.js").read_text()
+    assert 'class="engine-panel"' in js
+    assert '${id}-engine' in js
+    for sfx in ("fade-model", "fade-sigma", "fade-coh", "fade-seed", "fs", "quant"):
+        assert f'${{id}}-{sfx}' in js, sfx
+    # opt-in: default engine is gps-sdr-sim and an untouched panel adds nothing
+    assert "value=\"gps-sdr-sim\"" in js
+    assert 'if (_engineBody() === null) ' in js or 'const _eng = _engineBody();' in js
+
+
 def test_compare_is_visualised_not_dumped_as_text():
     """The SP3-vs-broadcast compare must render through compare.js
     (canvas charts), not by writing raw lines into a <div>."""

@@ -406,6 +406,17 @@ def _precise_nav_override(body: dict, start: dt.datetime):
 @app.post("/api/generate")
 def generate(body: dict):
     start = dt.datetime.fromisoformat(body["start_utc"])
+    # Reject bad engine/fading before any ephemeris resolution so the caller
+    # gets an explicit 422, never a silent coerce or an unrelated 503.
+    engine = body.get("engine", "gps-sdr-sim")
+    if engine not in ("gps-sdr-sim", "native"):
+        raise HTTPException(422, f"engine: unknown {engine!r}")
+    if body.get("fading") is not None:
+        from backend.synth.fading import FadingConfig
+        try:
+            FadingConfig.from_dict(body["fading"])
+        except ValueError as e:
+            raise HTTPException(422, f"fading: {e}")
     nav_override, precise_warnings = _precise_nav_override(body, start)
     # In precise mode the broadcast nav file is never read; only resolve
     # (and possibly download) one when it will actually be used.

@@ -120,6 +120,25 @@ window.addChannel = function () {
           <label><input type="checkbox" id="${id}-mdl-to-iq"> Also apply these models to the generated IQ</label>
           <div id="${id}-mdl-summary" class="hint"></div>
         </details>
+        <details class="engine-panel"><summary>Signal engine <span class="info" title="gps-sdr-sim is the default external generator (GPS L1 C/A only). native is the built-in C++ engine: same GPS L1 C/A output plus a seeded per-satellite fading model baked into the IQ. Leave on gps-sdr-sim for the unchanged workflow.">i</span></summary>
+          <label>Engine <select id="${id}-engine">
+            <option value="gps-sdr-sim">gps-sdr-sim (default)</option>
+            <option value="native">native (C++ engine, GPS L1 C/A + fading)</option>
+          </select></label>
+          <label>Sample rate Hz <input id="${id}-fs" type="number" step="100000" placeholder="auto from signals"></label>
+          <label>Quantization <select id="${id}-quant">
+            <option value="int16">int16</option>
+            <option value="int12">int12</option>
+            <option value="int8">int8</option>
+          </select></label>
+          <label>Fading model <select id="${id}-fade-model">
+            <option value="off">off</option>
+            <option value="lognormal">log-normal</option>
+          </select></label>
+          <label>sigma dB <input id="${id}-fade-sigma" type="number" step="0.5" value="3"></label>
+          <label>coherence s <input id="${id}-fade-coh" type="number" step="0.5" value="2"></label>
+          <label>seed <input id="${id}-fade-seed" type="number" step="1" value="1"></label>
+        </details>
         <div id="${id}-size-estimate" class="hint"></div>
         <div class="scenario-lib-row">
           <input id="${id}-scenario-name" placeholder="scenario name" size="14">
@@ -638,6 +657,29 @@ function wireChannelActions(id) {
     return out;
   }
 
+  // Fold the opt-in "Signal engine" panel into the /api/generate body.
+  // Every control sits at its default (engine gps-sdr-sim, quant int16,
+  // fading off, blank fs) -> returns null -> the request body is unchanged.
+  function _engineBody() {
+    const eng = document.getElementById(`${id}-engine`).value;
+    const fs = document.getElementById(`${id}-fs`).value;
+    const quant = document.getElementById(`${id}-quant`).value;
+    const fm = document.getElementById(`${id}-fade-model`).value;
+    const out = {};
+    if (eng && eng !== 'gps-sdr-sim') out.engine = eng;
+    if (fs) out.sample_rate = Number(fs);
+    if (quant && quant !== 'int16') out.sample_format = quant;
+    if (fm && fm !== 'off') {
+      out.fading = {
+        model: fm,
+        sigma_db: Number(document.getElementById(`${id}-fade-sigma`).value),
+        coherence_s: Number(document.getElementById(`${id}-fade-coh`).value),
+        seed: Number(document.getElementById(`${id}-fade-seed`).value),
+      };
+    }
+    return Object.keys(out).length ? out : null;
+  }
+
   function _renderModelSummary(cm) {
     const el = document.getElementById(`${id}-mdl-summary`);
     if (!cm || !cm.any_enabled) { el.textContent = ''; return; }
@@ -671,6 +713,8 @@ function wireChannelActions(id) {
     if (_imp) { body.impairments = _imp; body.random_seed = _imp.seed; }
     const _mdl = _channelModelsBody();
     if (_mdl) Object.assign(body, _mdl);
+    const _eng = _engineBody();
+    Object.assign(body, _eng || {});
     fetch('/api/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
