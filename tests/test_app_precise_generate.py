@@ -219,6 +219,35 @@ def test_generate_precise_multi_auto_rinex_still_resolves(with_sp3, monkeypatch)
     assert seen["req"].rinex_path == BRDC
 
 
+def test_generate_precise_multi_finishes_with_done_not_error(with_sp3, monkeypatch):
+    """Regression: the post-run inspect step must not feed the precise-multi
+    payload (a provider handle) into geometry.constellation -- that raised
+    "'PreciseEphemerisProvider' object has no attribute 'get'" and killed the
+    SSE stream before the 'done' event, so the UI never learned the outdir."""
+    from backend import config as cfg
+
+    def fake_run(req, progress_cb=None, binary=None):
+        if progress_cb:
+            progress_cb(1.0)
+        od = cfg.OUT_DIR / "test_precise_multi_out"
+        od.mkdir(parents=True, exist_ok=True)
+        (od / "gpssim.bin").write_bytes(b"\x00\x00\x00\x00")
+        (od / "meta.json").write_text("{}")
+        return od
+
+    monkeypatch.setattr(app_mod.signal_engine, "run", fake_run)
+    r = client.post("/api/generate", json={
+        "start_utc": START.isoformat(), "duration_s": 5,
+        "lat": 41.0, "lon": 29.0, "alt": 100.0,
+        "engine": "native", "systems": ["G", "R"],
+        "ephemeris_mode": "precise", "rinex_path": BRDC})
+    assert r.status_code == 200, r.text
+    assert '"error"' not in r.text, r.text
+    assert '"done"' in r.text
+    assert '"ephemeris_mode": "precise"' in r.text
+    assert '"inspect": null' in r.text
+
+
 def test_generate_broadcast_sets_no_override(with_sp3, monkeypatch):
     seen = {}
     monkeypatch.setattr(app_mod.generator, "run",

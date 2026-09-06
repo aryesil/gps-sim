@@ -674,6 +674,8 @@ def generate(body: dict):
         raise HTTPException(507, "estimated IQ size exceeds free disk space")
 
     def events():
+        precise_multi = (isinstance(req.nav_override, dict)
+                         and "precise_provider" in req.nav_override)
         try:
             q: list = []
             outdir = signal_engine.run(req, progress_cb=lambda f: q.append(f))
@@ -686,20 +688,27 @@ def generate(body: dict):
             # from the same aligned copy here or this comparison reports
             # huge, misleading errors whenever the real epoch was far from
             # the requested start.
-            if req.nav_override is not None:
-                # Precise mode: the IQ was generated from the SP3-fitted
-                # records, so build "expected" from those same records.
-                eph = req.nav_override
+            if precise_multi:
+                # The precise multi-GNSS payload is a provider handle, not a
+                # per-PRN broadcast dict -- it cannot feed geometry.constellation.
+                # The post-run L1 C/A correlation check is GPS-only anyway and
+                # not meaningful for a mixed-constellation stream, so skip it.
+                table = None
             else:
-                eph, _ = _resolve_eph(req.start.date(), req.rinex_path)
-                gps_start = req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
-                week, sow = ephemeris.gps_week_and_sow(gps_start)
-                eph = ephemeris.align_epochs(eph, week, sow)
-            rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
-            sats = geometry.constellation(eph, rx, _gps_tow(req.start))
-            iq = inspector.read_iq(outdir / "gpssim.bin", req.sample_format,
-                                   max_samples=int(req.sample_rate * 0.010))
-            table = inspector.compare(iq, req.sample_rate, sats)
+                if req.nav_override is not None:
+                    # GPS-only precise: the IQ was generated from the SP3-fitted
+                    # records, so build "expected" from those same records.
+                    eph = req.nav_override
+                else:
+                    eph, _ = _resolve_eph(req.start.date(), req.rinex_path)
+                    gps_start = req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
+                    week, sow = ephemeris.gps_week_and_sow(gps_start)
+                    eph = ephemeris.align_epochs(eph, week, sow)
+                rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
+                sats = geometry.constellation(eph, rx, _gps_tow(req.start))
+                iq = inspector.read_iq(outdir / "gpssim.bin", req.sample_format,
+                                       max_samples=int(req.sample_rate * 0.010))
+                table = inspector.compare(iq, req.sample_rate, sats)
         except Exception as e:
             # A mid-stream exception here (e.g. gps-sdr-sim exiting non-zero)
             # would otherwise just kill the SSE connection with no payload --
