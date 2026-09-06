@@ -7,7 +7,7 @@ import logging
 import math
 import pathlib
 
-from backend import config, ephemeris, geometry
+from backend import config, ephemeris, ephemeris_source, geometry
 from backend.synth import _lib, bands, signals
 from backend.synth.fading import FadingConfig
 
@@ -184,33 +184,104 @@ def run(req, progress_cb=None) -> pathlib.Path:
     week, sow = ephemeris.gps_week_and_sow(gps_start)
 
     nav_override = getattr(req, "nav_override", None)
-    if nav_override:
-        # Precise (SP3-fitted) broadcast records: GPS-only, keyed by bare int
-        # PRN. There is no precise fit for the other constellations, so a
-        # precise run stays GPS-only whatever `systems` asked for.
-        extra = [s for s in systems if s != "G"]
-        if extra:
-            warnings.append("precise ephemeris covers GPS only; ignored "
-                            f"systems {extra!r} for this run")
-        eph = dict(nav_override)
-        systems = ("G",)
-    else:
-        eph = ephemeris.parse_rinex_multi(req.rinex_path, systems,
-                                          require=("G",))
-        got = {(k[0] if isinstance(k, tuple) else "G") for k in eph}
-        dropped = [s for s in systems if s not in got]
-        if dropped:
-            warnings.append(f"RINEX has no records for systems {dropped!r}; "
-                            "generated the remaining systems")
-            systems = tuple(s for s in systems if s in got)
+    precise_multi = (isinstance(nav_override, dict)
+                     and "precise_provider" in nav_override)
+    ephemeris_mode = "precise" if precise_multi else "broadcast"
 
-    eph = ephemeris.align_epochs(eph, week, sow)
-    rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
-    entries = geometry.constellation_multi(eph, rx, sow, signals.signal_for,
-                                           mask_deg=5.0)
-    entries.sort(key=lambda e: (e["sys"], e["prn"]))
-    for e in entries:
-        e["prn"] = _native_prn(e["sys"], e["prn"])
+    if precise_multi:
+        # Precise (SP3) ephemeris for EVERY requested constellation. The payload
+        # carries the provider plus the scenario's own (week, sow); there are no
+        # broadcast Keplerian records here, so `constellation_multi` runs on
+        # per-key state-fn interpolants over bare `{"system": sysc}` stubs.
+        provider = nav_override["precise_provider"]
+        p_week = int(nav_override["week"])
+        p_sow = float(nav_override["sow"])
+        req_systems = tuple(nav_override.get("systems") or systems)
+        req_set = set(req_systems)
+        try:
+            sats = [tuple(k) for k in provider.satellites()]
+        except Exception:                       # pragma: no cover - defensive
+            sats = []
+        keys = [k for k in sats if k[0] in req_set]
+        covered = {k[0] for k in keys}
+        for s in req_systems:
+            if s not in covered:
+                warnings.append(f"precise ephemeris has no {s} satellites; "
+                                "system omitted from this run")
+        state_fns, skipped = ephemeris_source.build_precise_state_fns(
+            provider, keys, p_week)
+        for k in skipped:
+            warnings.append(f"precise ephemeris does not cover "
+                            f"{k[0]}{k[1]:02d}; satellite omitted")
+
+        # GLONASS is FDMA: the synth layer needs each slot's channel number,
+        # which the precise product does not carry -- recover it from the
+        # broadcast RINEX. A missing/unusable RINEX drops GLONASS with a
+        # warning rather than failing the run.
+        glo_k_by_key: dict = {}
+        r_keys = [k for k in state_fns if k[0] == "R"]
+        if r_keys:
+            r_eph: dict = {}
+            try:
+                r_eph = ephemeris.parse_rinex_multi(req.rinex_path, ("R",),
+                                                    require=())
+            except Exception as exc:            # noqa: BLE001 - degrade, warn
+                warnings.append("precise run: GLONASS needs broadcast FDMA "
+                                f"channel numbers but {req.rinex_path!r} is "
+                                f"unusable ({exc}); GLONASS omitted")
+            for k in r_keys:
+                rec = r_eph.get(k) or {}
+                gk = rec.get("glo_k")
+                if gk is None or (isinstance(gk, float) and math.isnan(gk)):
+                    warnings.append("precise run: no FDMA channel for GLONASS "
+                                    f"R{k[1]:02d}; satellite omitted")
+                    state_fns.pop(k, None)
+                else:
+                    glo_k_by_key[k] = int(gk)
+
+        stubs: dict = {}
+        for k in state_fns:
+            rec = {"system": k[0]}
+            if k[0] == "R":
+                rec["glo_k"] = glo_k_by_key[k]
+            stubs[k] = rec
+
+        rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
+        entries = geometry.constellation_multi(
+            stubs, rx, p_sow, signals.signal_for, mask_deg=5.0,
+            state_fn_by_key=state_fns)
+        entries.sort(key=lambda e: (e["sys"], e["prn"]))
+        for e in entries:
+            e["prn"] = _native_prn(e["sys"], e["prn"])
+        systems = tuple(sorted({e["sys"] for e in entries}))
+    else:
+        if nav_override:
+            # Precise (SP3-fitted) broadcast records: GPS-only, keyed by bare int
+            # PRN. There is no precise fit for the other constellations, so a
+            # precise run stays GPS-only whatever `systems` asked for.
+            extra = [s for s in systems if s != "G"]
+            if extra:
+                warnings.append("precise ephemeris covers GPS only; ignored "
+                                f"systems {extra!r} for this run")
+            eph = dict(nav_override)
+            systems = ("G",)
+        else:
+            eph = ephemeris.parse_rinex_multi(req.rinex_path, systems,
+                                              require=("G",))
+            got = {(k[0] if isinstance(k, tuple) else "G") for k in eph}
+            dropped = [s for s in systems if s not in got]
+            if dropped:
+                warnings.append(f"RINEX has no records for systems {dropped!r}; "
+                                "generated the remaining systems")
+                systems = tuple(s for s in systems if s in got)
+
+        eph = ephemeris.align_epochs(eph, week, sow)
+        rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
+        entries = geometry.constellation_multi(eph, rx, sow, signals.signal_for,
+                                               mask_deg=5.0)
+        entries.sort(key=lambda e: (e["sys"], e["prn"]))
+        for e in entries:
+            e["prn"] = _native_prn(e["sys"], e["prn"])
 
     cfg = FadingConfig.from_dict(getattr(req, "fading", None))
     fading_model_int = 1 if cfg.model == "lognormal" else 0
@@ -284,10 +355,11 @@ def run(req, progress_cb=None) -> pathlib.Path:
         "config": {
             "lat": req.lat, "lon": req.lon, "alt": req.alt,
             "start_utc": req.start.isoformat(), "duration_s": req.duration_s,
-            "rinex_path": req.rinex_path, "ephemeris_mode": "broadcast",
+            "rinex_path": req.rinex_path, "ephemeris_mode": ephemeris_mode,
         },
         "provenance": {
             "engine": "native",
+            "ephemeris": ephemeris_mode,
             "prns": [e["prn"] for e in entries if e["sys"] == "G"],
             "phase1_approx": "observables at run start epoch, Doppler held constant over the run",
             "fading": cfg.model,

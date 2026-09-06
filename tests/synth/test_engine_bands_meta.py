@@ -98,3 +98,70 @@ def test_glonass_adds_a_second_band_file(tmp_path, monkeypatch):
     # meta.json still keeps the Phase-1 L1 top-level keys
     assert meta["output"] == "gpssim.bin"
     assert any(s["sys"] == "R" for s in meta["provenance"]["svs"])
+
+
+# --- part 3: native engine precise ephemeris for every constellation -------
+
+def _mgex_multi_epoch_sp3(rx_ecef, n_epochs=13, interval_s=900.0):
+    """A synthetic MGEX SP3 (same P-record shape as tests.test_precise's
+    ``_build_sp3_mgex``) carrying G/E/C/J satellites parked a few degrees off
+    the receiver zenith so they clear the 5 deg mask. Positions are constant
+    across ``n_epochs`` epochs, which gives a fully centred Lagrange window at
+    the middle epoch and a zero velocity (Doppler) -- all this test needs.
+    No ``R`` record: GLONASS needs broadcast FDMA channel numbers, exercised
+    separately."""
+    u = np.asarray(rx_ecef, float)
+    u = u / np.linalg.norm(u)
+    east = np.cross([0.0, 0.0, 1.0], u)
+    east = east / np.linalg.norm(east)
+    north = np.cross(u, east)
+    sats = {
+        ("G", 1): u * 2.65e7,
+        ("E", 11): u * 2.70e7 + east * 1.0e6,
+        ("C", 6): u * 2.62e7 + north * 1.2e6,
+        ("J", 2): u * 2.68e7 - east * 0.8e6,
+    }
+    lines = [
+        "#dP2026  9  1  0  0  0.00000000      96 ORBIT IGb14 HLM  GFZ",
+        "## 2434 259200.00000000   900.00000000 60849 0.0000000000000",
+    ]
+    for i in range(n_epochs):
+        secs = i * interval_s
+        mm = int(secs // 60) % 60
+        hh = int(secs // 3600)
+        lines.append(f"*  2026  9  1 {hh:2d} {mm:2d}  0.00000000")
+        for (sysc, prn), xyz in sats.items():
+            x, y, z = (c / 1e3 for c in xyz)      # SP3 positions are km
+            lines.append(f"P{sysc}{prn:02d}{x:14.6f}{y:14.6f}{z:14.6f}"
+                         f"{0.0:14.6f}")
+    lines.append("EOF")
+    return "\n".join(lines) + "\n"
+
+
+def test_precise_multi_covers_every_requested_constellation(tmp_path, monkeypatch):
+    from backend import geometry, precise
+    from backend.gpstime import GPSTime
+    monkeypatch.setattr(config, "OUT_DIR", tmp_path)
+
+    lat, lon, alt = 41.0, 29.0, 100.0
+    rx = geometry.llh_to_ecef(lat, lon, alt)
+    provider = precise.PreciseEphemerisProvider()
+    provider.load_text(_mgex_multi_epoch_sp3(rx), source="mgex-multi")
+    lo, hi = provider.product.coverage_seconds
+    mid = GPSTime.from_seconds((lo + hi) / 2.0)
+
+    payload = {"precise_provider": provider, "week": mid.week,
+               "sow": mid.sow, "systems": ("G", "E", "C")}
+    req = ScenarioRequest(rinex_path="AUTO", lat=lat, lon=lon, alt=alt,
+                          start=dt.datetime(2026, 9, 1, 1, 30, 0), duration_s=2,
+                          sample_rate=6_000_000.0, sample_format="int16",
+                          engine="native", systems=["G", "E", "C"],
+                          nav_override=payload)
+    outdir = engine.run(req)                        # must not touch "AUTO"
+    meta = json.loads((outdir / "meta.json").read_text())
+
+    assert meta["provenance"]["ephemeris"] == "precise"
+    assert set(meta["provenance"]["systems"]) == {"G", "E", "C"}
+    l1 = next(b for b in meta["bands"] if b["id"] == "L1")
+    assert set(l1["systems"]) == {"G", "E", "C"}
+    assert {s["sys"] for s in meta["provenance"]["svs"]} == {"G", "E", "C"}
