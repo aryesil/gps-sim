@@ -3,8 +3,8 @@ import math
 
 import pytest
 
-from backend import atmosphere
-from backend.atmosphere import (AtmosphereConfig, delays_for_los,
+from backend.models import atmosphere
+from backend.models.atmosphere import (AtmosphereConfig, delays_for_los,
                                 klobuchar_delay_m, saastamoinen_delay_m)
 
 ALPHA = atmosphere.DEFAULT_KLOBUCHAR_ALPHA

@@ -2,7 +2,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import scenario_lib
+from backend.store import scenario_lib
 from backend.app import app
 
 client = TestClient(app)

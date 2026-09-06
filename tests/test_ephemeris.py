@@ -5,7 +5,7 @@ import pathlib
 
 import pytest
 
-from backend import ephemeris
+from backend.ephem import ephemeris
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
 

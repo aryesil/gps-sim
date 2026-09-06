@@ -12,7 +12,7 @@ generator and the validator need, through a single conversion path:
 
 The point is that both sides of a validation agree on *inputs*. They
 must still disagree on *implementation*: the validator cross-checks
-geometry with ``backend.reference`` (an independent IS-GPS-200
+geometry with ``backend.analysis.reference`` (an independent IS-GPS-200
 propagator), never by calling the same code the generator used.
 """
 from __future__ import annotations

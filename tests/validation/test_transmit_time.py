@@ -13,7 +13,9 @@ import pathlib
 import numpy as np
 import pytest
 
-from backend import config, ephemeris, geometry, reference
+from backend import config, geometry
+from backend.ephem import ephemeris
+from backend.analysis import reference
 
 FIX = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "brdc_sample.rnx"
 TOE = 475200.0

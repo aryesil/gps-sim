@@ -1,7 +1,7 @@
 """Cross-check the production Kepler propagator against an independent one.
 
 ``backend.geometry.sat_state`` feeds the generator, the preview, and the
-receiver. ``backend.reference.sat_state`` is a second implementation that
+receiver. ``backend.analysis.reference.sat_state`` is a second implementation that
 imports none of geometry's helpers (different anomaly solver, analytic
 velocity, rotation-matrix ECEF). Agreement between them is evidence that a
 bug in one would be caught, not mirrored.
@@ -15,7 +15,9 @@ import pathlib
 import numpy as np
 import pytest
 
-from backend import ephemeris, geometry, reference
+from backend.ephem import ephemeris
+from backend import geometry
+from backend.analysis import reference
 
 FIX = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "brdc_sample.rnx"
 TOE = 475200.0

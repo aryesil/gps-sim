@@ -233,7 +233,7 @@ def test_preview_precise_gps_only_product_warns(monkeypatch):
     # When only a GPS-only SP3 product is available (no multi-GNSS),
     # _ensure_precise_loaded should emit a warning about non-GPS fallback.
     from backend import app as appmod
-    from backend import precise
+    from backend.ephem import precise
 
     # Create a minimal GPS-only SP3Product
     def _fake_parse_sp3(path):

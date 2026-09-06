@@ -75,7 +75,8 @@ def test_qzss_range_is_geostationary_order(tmp_path, monkeypatch):
 
     import numpy as np
 
-    from backend import ephemeris, geometry
+    from backend.ephem import ephemeris
+    from backend import geometry
     from backend import inspector
     from tests.synth import _corr
 
@@ -277,7 +278,8 @@ def test_precise_capture_all_systems_acquire(tmp_path, monkeypatch):
     is covered on the broadcast path by the tests above."""
     import json
 
-    from backend import geometry, inspector, precise
+    from backend import geometry, inspector
+    from backend.ephem import precise
     from backend.gpstime import GPSTime
     from tests.synth import _corr
 

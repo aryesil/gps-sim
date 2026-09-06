@@ -9,7 +9,8 @@ import pathlib
 import numpy as np
 import pytest
 
-from backend import ephemeris, geometry, gpstime
+from backend.ephem import ephemeris
+from backend import geometry, gpstime
 
 FIX = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "brdc_sample.rnx"
 RX = geometry.llh_to_ecef(41.0082, 28.9784, 100.0)

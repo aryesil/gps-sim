@@ -11,7 +11,7 @@ Three distinct quantities must not be confused:
 * satellite clock error   -- from the broadcast af0/af1/af2 (+ the
   relativistic term); lives in ``geometry.sat_state``/``reference``.
 * propagation delay        -- geometric range / c, plus the optional
-  atmospheric delay in ``backend.atmosphere``.
+  atmospheric delay in ``backend.models.atmosphere``.
 * receiver clock offset    -- THIS module. It shifts the receiver's idea
   of "now", so it adds a common range-equivalent term ``c * offset`` to
   every simultaneously-observed pseudorange and advances the sampling

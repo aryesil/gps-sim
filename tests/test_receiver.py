@@ -1,7 +1,8 @@
 # tests/test_receiver.py
 import numpy as np
 
-from backend import receiver, geometry
+from backend.analysis import receiver
+from backend import geometry
 
 
 def test_solve_position_recovers_known_point():

@@ -16,7 +16,7 @@ _spec = importlib.util.spec_from_file_location(
 vs = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(vs)
 
-from backend import scenario  # noqa: E402
+from backend import scenario
 
 
 def _req(**kw):

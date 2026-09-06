@@ -4,7 +4,8 @@ import time
 import numpy as np
 import pytest
 
-from backend import transmit, config
+from backend.rf import transmit
+from backend import config
 
 
 def _iq_file(tmp_path, samples=52000, fmt="int16"):

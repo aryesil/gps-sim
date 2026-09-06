@@ -7,7 +7,7 @@ import hashlib
 import numpy as np
 import pytest
 
-from backend import impairments
+from backend.models import impairments
 
 FS = 2.6e6
 

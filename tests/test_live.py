@@ -4,7 +4,8 @@ import time
 import numpy as np
 import pytest
 
-from backend import live, scenario
+from backend.session import live
+from backend import scenario
 
 
 def _base_req():

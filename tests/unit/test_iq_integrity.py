@@ -2,7 +2,8 @@
 import numpy as np
 import pytest
 
-from backend import impairments, iq_integrity
+from backend.models import impairments
+from backend.analysis import iq_integrity
 
 
 def test_clean_synth_iq_passes(synth_iq):

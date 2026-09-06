@@ -181,14 +181,14 @@ def observables(eph, rx_ecef, t_rx: float, rx_vel=(0.0, 0.0, 0.0),
     Doppler, pseudorange, code phase -- is identical for both.
 
     ``atmo_delay_fn``, when given, is ``f(az_rad, el_rad) -> extra one-way
-    path delay in metres`` (see ``backend.atmosphere``). It is added to the
+    path delay in metres`` (see ``backend.models.atmosphere``). It is added to the
     pseudorange and code phase exactly once; ``geo_range_m`` and the
     Doppler stay geometric. Legacy callers pass nothing and are unaffected.
 
     ``rx_clock_range_m`` is a common receiver-clock range bias (metres,
-    same for every satellite at one epoch; see ``backend.receiver_clock``);
+    same for every satellite at one epoch; see ``backend.models.receiver_clock``);
     ``mp_code_bias_m`` is the multipath code-tracking bias for this line of
-    sight (see ``backend.multipath``). Both default to 0 -- no effect.
+    sight (see ``backend.models.multipath``). Both default to 0 -- no effect.
     """
     carrier_hz = config.L1_HZ if signal is None else signal.carrier_hz
     chip_hz = config.CA_CHIP_HZ if signal is None else signal.chip_rate_hz

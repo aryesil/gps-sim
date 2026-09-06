@@ -4,7 +4,8 @@ import pathlib
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import config, recording
+from backend import config
+from backend.obs import recording
 from backend.app import app
 
 client = TestClient(app)

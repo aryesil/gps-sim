@@ -4,7 +4,8 @@ import math
 import numpy as np
 import pytest
 
-from backend import config, geometry, wls
+from backend import config, geometry
+from backend.models import wls
 
 FIX = __import__("pathlib").Path(__file__).resolve().parent.parent / "fixtures" / "brdc_sample.rnx"
 TOE = 475200.0
@@ -12,7 +13,7 @@ TOE = 475200.0
 
 @pytest.fixture(scope="module")
 def scene():
-    from backend import ephemeris
+    from backend.ephem import ephemeris
     eph = ephemeris.parse_rinex(FIX)
     rx = np.array(geometry.llh_to_ecef(41.0, 29.0, 100.0))
     sat_pos, pr, wt, el = {}, {}, {}, {}

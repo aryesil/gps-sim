@@ -7,7 +7,9 @@ import pathlib
 import numpy as np
 import pytest
 
-from backend import ephemeris, geometry, gpstime, reference, scenario, truth
+from backend.ephem import ephemeris
+from backend import geometry, gpstime, scenario
+from backend.analysis import reference, truth
 
 FIX = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "brdc_sample.rnx"
 

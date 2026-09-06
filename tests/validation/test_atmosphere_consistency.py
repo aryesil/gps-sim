@@ -7,7 +7,9 @@ import pathlib
 import numpy as np
 import pytest
 
-from backend import atmosphere, ephemeris, geometry
+from backend.models import atmosphere
+from backend.ephem import ephemeris
+from backend import geometry
 
 FIX = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "brdc_sample.rnx"
 TOE = 475200.0

@@ -7,10 +7,11 @@ import pathlib
 import re
 import subprocess
 
-from backend import (channel_models, config, ephemeris, gpstime,
-                     impairments as imp, inspector, iq_integrity,
-                     multipath as mp_mod, provenance as prov, receiver_clock as rc_mod,
-                     scenario)
+from backend.models import channel_models, impairments as imp, multipath as mp_mod, receiver_clock as rc_mod
+from backend import config, gpstime, inspector, scenario
+from backend.ephem import ephemeris
+from backend.analysis import iq_integrity
+from backend.obs import provenance as prov
 
 _INTEGRITY_MAX_SAMPLES = 2_000_000
 

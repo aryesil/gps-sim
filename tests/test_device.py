@@ -4,7 +4,8 @@ import types
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import config, device
+from backend import config
+from backend.rf import device
 from backend.app import app
 
 client = TestClient(app)

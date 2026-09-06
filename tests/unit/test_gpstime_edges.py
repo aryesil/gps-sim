@@ -2,7 +2,7 @@
 
 The production code carries GPS time two ways: ``backend.gpstime.GPSTime``
 (week + seconds-of-week, real leap table) on the precise path, and the loose
-``backend.ephemeris.gps_week_and_sow`` float helper on the broadcast path.
+``backend.ephem.ephemeris.gps_week_and_sow`` float helper on the broadcast path.
 These tests pin the boundary behaviour of the first and prove the two agree
 on the same physical epoch, so a scenario epoch cannot silently become two
 different GPS epochs in two different modules.
@@ -11,7 +11,7 @@ import datetime as dt
 
 import pytest
 
-from backend import ephemeris
+from backend.ephem import ephemeris
 from backend.gpstime import (GPS_EPOCH, WEEK_SECONDS, GPSTime, gps_to_utc,
                              gps_utc_offset, utc_to_gps)
 

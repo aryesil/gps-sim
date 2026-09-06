@@ -2,7 +2,8 @@ import pathlib
 
 import numpy as np
 
-from backend import ephemeris, geometry
+from backend.ephem import ephemeris
+from backend import geometry
 from backend.synth import _lib, engine
 
 _RINEX = pathlib.Path(__file__).parent.parent / "fixtures" / "brdc_sample.rnx"

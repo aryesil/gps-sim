@@ -1,6 +1,6 @@
 """Glue between the optional physical-channel / receiver models
-(``backend.atmosphere``, ``backend.receiver_clock``, ``backend.multipath``)
-and the code that consumes them (``/api/preview``, ``backend.truth`` and,
+(``backend.models.atmosphere``, ``backend.models.receiver_clock``, ``backend.models.multipath``)
+and the code that consumes them (``/api/preview``, ``backend.analysis.truth`` and,
 for the opt-in IQ post-processing, ``backend.generator``).
 
 The three model modules are deliberately standalone and RNG-free. This
@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from backend import atmosphere, multipath, receiver_clock
+from backend.models import atmosphere, multipath, receiver_clock
 
 
 @dataclass

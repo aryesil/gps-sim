@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 
-from backend import impairments
-from backend.impairments import ImpairmentConfig, apply
+from backend.models import impairments
+from backend.models.impairments import ImpairmentConfig, apply
 
 FS = 2.6e6
 

@@ -7,7 +7,8 @@ import logging
 import math
 import pathlib
 
-from backend import config, ephemeris, ephemeris_source, geometry
+from backend import config, geometry
+from backend.ephem import ephemeris, ephemeris_source
 from backend.synth import _lib, bands, signals
 from backend.synth.fading import FadingConfig
 

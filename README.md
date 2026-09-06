@@ -178,46 +178,45 @@ broadcast-vs-precise delta so the realignment error stays visible.
 backend/
   app.py            FastAPI app: all HTTP + WS endpoints, SSE streams, TX slots
   config.py         env-var config, constants, data/out/log/precise dir creation
-  ephemeris.py      RINEX download, parse, epoch realignment, RINEX-2 writer
   scenario.py       ScenarioRequest, gps-sdr-sim argv builder
   generator.py      runs gps-sdr-sim (full run + short live segments)
+  geometry.py       WGS84 / ECEF / ENU, constellation geometry, transmit-time solve
+  gpstime.py        GPSTime dataclass, leap-second table, UTC<->GPS
   signals.py        per-system L1 signal params (carrier, chip rate, code len, BOC, secondary code, GLONASS FDMA offsets)
+  inspector.py      IQ read, spectrum, C/A acquisition, correlation, compare (GPS L1 C/A; the self-validation reference)
+  auth.py           API-key role checks
+  ephem/            ephemeris.py (RINEX download/parse/realign/RINEX-2 writer),
+                    ephemeris_source.py (broadcast|precise selector, state fns),
+                    ephemeris_fit.py (SP3 track -> broadcast record set),
+                    eph_select.py, precise.py (SP3-c/d parser + multi-GNSS interp)
   synth/            native C++ engine: Python orchestration + ctypes ABI
     engine.py       multi-constellation run: geometry -> per-SV specs -> band planning -> meta.json
     bands.py        splits visible SVs into RF bands (L1 group 1575.42 MHz, GLONASS G1 1602 MHz)
+    signal_engine.py  thin run() seam used by the API
     _lib.py         ctypes bindings for backend/synth/native/libgnsssynth.dylib
     fading.py       FadingConfig (model / sigma_db / coherence_s / seed)
-    sbas.py glonass state helpers
+    sbas.py glonass.py fs_policy.py   state helpers, FDMA, sample-rate policy
     native/         C++20: code generation, NCOs, mixing, quantisation, block streaming, seeded fading
-  geometry.py       WGS84 / ECEF / ENU, constellation geometry, transmit-time solve
-  gpstime.py        GPSTime dataclass, leap-second table, UTC<->GPS
-  precise.py        SP3-c/d parser, Neville position/velocity interp, clock interp
-  ephemeris_source.py  broadcast|precise mode selection, per-PRN state functions
-  ephemeris_fit.py  least-squares fit of SP3 track -> broadcast record set (precise generation)
-  inspector.py      IQ read, spectrum, C/A acquisition, correlation, compare
-  receiver.py       least-squares position solve from generated IQ
-  lnav_display.py   LNAV subframe reconstruction + human-readable explain
-  live.py           LiveSession: segment regeneration, jog, time-shift
-  transmit.py       pyadi-iio streaming, underflow tracking, cancel
-  device.py         standby SDR control link (no RF)
-  audit.py          append-only JSONL audit trail
-  ws_hub.py         thread-safe WebSocket broadcast of audit events
-  auth.py           API-key role checks
-  receiver_feed.py  UDP/serial NMEA listener, latest-fix state
-  nmea.py           pure NMEA 0183 GGA/RMC parser
-  trajectory.py     named waypoint-route storage
-  scenario_lib.py   named scenario-preset storage (field allowlist)
-  recording.py      SSE-payload recording + replay
+  models/           atmosphere.py, receiver_clock.py, multipath.py,
+                    channel_models.py (glue), impairments.py, error_budget.py, wls.py
+  analysis/         receiver.py (LS fix), reference.py + truth.py (independent
+                    cross-check refs), iq_integrity.py, lnav_display.py
+  rf/               transmit.py (pyadi-iio streaming, underflow, cancel), device.py (standby control link)
+  obs/              audit.py, ws_hub.py, receiver_feed.py, nmea.py, recording.py, provenance.py
+  store/            trajectory.py, trajectory_sim.py, scenario_lib.py  (named-preset storage)
+  session/          live.py  (LiveSession: segment regeneration, jog, time-shift)
 
-frontend/           vanilla JS, no build step; served static by FastAPI
+frontend/           vanilla JS, no build step; served static by FastAPI at /static
   index.html        three pages: Channels, Trajectory Builder, Log
-  channels.js       channel cards: config, start/stop, timeline, scrubber,
+  css/style.css
+  js/
+    channels.js     channel cards: config, start/stop, timeline, scrubber,
                     scenario save/load, replay, advanced config sub-tabs
                     (SP3 / RF impairments / Propagation / Signal engine)
-  map.js trajectory.js live.js pages.js app.js
-  plots.js skyplot.js iqplot.js   spectrogram, sky plot, IQ / spectrum plots,
+    map.js trajectory.js live.js pages.js app.js
+    plots.js skyplot.js iqplot.js   spectrogram, sky plot, IQ / spectrum plots,
                     per-SV power bars, HiDPI canvas helper, JS fading-model port
-  log.js            audit-log merge, /ws/events client, receiver-feed panel
+    log.js          audit-log merge, /ws/events client, receiver-feed panel
 ```
 
 **Transport:** long-running generate / transmit / replay stream Server-Sent
@@ -498,12 +497,12 @@ network downloads.
 A set of software-only checks that do not need hardware or the real
 `gps-sdr-sim` binary:
 
-- **Independent geometry reference** (`backend/reference.py`) — a
+- **Independent geometry reference** (`backend/analysis/reference.py`) — a
   from-scratch IS-GPS-200 broadcast propagator (different anomaly solver,
   analytic velocity, rotation-matrix ECEF, own Sagnac loop) and a
   least-squares-polynomial SP3 interpolator. The validation tests compare
   the production path against this, never against itself.
-- **Canonical truth model** (`backend/truth.py`) — one conversion path
+- **Canonical truth model** (`backend/analysis/truth.py`) — one conversion path
   from (lat/lon/alt, UTC start, duration) to ECEF, GPS week/sow, and
   truth observables, shared by the generator and the validator.
 - **`scripts/validate_scenario.py`** — chains ephemeris → geometry vs
@@ -558,13 +557,13 @@ separate opt-in — see *Channel models in the IQ* below.
 
 | Module | Model | Notes / assumptions |
 |---|---|---|
-| `backend/atmosphere.py` | Klobuchar iono (L1), Saastamoinen tropo | Broadcast-grade. Saastamoinen uses a `1/sin(el)` mapping, good to a few cm above ~15° — not Niell/VMF1. |
-| `backend/receiver_clock.py` | Receiver clock offset: bias + drift + drift-rate polynomial, optional sawtooth | Distinct from satellite clock and propagation delay; adds a common `c·offset` to simultaneous pseudoranges and a common `−f_L1·drift` carrier offset. No RNG. |
-| `backend/multipath.py` | Specular: direct + N reflections (delay, amplitude<1, phase, Doppler) | `channel_taps()` for convolving clean IQ; `tracking_bias()` is a closed-form narrow-correlator DLL/Costas approximation, **not** a substitute for filtering the IQ. |
-| `backend/channel_models.py` | Glue: parses the three request dicts, applies them to the preview/truth observables, produces the UI summary | The three model modules stay standalone; this is the only place that binds them to a request. |
-| `backend/impairments.py` | RF impairment layer over complex IQ: CFO, sample-clock ppm, phase noise, I/Q imbalance, DC offset, AWGN (SNR or noise power), clipping, requantisation | All randomness from one seeded `default_rng`; `(config, seed, input) → output` is bit-for-bit reproducible. Wired into `generator.run` via `ScenarioRequest.impairments` (default `None`); the clean file is kept as `gpssim.clean.bin`. Reachable from the browser UI via the per-channel *RF impairments (advanced)* panel (collapsed and opt-in; an untouched panel leaves the `/api/generate` body unchanged). The panel has a **Preset** selector — *Bench cable test*, *Field test — typical*, *Field test — degraded/urban* — that fills every field with representative SDR-replay values and ticks the enable box; hand-editing any field reverts it to *Custom*. Presets are frontend-only starting points, not a calibrated device model. |
-| `backend/wls.py` | Elevation-weighted least-squares fix + GDOP/PDOP/HDOP/VDOP/TDOP + formal covariance | Standalone; the legacy unweighted `receiver.solve_position` is unchanged. |
-| `backend/error_budget.py` | Per-PRN 1-σ range error budget, RSS to a UERE | Nominal figures are **documentation-grade, not a calibration** of this simulator. |
+| `backend/models/atmosphere.py` | Klobuchar iono (L1), Saastamoinen tropo | Broadcast-grade. Saastamoinen uses a `1/sin(el)` mapping, good to a few cm above ~15° — not Niell/VMF1. |
+| `backend/models/receiver_clock.py` | Receiver clock offset: bias + drift + drift-rate polynomial, optional sawtooth | Distinct from satellite clock and propagation delay; adds a common `c·offset` to simultaneous pseudoranges and a common `−f_L1·drift` carrier offset. No RNG. |
+| `backend/models/multipath.py` | Specular: direct + N reflections (delay, amplitude<1, phase, Doppler) | `channel_taps()` for convolving clean IQ; `tracking_bias()` is a closed-form narrow-correlator DLL/Costas approximation, **not** a substitute for filtering the IQ. |
+| `backend/models/channel_models.py` | Glue: parses the three request dicts, applies them to the preview/truth observables, produces the UI summary | The three model modules stay standalone; this is the only place that binds them to a request. |
+| `backend/models/impairments.py` | RF impairment layer over complex IQ: CFO, sample-clock ppm, phase noise, I/Q imbalance, DC offset, AWGN (SNR or noise power), clipping, requantisation | All randomness from one seeded `default_rng`; `(config, seed, input) → output` is bit-for-bit reproducible. Wired into `generator.run` via `ScenarioRequest.impairments` (default `None`); the clean file is kept as `gpssim.clean.bin`. Reachable from the browser UI via the per-channel *RF impairments (advanced)* panel (collapsed and opt-in; an untouched panel leaves the `/api/generate` body unchanged). The panel has a **Preset** selector — *Bench cable test*, *Field test — typical*, *Field test — degraded/urban* — that fills every field with representative SDR-replay values and ticks the enable box; hand-editing any field reverts it to *Custom*. Presets are frontend-only starting points, not a calibrated device model. |
+| `backend/models/wls.py` | Elevation-weighted least-squares fix + GDOP/PDOP/HDOP/VDOP/TDOP + formal covariance | Standalone; the legacy unweighted `receiver.solve_position` is unchanged. |
+| `backend/models/error_budget.py` | Per-PRN 1-σ range error budget, RSS to a UERE | Nominal figures are **documentation-grade, not a calibration** of this simulator. |
 
 All four sub-models are reachable from the browser: the per-channel
 **Propagation & receiver models (advanced)** panel (collapsed, opt-in)

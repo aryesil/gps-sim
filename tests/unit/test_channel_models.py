@@ -3,7 +3,9 @@ import pathlib
 
 import pytest
 
-from backend import channel_models, ephemeris, geometry
+from backend.models import channel_models
+from backend.ephem import ephemeris
+from backend import geometry
 
 _FIX = pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_sample.rnx"
 

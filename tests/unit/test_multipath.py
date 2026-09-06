@@ -3,8 +3,8 @@ import math
 
 import pytest
 
-from backend import multipath
-from backend.multipath import MultipathConfig, Reflection, channel_taps, tracking_bias
+from backend.models import multipath
+from backend.models.multipath import MultipathConfig, Reflection, channel_taps, tracking_bias
 
 _C = 299792458.0
 _CHIP_M = _C / 1_023_000.0

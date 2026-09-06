@@ -3,8 +3,8 @@ import math
 
 import pytest
 
-from backend import receiver_clock
-from backend.receiver_clock import ReceiverClockConfig, offset_s, state
+from backend.models import receiver_clock
+from backend.models.receiver_clock import ReceiverClockConfig, offset_s, state
 
 _C = 299792458.0
 _L1 = 1_575_420_000.0

@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Callable, Literal
 
 from backend.gpstime import GPSTime
-from backend import precise as _precise
+from backend.ephem import precise as _precise
 
 EphemerisMode = Literal["broadcast", "precise"]
 VALID_MODES: tuple[str, ...] = ("broadcast", "precise")

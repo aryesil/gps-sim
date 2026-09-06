@@ -23,7 +23,8 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from backend import ephemeris, geometry  # noqa: E402
+from backend.ephem import ephemeris
+from backend import geometry
 
 GPS_EPOCH = dt.datetime(1980, 1, 6)
 INTERVAL_S = 900.0

@@ -5,7 +5,9 @@ import pathlib
 import numpy as np
 import pytest
 
-from backend import config, ephemeris, geometry, scenario, generator, inspector, receiver
+from backend import config, geometry, scenario, generator, inspector
+from backend.ephem import ephemeris
+from backend.analysis import receiver
 
 pytestmark = [
     pytest.mark.skipif(

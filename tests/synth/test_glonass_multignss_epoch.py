@@ -5,7 +5,8 @@ PZ-90 integrator propagates on ``t_gps - toe_ref``, so a GLONASS SV evaluated by
 import datetime as dt
 import pathlib
 
-from backend import config, ephemeris, geometry
+from backend import config, geometry
+from backend.ephem import ephemeris
 from backend.synth import signals
 
 _MIXED = str(pathlib.Path(__file__).parent.parent / "fixtures" / "brdc_mixed.rnx")

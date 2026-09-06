@@ -3,10 +3,10 @@ import pathlib
 
 import pytest
 
-from backend import ephemeris
+from backend.ephem import ephemeris
 from backend.gpstime import GPSTime
-from backend.precise import PreciseEphemerisProvider
-from backend.ephemeris_source import (
+from backend.ephem.precise import PreciseEphemerisProvider
+from backend.ephem.ephemeris_source import (
     build_state_fns, normalise_mode, EphemerisModeError,
 )
 
@@ -92,7 +92,7 @@ def test_build_precise_state_fns_probes_span_and_skips_out_of_span(provider):
     # S7: build_precise_state_fns probes each closure once at `sow`, so a
     # satellite whose epoch is outside its SP3 row span lands in `skipped`
     # rather than raising later inside geometry.observables and aborting the run.
-    from backend.ephemeris_source import build_precise_state_fns
+    from backend.ephem.ephemeris_source import build_precise_state_fns
     keys = [("G", 1), ("G", 2), ("G", 3)]
 
     good, skipped = build_precise_state_fns(provider, keys, WEEK, TOE)

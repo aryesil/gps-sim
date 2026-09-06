@@ -6,7 +6,8 @@ import pathlib
 import numpy as np
 import pytest
 
-from backend import ephemeris, trajectory_sim as T
+from backend.ephem import ephemeris
+from backend.store import trajectory_sim as T
 
 FIX = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "brdc_sample.rnx"
 ORIGIN = (41.0082, 28.9784, 120.0)

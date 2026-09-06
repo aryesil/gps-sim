@@ -3,7 +3,7 @@ import pathlib
 
 import pytest
 
-from backend import ephemeris
+from backend.ephem import ephemeris
 
 _MIXED = str(pathlib.Path(__file__).parent.parent / "fixtures" / "brdc_mixed.rnx")
 _GPS2 = str(pathlib.Path(__file__).parent.parent / "fixtures" / "brdc_full.rnx")

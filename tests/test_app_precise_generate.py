@@ -46,7 +46,7 @@ def test_broadcast_mode_returns_no_override(no_sp3):
 
 
 def test_precise_without_product_raises(no_sp3):
-    from backend.ephemeris_source import EphemerisModeError
+    from backend.ephem.ephemeris_source import EphemerisModeError
     with pytest.raises(EphemerisModeError):
         app_mod._precise_nav_override({"ephemeris_mode": "precise"}, START)
 

@@ -16,11 +16,14 @@ from fastapi import FastAPI, HTTPException, Request, UploadFile, WebSocket, WebS
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend import (config, ephemeris, geometry, scenario, generator,
-                     inspector, receiver, lnav_display, transmit, live, trajectory, audit,
-                     scenario_lib, recording, receiver_feed, auth, ws_hub, device,
-                     precise, ephemeris_source, ephemeris_fit, impairments,
-                     channel_models)
+from backend import config, geometry, scenario, generator, inspector, auth
+from backend.ephem import ephemeris, precise, ephemeris_source, ephemeris_fit
+from backend.analysis import receiver, lnav_display
+from backend.rf import transmit, device
+from backend.session import live
+from backend.store import trajectory, scenario_lib
+from backend.obs import audit, recording, receiver_feed, ws_hub
+from backend.models import impairments, channel_models
 from backend.gpstime import GPSTime
 from backend.synth import signal_engine, signals
 

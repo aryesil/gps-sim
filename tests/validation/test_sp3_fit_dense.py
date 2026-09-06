@@ -13,9 +13,10 @@ import pathlib
 import numpy as np
 import pytest
 
-from backend import ephemeris_fit, geometry
+from backend.ephem import ephemeris_fit
+from backend import geometry
 from backend.gpstime import GPSTime
-from backend.precise import PreciseEphemerisProvider
+from backend.ephem.precise import PreciseEphemerisProvider
 
 FIX = pathlib.Path(__file__).resolve().parent.parent / "fixtures"
 WEEK, TOE = 2433, 475200.0

@@ -48,7 +48,7 @@ def test_absent_system_is_dropped_with_warning(tmp_path, monkeypatch):
 
 def test_nav_override_forces_gps_only(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "OUT_DIR", tmp_path)
-    from backend import ephemeris
+    from backend.ephem import ephemeris
     ov = ephemeris.parse_rinex(_GPS2)              # bare-int GPS records
     req = ScenarioRequest(rinex_path="AUTO", lat=41.0, lon=29.0, alt=100.0,
                           start=dt.datetime(2024, 1, 1, 12, 0, 0), duration_s=2,
@@ -139,7 +139,8 @@ def _mgex_multi_epoch_sp3(rx_ecef, n_epochs=13, interval_s=900.0):
 
 
 def test_precise_multi_covers_every_requested_constellation(tmp_path, monkeypatch):
-    from backend import geometry, precise
+    from backend import geometry
+    from backend.ephem import precise
     from backend.gpstime import GPSTime
     monkeypatch.setattr(config, "OUT_DIR", tmp_path)
 

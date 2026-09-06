@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from backend import config, error_budget, geometry, inspector, wls
+from backend import config, geometry, inspector
+from backend.models import error_budget, wls
 
 
 def solve_position(pseudoranges, sat_positions, x0=None) -> dict:

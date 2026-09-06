@@ -6,7 +6,8 @@ import pathlib
 import numpy as np
 import pytest
 
-from backend import geometry, ephemeris
+from backend import geometry
+from backend.ephem import ephemeris
 
 FIXDIR = pathlib.Path(__file__).parent / "fixtures"
 RX_LLH = (41.0082, 28.9784, 100.0)

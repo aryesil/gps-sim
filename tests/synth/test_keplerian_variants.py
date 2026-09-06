@@ -4,7 +4,8 @@ import pathlib
 
 import numpy as np
 
-from backend import ephemeris, geometry
+from backend.ephem import ephemeris
+from backend import geometry
 
 _RINEX = str(pathlib.Path(__file__).parent.parent / "fixtures" / "brdc_full.rnx")
 

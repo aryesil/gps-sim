@@ -2,7 +2,8 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import audit, config
+from backend.obs import audit
+from backend import config
 from backend.app import app
 
 

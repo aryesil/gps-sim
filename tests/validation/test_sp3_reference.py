@@ -5,7 +5,8 @@ import pathlib
 import numpy as np
 import pytest
 
-from backend import precise, reference
+from backend.ephem import precise
+from backend.analysis import reference
 from backend.gpstime import GPSTime
 
 FIX = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "igs_sample.sp3"

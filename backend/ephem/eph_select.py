@@ -21,7 +21,8 @@ from dataclasses import dataclass, field
 import georinex as gr
 import numpy as np
 
-from backend import config, ephemeris
+from backend import config
+from backend.ephem import ephemeris
 
 _WEEK = 604800.0
 # GPS broadcast nav is nominally valid for 2 h from toe (curve fit interval);

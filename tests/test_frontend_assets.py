@@ -2,6 +2,11 @@ import pathlib
 
 F = pathlib.Path(__file__).parent.parent / "frontend"
 
+
+def _rd(name):
+    sub = "js" if name.endswith(".js") else "css" if name.endswith(".css") else "."
+    return (F / sub / name).read_text()
+
 # transmit.js was deleted: after the per-card redesign it targeted elements
 # (#btn-transmit-stop, #rate, #tx-confirm, ...) that no longer exist, and its
 # top-level onclick assignment threw on every page load. The backend
@@ -12,8 +17,10 @@ _SCRIPTS = ["pages.js", "map.js", "skyplot.js", "plots.js", "iqplot.js",
 
 
 def test_all_frontend_files_present_and_wired():
-    for name in ["index.html", "style.css"] + _SCRIPTS:
-        assert (F / name).is_file(), name
+    assert (F / "index.html").is_file()
+    assert (F / "css" / "style.css").is_file()
+    for name in _SCRIPTS:
+        assert (F / "js" / name).is_file(), name
 
     html = (F / "index.html").read_text()
 
@@ -39,7 +46,7 @@ def test_impairments_panel_present_and_wired():
     """The advanced RF-impairments panel must exist, stay opt-in, and fold
     into the /api/generate body only when enabled -- so an untouched panel
     leaves the generate request byte-identical to before it existed."""
-    js = (F / "channels.js").read_text()
+    js = _rd("channels.js")
     assert 'data-adv="imp"' in js   # advanced sub-tab
     assert '${id}-imp-enabled' in js
     for sfx in ("seed", "cfo", "ppm", "phn", "gain", "iqphase",
@@ -56,7 +63,7 @@ def test_impairments_field_test_presets():
     """The panel offers ready-made field-test presets as an alternative to
     hand-entering every knob; choosing one enables the panel, hand-editing
     a field reverts to Custom."""
-    js = (F / "channels.js").read_text()
+    js = _rd("channels.js")
     assert '${id}-imp-preset' in js
     assert 'IMP_PRESETS' in js
     for name in ('bench', 'field', 'urban'):
@@ -69,7 +76,7 @@ def test_models_scenario_presets():
     """The propagation / receiver-model panel offers scenario presets as an
     alternative to setting every field by hand; hand-editing a field
     reverts to Custom."""
-    js = (F / "channels.js").read_text()
+    js = _rd("channels.js")
     assert '${id}-mdl-preset' in js
     assert 'MDL_PRESETS' in js
     for name in ('open-sky', 'urban-canyon', 'foliage-weak'):
@@ -82,7 +89,7 @@ def test_precise_panel_advertises_auto_download_no_manual_step():
     an SP3 file: the panel says Preview/Generate auto-download it, and the
     old manual 'fetch' button is gone. The path field stays as an optional
     override only."""
-    js = (F / "channels.js").read_text()
+    js = _rd("channels.js")
     assert '${id}-sp3-fetch' not in js
     assert 'auto-download' in js.lower()
     assert '${id}-sp3-path' in js          # optional manual override kept
@@ -92,7 +99,7 @@ def test_channel_card_requires_confirmation_checkbox():
     """The README's safety claim ("you confirm the isolated setup in the UI")
     must correspond to a real per-card checkbox whose value is what
     /api/live/start receives -- not a hardcoded true."""
-    js = (F / "channels.js").read_text()
+    js = _rd("channels.js")
     assert '${id}-tx-confirm' in js
     assert 'confirm_isolated: document.getElementById(`${id}-tx-confirm`).checked' in js
     assert 'confirm_isolated: true' not in js
@@ -102,7 +109,7 @@ def test_channel_models_panel_present_and_opt_in():
     """The propagation / receiver-model panel must exist, default every
     sub-model to 'off', and fold into the request body only when something
     is enabled (untouched panel -> _channelModelsBody() returns null)."""
-    js = (F / "channels.js").read_text()
+    js = _rd("channels.js")
     assert 'data-adv="mdl"' in js   # advanced sub-tab
     for sfx in ("iono", "tropo", "rxclk", "rxclk-bias", "rxclk-drift",
                 "mp", "mp1-delay", "mp1-amp", "mp1-phase", "to-iq"):
@@ -116,7 +123,7 @@ def test_channel_models_panel_present_and_opt_in():
 
 
 def test_signal_engine_panel_present_and_opt_in():
-    js = (F / "channels.js").read_text()
+    js = _rd("channels.js")
     assert 'data-adv="eng"' in js   # advanced sub-tab
     assert '${id}-engine' in js
     for sfx in ("fade-model", "fade-sigma", "fade-coh", "fade-seed", "fs", "quant"):
@@ -129,10 +136,10 @@ def test_signal_engine_panel_present_and_opt_in():
 def test_compare_is_visualised_not_dumped_as_text():
     """The SP3-vs-broadcast compare must render through compare.js
     (canvas charts), not by writing raw lines into a <div>."""
-    cmp = (F / "compare.js").read_text()
+    cmp = _rd("compare.js")
     assert 'window.renderCompare' in cmp
     assert "getContext('2d')" in cmp
-    js = (F / "channels.js").read_text()
+    js = _rd("channels.js")
     assert 'renderCompare(`${id}-sp3-compare-out`, d)' in js
     # the sweep is requested so the chart is a curve over time
     assert 'sweep_s: dur' in js
@@ -144,9 +151,9 @@ def test_compare_output_relocated_to_full_width_region_with_plain_language():
     renders in a dedicated full-width region below .channel-top, its charts
     lay out in a responsive grid, and the RMS jargon is replaced by a
     plain-language verdict plus a percentage."""
-    js = (F / "channels.js").read_text()
-    cmp = (F / "compare.js").read_text()
-    css = (F / "style.css").read_text()
+    js = _rd("channels.js")
+    cmp = _rd("compare.js")
+    css = _rd("style.css")
     assert 'id="${id}-compare-region"' in js
     assert 'region.hidden = false;' in js
     reg = js.index('id="${id}-compare-region"')
@@ -168,8 +175,8 @@ def test_long_help_paragraphs_replaced_by_hover_info_icons():
     """Verbose <div class="hint"> blurbs sitting under form selects are
     gone; a small hover-tooltip marker carries the same text with no
     layout footprint."""
-    js = (F / "channels.js").read_text()
-    css = (F / "style.css").read_text()
+    js = _rd("channels.js")
+    css = _rd("style.css")
     assert 'class="info" title=' in js
     assert js.count('class="info"') >= 6
     assert '.info {' in css
@@ -181,7 +188,7 @@ def test_long_help_paragraphs_replaced_by_hover_info_icons():
 
 
 def test_engine_panel_has_systems_multiselect():
-    js = (F / "channels.js").read_text()
+    js = _rd("channels.js")
     for s in ("G", "R", "E", "C", "J", "S"):
         assert f'${{id}}-sys-{s}' in js, s
     assert "systems" in js
@@ -190,16 +197,16 @@ def test_engine_panel_has_systems_multiselect():
 
 
 def test_skyplot_colours_by_system():
-    js = (F / "skyplot.js").read_text()
+    js = _rd("skyplot.js")
     for s in ("R", "E", "C", "J", "S"):
         assert f"{s}:" in js  # _SYS_COLOR entry
-    assert "svid" in js and "svid" in (F / "plots.js").read_text()
+    assert "svid" in js and "svid" in _rd("plots.js")
 
 
 def test_skyplot_click_select_assigns_numeric_prn():
     # B1: the LNAV PRN field is <input type="number">; assigning a non-numeric
     # svid ("G01") blanks it and breaks click-select for every system. The
     # click handler must assign the bare numeric prn.
-    js = (F / "skyplot.js").read_text()
+    js = _rd("skyplot.js")
     assert "prnInput.value = best.prn;" in js
     assert "best.svid || best.prn" not in js

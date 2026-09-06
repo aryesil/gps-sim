@@ -7,7 +7,8 @@ import textwrap
 
 import pytest
 
-from backend import generator, provenance, scenario
+from backend import generator, scenario
+from backend.obs import provenance
 
 FIX = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "brdc_sample.rnx"
 

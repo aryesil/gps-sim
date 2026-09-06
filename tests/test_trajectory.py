@@ -1,7 +1,8 @@
 # tests/test_trajectory.py
 import pytest
 
-from backend import trajectory, config
+from backend.store import trajectory
+from backend import config
 
 
 def test_save_load_round_trip(tmp_path, monkeypatch):

@@ -1,4 +1,4 @@
-from backend import lnav_display
+from backend.analysis import lnav_display
 
 
 def _eph():

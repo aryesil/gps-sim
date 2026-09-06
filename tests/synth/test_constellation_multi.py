@@ -1,7 +1,8 @@
 import datetime as dt
 import pathlib
 
-from backend import config, ephemeris, geometry
+from backend import config, geometry
+from backend.ephem import ephemeris
 from backend.synth import engine, signals
 from backend.scenario import ScenarioRequest
 

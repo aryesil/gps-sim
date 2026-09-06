@@ -7,7 +7,8 @@ import datetime as dt
 import numpy as np
 import pytest
 
-from backend import geometry, live, scenario
+from backend import geometry, scenario
+from backend.session import live
 
 
 def _base_req():

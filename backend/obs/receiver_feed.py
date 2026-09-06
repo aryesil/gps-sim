@@ -13,7 +13,7 @@ from __future__ import annotations
 import socket
 import threading
 
-from backend import nmea
+from backend.obs import nmea
 
 _lock = threading.Lock()
 _state = {"thread": None, "stop": None, "latest": None, "mode": None}

@@ -3,7 +3,7 @@ import math
 
 import pytest
 
-from backend import error_budget
+from backend.models import error_budget
 
 
 def test_nominal_budget_uses_defaults_and_rss():

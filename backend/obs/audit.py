@@ -18,7 +18,8 @@ import datetime as dt
 import json
 import threading
 
-from backend import config, ws_hub
+from backend import config
+from backend.obs import ws_hub
 
 _lock = threading.Lock()
 

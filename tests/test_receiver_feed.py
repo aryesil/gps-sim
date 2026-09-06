@@ -2,7 +2,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import receiver_feed
+from backend.obs import receiver_feed
 from backend.app import app
 
 client = TestClient(app)

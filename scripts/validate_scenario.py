@@ -6,7 +6,7 @@ consistent and physically plausible:
 
   1. ephemeris        -- parse the broadcast RINEX, list PRNs / health
   2. geometry         -- production propagation vs the independent
-                         IS-GPS-200 reference (backend.reference)
+                         IS-GPS-200 reference (backend.analysis.reference)
   3. generation       -- run gps-sdr-sim (skipped with --no-generate or
                          when no binary is available)
   4. iq_integrity     -- structure + statistics of the .bin
@@ -30,8 +30,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backend import (config, ephemeris, error_budget, geometry, inspector,  # noqa: E402
-                     iq_integrity, receiver, reference, scenario, truth)
+from backend import config, geometry, inspector, scenario
+from backend.ephem import ephemeris
+from backend.models import error_budget
+from backend.analysis import receiver, reference, truth
 
 _STAGES = ("ephemeris", "geometry", "generation", "iq_integrity",
            "acquisition", "receiver", "error_budget")

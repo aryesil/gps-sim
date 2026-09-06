@@ -6,7 +6,8 @@ break the acquirer.
 import numpy as np
 import pytest
 
-from backend import impairments, inspector
+from backend.models import impairments
+from backend import inspector
 
 FS = 2.6e6
 

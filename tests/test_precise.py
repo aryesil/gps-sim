@@ -5,9 +5,10 @@ import pathlib
 import numpy as np
 import pytest
 
-from backend import ephemeris, geometry, precise
+from backend.ephem import ephemeris, precise
+from backend import geometry
 from backend.gpstime import GPSTime
-from backend.precise import (
+from backend.ephem.precise import (
     PreciseEphemerisProvider, PreciseProductParseError, EpochOutOfCoverage,
     InterpolationWindowError, SatelliteNotInProduct, parse_sp3, _neville_clean,
 )
@@ -154,7 +155,7 @@ def test_neville_exact_on_polynomial():
 # --- download_sp3 mirror templating (no network) ---------------------
 def test_download_sp3_templating_and_gunzip(tmp_path, monkeypatch):
     import gzip
-    from backend import precise as _p
+    from backend.ephem import precise as _p
 
     raw = SP3.read_bytes()
     seen = []
@@ -186,7 +187,7 @@ def test_download_sp3_templating_and_gunzip(tmp_path, monkeypatch):
 
 
 def test_download_sp3_empty_mirrors_raises(tmp_path):
-    from backend.precise import download_sp3, PreciseProductError
+    from backend.ephem.precise import download_sp3, PreciseProductError
     with pytest.raises(PreciseProductError):
         download_sp3(WEEK, 4, tmp_path, [])
 
@@ -195,7 +196,7 @@ def test_download_sp3_empty_mirrors_raises(tmp_path):
 def test_merge_sp3_dedupes_and_extends():
     import dataclasses
 
-    from backend.precise import merge_sp3, parse_sp3
+    from backend.ephem.precise import merge_sp3, parse_sp3
     a = parse_sp3(SP3)
     # a synthetic "next day": same tracks shifted +86400 s
     shift = 86400.0
@@ -216,13 +217,13 @@ def test_merge_sp3_dedupes_and_extends():
 
 
 def test_merge_sp3_single_passthrough():
-    from backend.precise import merge_sp3, parse_sp3
+    from backend.ephem.precise import merge_sp3, parse_sp3
     a = parse_sp3(SP3)
     assert merge_sp3([a]) is a
 
 
 def test_download_sp3_ultra_rapid_templating_and_cache_tiering(tmp_path, monkeypatch):
-    from backend import precise as _p
+    from backend.ephem import precise as _p
 
     raw = SP3.read_bytes()
     seen = []
@@ -292,7 +293,7 @@ def test_parse_sp3_keeps_grecj_drops_sbas():
 
 # --- coverage-aware download_sp3 (Defect 1, no network) -----------------
 def test_sp3_systems_detects_grecj_vs_gps_only():
-    from backend.precise import _sp3_systems
+    from backend.ephem.precise import _sp3_systems
 
     assert _sp3_systems(SP3.read_bytes()) == {"G"}          # fixture is GPS-only
     mgex = _sp3_systems(_SP3_MGEX.encode())
@@ -308,7 +309,7 @@ class _Resp:
 def test_download_sp3_want_multignss_prefers_grecj_over_gps_only_mirror(
         tmp_path, monkeypatch):
     import gzip
-    from backend import precise as _p
+    from backend.ephem import precise as _p
     import requests as _rq
 
     gps_only = SP3.read_bytes()
@@ -336,7 +337,7 @@ def test_download_sp3_want_multignss_prefers_grecj_over_gps_only_mirror(
 def test_download_sp3_want_multignss_does_not_serve_stale_gps_only_cache(
         tmp_path, monkeypatch):
     import gzip
-    from backend import precise as _p
+    from backend.ephem import precise as _p
     import requests as _rq
 
     # a legacy un-tagged cache file for this day, GPS-only content

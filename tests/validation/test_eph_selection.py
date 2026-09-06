@@ -1,10 +1,10 @@
-"""Deterministic broadcast-ephemeris record selection (backend.eph_select)."""
+"""Deterministic broadcast-ephemeris record selection (backend.ephem.eph_select)."""
 import pathlib
 
 import pytest
 
-from backend import eph_select
-from backend.eph_select import RecordRef, select
+from backend.ephem import eph_select
+from backend.ephem.eph_select import RecordRef, select
 
 FIX = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "brdc_sample.rnx"
 WEEK = 2433
