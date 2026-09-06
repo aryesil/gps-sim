@@ -15,7 +15,8 @@ def _run(tmp_path, monkeypatch, systems):
     req = ScenarioRequest(rinex_path=_MIXED, lat=41.0, lon=29.0, alt=100.0,
                           start=dt.datetime(2026, 9, 1, 12), duration_s=4,
                           sample_rate=6_000_000.0, sample_format="int16",
-                          engine="native", systems=["G", "J", "E", "C", "S"])
+                          engine="native", systems=["G", "J", "E", "C", "S"],
+                          nav_message=False)
     return engine.run(req)
 
 

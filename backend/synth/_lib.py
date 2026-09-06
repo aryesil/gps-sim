@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-ABI_VERSION = 18
+ABI_VERSION = 19
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
@@ -80,6 +80,8 @@ class SvSpec(ctypes.Structure):
         ("traj_carr_phase", ctypes.POINTER(ctypes.c_double)),
         ("traj_code_rate", ctypes.POINTER(ctypes.c_double)),
         ("traj_code_phase", ctypes.POINTER(ctypes.c_double)),
+        # SP-D -- nav-message symbol rate (0.0 => 50 Hz GPS LNAV).
+        ("nav_sym_rate_hz", ctypes.c_double),
     ]
 
 
@@ -147,6 +149,7 @@ def one_sv_spec(code, carrier_hz=0.0, code_phase0=0.0, code_doppler=0.0,
     s.traj_carr_phase = None
     s.traj_code_rate = None
     s.traj_code_phase = None
+    s.nav_sym_rate_hz = 0.0
     return s
 
 

@@ -21,7 +21,7 @@ def _req(nav_message=True, dur=4):
 def test_meta_provenance_nav_flag(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "OUT_DIR", tmp_path)
     m = json.loads((engine.run(_req()) / "meta.json").read_text())
-    assert m["provenance"]["nav"] == "lnav"
+    assert m["provenance"]["nav"].get("G") == "lnav"
     m2 = json.loads((engine.run(_req(nav_message=False)) / "meta.json").read_text())
     assert m2["provenance"]["nav"] == "none"
 

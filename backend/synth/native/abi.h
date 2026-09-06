@@ -163,6 +163,9 @@ typedef struct {
     const double *traj_carr_phase; // nknots, rad, accumulated carrier phase at t_j
     const double *traj_code_rate;  // nknots, chips/s, total code rate at t_j
     const double *traj_code_phase; // nknots, chips, accumulated abs code phase at t_j
+    // SP-D -- navigation-message symbol rate. 0.0 => 50 Hz (GPS LNAV). Set per
+    // system (Galileo E1-B I/NAV 250, GLONASS meander 100, SBAS 500, ...).
+    double nav_sym_rate_hz;
 } SvSpec;
 // Whole-run spec. Field order frozen -- _lib.py mirrors it exactly.
 typedef struct {

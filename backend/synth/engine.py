@@ -8,7 +8,7 @@ import math
 import pathlib
 
 from backend import config, geometry
-from backend.analysis import lnav_encode
+from backend.analysis import nav_encoders
 from backend.ephem import ephemeris, ephemeris_source
 from backend.synth import _lib, bands, signals
 from backend.synth.fading import FadingConfig
@@ -160,8 +160,14 @@ def _sv_spec_for(entry, gain, nav=None):
             return None, f"GLONASS PRN {entry.get('prn')}: missing glo_k, skipped"
     prim_len = sig.code_len
     if sysc == "E":
-        code_sys = 6 if _E1_IS_PILOT else 5   # code VARIANT, not constellation
-        sec_len = 25 if _E1_IS_PILOT else 0
+        # E1-C dataless pilot (+ CS25 secondary) for ranging; switch to the
+        # E1-B data component when an I/NAV stream is modulated onto this SV.
+        if nav is not None:
+            code_sys = 5          # E1-B data
+            sec_len = 0
+        else:
+            code_sys = 6 if _E1_IS_PILOT else 5
+            sec_len = 25 if _E1_IS_PILOT else 0
     elif sysc == "C":
         code_sys = 3
         sec_len = 20
@@ -194,11 +200,13 @@ def _sv_spec_for(entry, gain, nav=None):
     spec.nav_mode = 0
     spec.nav_bits = None
     spec.nav_nbits = 0
-    if nav is not None and sysc == "G":
-        nbuf, nbits = nav
+    spec.nav_sym_rate_hz = 0.0
+    if nav is not None:
+        nbuf, nbits, sym_rate = nav
         spec.nav_mode = 1
         spec.nav_bits = nbuf
         spec.nav_nbits = nbits
+        spec.nav_sym_rate_hz = float(sym_rate)
         keep.append(nbuf)
     spec.gain = gain
     spec.prn = entry["prn"]
@@ -409,37 +417,40 @@ def run(req, progress_cb=None) -> pathlib.Path:
     cfg = FadingConfig.from_dict(getattr(req, "fading", None))
     fading_model_int = 1 if cfg.model == "lognormal" else 0
 
-    # GPS LNAV navigation message: one 50 bps symbol stream per GPS PRN,
-    # built from that PRN's broadcast record (aligned to the run epoch) plus
-    # the RINEX header's Klobuchar/UTC parameters. Wired into SvSpec.nav_*
-    # for the KnownFrame modulation path in the C++ mixer.
+    # Broadcast navigation message per system (SP-A GPS LNAV + SP-D others):
+    # one +/-1 symbol stream per SV at that system's symbol rate, built from
+    # the same broadcast record that drives the IQ geometry. Wired into
+    # SvSpec.nav_* for the KnownFrame modulation path in the C++ mixer.
+    # Keyed by native PRN so `_sv_spec_for` can look it up directly.
     nav_streams: dict = {}
-    nav_prov = "none"
-    if ("G" in systems and getattr(req, "nav_message", True)
-            and not precise_multi):
+    nav_prov: dict = {}
+    _NAV_PROV_NAME = {"G": "lnav", "J": "lnav", "E": "inav",
+                      "C": "d1", "R": "strings", "S": "sbas"}
+    if getattr(req, "nav_message", True) and not precise_multi:
         try:
             hdr = ephemeris.rinex_header_iono_utc(req.rinex_path)
         except Exception:                       # noqa: BLE001 - degrade
             hdr = {}
-        # Build from the same GPS records that drive the IQ geometry:
-        # `eph` here is either int-keyed (GPS-only) or ("G", prn)-keyed.
-        gps_eph = {}
-        for k, ep in eph.items():
-            if isinstance(k, tuple):
-                if k[0] == "G":
-                    gps_eph[k[1]] = ep
-            elif isinstance(k, int):
-                gps_eph[k] = ep
-        for prn, ep in gps_eph.items():
-            try:
-                arr = lnav_encode.nav_stream(ep, hdr, week, sow, req.duration_s)
-            except (KeyError, ValueError) as exc:
-                warnings.append(f"G{prn}: LNAV encode failed ({exc}); "
-                                "data symbol left constant")
+        for e in entries:
+            sysc = e["sys"]
+            rec = e.get("_state")
+            if not isinstance(rec, dict):
                 continue
+            try:
+                res = nav_encoders.nav_stream_for(
+                    sysc, e["signal_id"], rec, hdr, week, sow, req.duration_s)
+            except (KeyError, ValueError) as exc:
+                warnings.append(f"{sysc}{e['prn']}: nav-message encode failed "
+                                f"({exc}); data symbol left constant")
+                continue
+            if res is None:
+                continue
+            arr, sym_rate = res
             nbuf = (ctypes.c_int8 * len(arr))(*arr.tolist())
-            nav_streams[prn] = (nbuf, len(arr))
-        nav_prov = "lnav" if nav_streams else "none"
+            nav_streams[e["prn"]] = (nbuf, len(arr), float(sym_rate))
+            nav_prov.setdefault(sysc, _NAV_PROV_NAME.get(sysc, "on"))
+    if not nav_prov:
+        nav_prov = "none"
 
     plans = bands.plan_bands(entries, req)
     if not plans:

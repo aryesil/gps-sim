@@ -35,6 +35,7 @@ static int run_one_band(const BandSpec &b,
         ch[i].nav.mode = static_cast<gs::NavMode>(specs[i].nav_mode);
         ch[i].nav.bits = specs[i].nav_bits;
         ch[i].nav.nbits = specs[i].nav_nbits;
+        ch[i].nav.sym_rate_hz = specs[i].nav_sym_rate_hz;
         ch[i].gain = specs[i].gain;
         ch[i].sys = specs[i].sys;
         ch[i].sub_carrier_hz = specs[i].sub_carrier_hz;
