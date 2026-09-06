@@ -19,6 +19,14 @@ struct SvChannel {
     const int8_t *sec_code = nullptr; // secondary code chips {-1,+1}
     int sec_len = 0;                  // > 0 => secondary-code XOR
     double sec_rate_hz = 0.0;         // secondary chip rate (Hz)
+    // SP-B -- per-block trajectory knots. traj_nknots == 0 keeps mix_block
+    // byte-identical to Phase 1 (constant Doppler from the fields above).
+    int traj_nknots = 0;
+    uint64_t traj_knot_samples = 0;
+    const double *traj_carr_freq = nullptr;
+    const double *traj_carr_phase = nullptr;
+    const double *traj_code_rate = nullptr;
+    const double *traj_code_phase = nullptr;
 };
 void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
                uint64_t sample0, int n, float *__restrict iq);

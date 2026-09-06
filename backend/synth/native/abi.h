@@ -143,6 +143,16 @@ typedef struct {
     // zero-init SvSpec stay byte-identical.
     int    code_len;           // primary code length in chips; 0 => 1023
     double chip_rate_hz;       // primary chip rate (Hz); 0.0 => 1.023e6
+    // SP-B -- per-block trajectory knots for continuous re-propagation.
+    // traj_nknots == 0 => Phase-1 constant-Doppler path (all fields ignored).
+    // Knot j spans mixer block j: absolute samples
+    // [j*traj_knot_samples, (j+1)*traj_knot_samples).
+    int      traj_nknots;         // 0 => disabled
+    uint64_t traj_knot_samples;   // == BandSpec.block_samples used at planning
+    const double *traj_carr_freq;  // nknots, Hz, carrier Doppler at t_j
+    const double *traj_carr_phase; // nknots, rad, accumulated carrier phase at t_j
+    const double *traj_code_rate;  // nknots, chips/s, total code rate at t_j
+    const double *traj_code_phase; // nknots, chips, accumulated abs code phase at t_j
 } SvSpec;
 // Whole-run spec. Field order frozen -- _lib.py mirrors it exactly.
 typedef struct {
