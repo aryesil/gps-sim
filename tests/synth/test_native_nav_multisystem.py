@@ -65,6 +65,34 @@ def test_galileo_gets_inav_on_the_e1b_component(tmp_path, monkeypatch):
     assert inav_encode.SYM_RATE_HZ == 250.0
 
 
+def test_beidou_gets_d1_provenance(tmp_path, monkeypatch):
+    outdir = _run(tmp_path, monkeypatch, ["G", "C"])
+    prov = json.loads((outdir / "meta.json").read_text())["provenance"]["nav"]
+    assert prov.get("C") == "d1"
+    a = _run(tmp_path / "b", monkeypatch, ["G", "C"])
+    assert (outdir / "gpssim.bin").read_bytes() == (a / "gpssim.bin").read_bytes()
+
+
+def test_glonass_gets_strings_provenance(tmp_path, monkeypatch):
+    outdir = _run(tmp_path, monkeypatch, ["G", "R"])
+    prov = json.loads((outdir / "meta.json").read_text())["provenance"]["nav"]
+    assert prov.get("R") == "strings"
+
+
+def test_sbas_gets_sbas_provenance(tmp_path, monkeypatch):
+    outdir = _run(tmp_path, monkeypatch, ["G", "S"])
+    prov = json.loads((outdir / "meta.json").read_text())["provenance"]["nav"]
+    assert prov.get("S") == "sbas"
+
+
+def test_all_systems_carry_a_message(tmp_path, monkeypatch):
+    outdir = _run(tmp_path, monkeypatch, ["G", "J", "E", "C", "R", "S"])
+    prov = json.loads((outdir / "meta.json").read_text())["provenance"]["nav"]
+    for sysc, name in (("G", "lnav"), ("J", "lnav"), ("E", "inav"),
+                       ("C", "d1"), ("R", "strings"), ("S", "sbas")):
+        assert prov.get(sysc) == name, (sysc, prov)
+
+
 def test_nav_off_leaves_provenance_none(tmp_path, monkeypatch):
     outdir = _run(tmp_path, monkeypatch, ["G", "J"], nav=False)
     assert json.loads((outdir / "meta.json").read_text())[

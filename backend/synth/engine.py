@@ -438,7 +438,8 @@ def run(req, progress_cb=None) -> pathlib.Path:
                 continue
             try:
                 res = nav_encoders.nav_stream_for(
-                    sysc, e["signal_id"], rec, hdr, week, sow, req.duration_s)
+                    sysc, e["signal_id"], rec, hdr, week, sow, req.duration_s,
+                    prn=int(e.get("prn", 0)))
             except (KeyError, ValueError) as exc:
                 warnings.append(f"{sysc}{e['prn']}: nav-message encode failed "
                                 f"({exc}); data symbol left constant")

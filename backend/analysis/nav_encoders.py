@@ -14,7 +14,8 @@ engine side is complete.
 """
 from __future__ import annotations
 
-from backend.analysis import inav_encode, lnav_encode
+from backend.analysis import (bds_d1_encode, glo_str_encode, inav_encode,
+                              lnav_encode, sbas_encode)
 
 # Nominal symbol rates (Hz) per system's supported message.
 SYM_RATE_HZ = {
@@ -28,9 +29,10 @@ SYM_RATE_HZ = {
 
 
 def nav_stream_for(sysc, signal, eph, header, week, sow, duration_s,
-                   eph_by_prn=None):
+                   eph_by_prn=None, prn=None):
     """Dispatch to the per-system encoder. ``eph`` is that satellite's parsed
-    broadcast record (dict); ``signal`` is its ``signals.Signal``.
+    broadcast record (dict); ``signal`` is its ``signals.Signal``; ``prn`` is
+    the constellation PRN (used to pick BeiDou D1 vs D2).
     """
     if sysc in ("G", "J"):
         # QZSS L1 C/A LNAV is frame-identical to GPS LNAV -- same subframes,
@@ -43,4 +45,16 @@ def nav_stream_for(sysc, signal, eph, header, week, sow, duration_s,
         arr = inav_encode.nav_stream(eph, week, sow, duration_s,
                                      eph_by_prn=eph_by_prn)
         return arr, inav_encode.SYM_RATE_HZ
+    if sysc == "C":
+        p = prn if prn is not None else int(eph.get("prn", 99) or 99)
+        arr, rate = bds_d1_encode.nav_stream(eph, week, sow, duration_s,
+                                             d2=(p <= 5),
+                                             eph_by_prn=eph_by_prn)
+        return arr, rate
+    if sysc == "R":
+        return glo_str_encode.nav_stream(eph, week, sow, duration_s,
+                                         eph_by_prn=eph_by_prn)
+    if sysc == "S":
+        return sbas_encode.nav_stream(eph, week, sow, duration_s,
+                                      eph_by_prn=eph_by_prn)
     return None

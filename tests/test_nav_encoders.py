@@ -14,7 +14,7 @@ _WEEK, _SOW = 2325, 561600.0     # arbitrary aligned epoch for encode
 
 @pytest.fixture(scope="module")
 def eph_multi():
-    e = ephemeris.parse_rinex_multi(_RINEX, ("G", "J", "E", "C", "R"),
+    e = ephemeris.parse_rinex_multi(_RINEX, ("G", "J", "E", "C", "R", "S"),
                                     require=())
     return ephemeris.align_epochs(e, _WEEK, _SOW)
 
@@ -62,8 +62,17 @@ def test_galileo_returns_250hz_inav_stream(eph_multi):
     assert set(np.unique(arr)).issubset({-1, 1})
 
 
-def test_unsupported_system_returns_none(eph_multi):
-    for sysc in ("C", "R"):
-        rec = _first(eph_multi, sysc)
-        assert nav_encoders.nav_stream_for(sysc, signals.signal_for(sysc), rec,
-                                           {}, _WEEK, _SOW, 6) is None
+@pytest.mark.parametrize("sysc,rate", [("C", 50.0), ("R", 100.0), ("S", 500.0)])
+def test_other_systems_return_their_rate(eph_multi, sysc, rate):
+    rec = _first(eph_multi, sysc)
+    res = nav_encoders.nav_stream_for(sysc, signals.signal_for(sysc), rec,
+                                      {}, _WEEK, _SOW, 6, prn=30)
+    assert res is not None
+    arr, r = res
+    assert r == rate
+    assert set(np.unique(arr)).issubset({-1, 1})
+
+
+def test_unknown_system_returns_none(eph_multi):
+    assert nav_encoders.nav_stream_for("X", signals.signal_for("G"), {},
+                                       {}, _WEEK, _SOW, 6) is None
