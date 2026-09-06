@@ -125,6 +125,14 @@ window.addChannel = function () {
             <option value="gps-sdr-sim">gps-sdr-sim (default)</option>
             <option value="native">native (C++ engine, GPS L1 C/A + fading)</option>
           </select></label>
+          <fieldset class="sys-set"><legend>Constellations (native)</legend>
+            <label><input type="checkbox" id="${id}-sys-G" checked disabled> GPS</label>
+            <label><input type="checkbox" id="${id}-sys-R"> GLONASS</label>
+            <label><input type="checkbox" id="${id}-sys-E"> Galileo</label>
+            <label><input type="checkbox" id="${id}-sys-C"> BeiDou</label>
+            <label><input type="checkbox" id="${id}-sys-J"> QZSS</label>
+            <label><input type="checkbox" id="${id}-sys-S"> SBAS</label>
+          </fieldset>
           <label>Sample rate Hz <input id="${id}-fs" type="number" step="100000" placeholder="auto from signals"></label>
           <label>Quantization <select id="${id}-quant">
             <option value="int16">int16</option>
@@ -312,6 +320,17 @@ function wireChannelActions(id) {
     document.getElementById(elId).addEventListener('change', _updateSizeEstimate);
   });
   _updateSizeEstimate();
+
+  // Engine select: toggle disabled state on non-G constellation checkboxes
+  // (they are only available when native engine is selected).
+  function _updateEngineConstellationState() {
+    const isNative = document.getElementById(`${id}-engine`).value === 'native';
+    ['R', 'E', 'C', 'J', 'S'].forEach(s => {
+      document.getElementById(`${id}-sys-${s}`).disabled = !isNative;
+    });
+  }
+  document.getElementById(`${id}-engine`).addEventListener('change', _updateEngineConstellationState);
+  _updateEngineConstellationState();
 
   // Scenario library: save/load this channel's whole config by name, the
   // same file-per-name pattern as trajectory save/load (backend/scenario_lib.py).
@@ -677,6 +696,9 @@ function wireChannelActions(id) {
         seed: Number(document.getElementById(`${id}-fade-seed`).value),
       };
     }
+    const sys = ["G", "R", "E", "C", "J", "S"].filter(
+      s => document.getElementById(`${id}-sys-${s}`).checked);
+    if (sys.length > 1) out.systems = sys;
     return Object.keys(out).length ? out : null;
   }
 

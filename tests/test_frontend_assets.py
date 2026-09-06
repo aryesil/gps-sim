@@ -178,3 +178,12 @@ def test_long_help_paragraphs_replaced_by_hover_info_icons():
     assert '<div class="hint">Reflections' not in js
     # the auto-download explanation survives, now inside a tooltip
     assert 'auto-download' in js.lower()
+
+
+def test_engine_panel_has_systems_multiselect():
+    js = (F / "channels.js").read_text()
+    for s in ("G", "R", "E", "C", "J", "S"):
+        assert f'${{id}}-sys-{s}' in js, s
+    assert "systems" in js
+    # opt-in: only added when more than G
+    assert "sysSel.length > 1" in js or "sys.length > 1" in js
