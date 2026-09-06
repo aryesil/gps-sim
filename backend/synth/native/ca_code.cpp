@@ -6,6 +6,10 @@
 // construction with a published per-PRN G2 code-phase delay. Tables only --
 // see the header for the IS-QZSS-PNT / RTCA DO-229 citations.
 #include "qzss_sbas_taps.hpp"
+// BeiDou B1I (Task 7) reuses only the published G2 phase-assignment table and
+// the Neumann-Hoffman secondary -- tables only, see the header for the
+// BDS-SIS-ICD-B1I v3.0 citation.
+#include "b1i_taps.hpp"
 
 namespace {
 // G2 phase-select tap pairs (1-indexed register stages) for PRN 1..32,
@@ -52,6 +56,25 @@ void gps_gold_g2delay(int g2_delay, int8_t *out) {
         out[k] = chip ? -1 : 1;
     }
 }
+// BeiDou B1I ranging code: two 11-bit Fibonacci LFSRs (G1, G2), both reset to
+// 01010101010 every 2046 chips. G1(x) = 1 + x + x^7 + x^8 + x^9 + x^10 + x^11,
+// G2(x) = 1 + x + x^2 + x^3 + x^4 + x^5 + x^8 + x^9 + x^11 (BDS-SIS-ICD-B1I
+// v3.0 sec 4.3). The PRN-specific G2 output is the XOR of the two (or three,
+// for PRN 38..63) tapped stages in b1i_taps. Stage array r[0..10] is oldest
+// (output) to newest (feedback in). Matches GNSS-SDR beidou_b1i_signal_replica.
+void b1i_ranging(int t1, int t2, int t3, int8_t *out) {
+    int r1[11], r2[11];
+    for (int i = 0; i < 11; ++i) r1[i] = r2[i] = i & 1;   // 01010101010
+    for (int k = 0; k < b1i_taps::kCodeLen; ++k) {
+        int g1 = r1[0];
+        int g2 = r2[11 - t1] ^ r2[11 - t2] ^ (t3 ? r2[11 - t3] : 0);
+        out[k] = (g1 ^ g2) ? int8_t(-1) : int8_t(1);   // bit 0 -> +1, 1 -> -1
+        int f1 = r1[0] ^ r1[1] ^ r1[2] ^ r1[3] ^ r1[4] ^ r1[10];
+        int f2 = r2[0] ^ r2[2] ^ r2[3] ^ r2[6] ^ r2[7] ^ r2[8] ^ r2[9] ^ r2[10];
+        for (int i = 0; i < 10; ++i) { r1[i] = r1[i + 1]; r2[i] = r2[i + 1]; }
+        r1[10] = f1; r2[10] = f2;
+    }
+}
 }  // namespace
 
 // CODE-GEN sys int (distinct from the propagation sys int in synth_sat_state_sys):
@@ -77,7 +100,18 @@ extern "C" int synth_code(int sys, int prn, int8_t *primary, int prim_len,
         if (prn < 120 || prn > 158) return -1;
         gps_gold_g2delay(kSbasG2Delay[prn - 120], primary);
         return 0;
-    case 3:  // BeiDou B1I  -- Task 7
+    case 3: {  // BeiDou B1I  -- Task 7
+        if (prn < 1 || prn > 63 || prim_len < b1i_taps::kCodeLen) return -1;
+        const int i = prn - 1;
+        b1i_ranging(b1i_taps::kB1iG2Tap1[i], b1i_taps::kB1iG2Tap2[i],
+                    b1i_taps::kB1iG2Tap3[i], primary);
+        if (secondary && sec_len >= 20) {
+            const bool geo = b1i_taps::is_geo(prn);
+            for (int c = 0; c < 20; ++c)
+                secondary[c] = geo ? int8_t(1) : b1i_taps::kNH20[c];
+        }
+        return 0;
+    }
     case 4:  // GLONASS G1  -- Task 12
     default:
         return -1;
