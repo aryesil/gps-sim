@@ -54,6 +54,10 @@ RINEX_MIRRORS = [
 # ultra-rapid (IGU, ~3-9 h, 2-day file whose second half is *predicted*)
 # as the last resort for epochs too recent for rapid/final.
 _DEFAULT_SP3_MIRRORS = (
+    "https://igs.ign.fr/pub/igs/products/mgex/{gpsweek}/"
+    "GFZ0MGXRAP_{yyyy}{doy}0000_01D_05M_ORB.SP3.gz,"
+    "https://igs.ign.fr/pub/igs/products/mgex/{gpsweek}/"
+    "WUM0MGXFIN_{yyyy}{doy}0000_01D_15M_ORB.SP3.gz,"
     "https://igs.bkg.bund.de/root_ftp/IGS/products/{gpsweek}/"
     "IGS0OPSRAP_{yyyy}{doy}0000_01D_15M_ORB.SP3.gz,"
     "https://igs.ign.fr/pub/igs/products/{gpsweek}/"

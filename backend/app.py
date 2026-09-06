@@ -403,6 +403,9 @@ def _ensure_precise_loaded(start: dt.datetime, fallback: bool) -> list[str]:
     src = st.get("source") or ""
     warns = [f"precise: auto-downloaded SP3 for GPS week {week} "
              f"day(s) {','.join(got)}"]
+    if _precise_provider.product.systems() == ["G"]:
+        warns.append("precise: only a GPS-only SP3 was available for this "
+                     "epoch; non-GPS systems fall back to broadcast")
     if "ULT" in src:
         warns.append("precise: only an ultra-rapid (IGU) product was available "
                      "for this epoch; its predicted portion is less accurate "

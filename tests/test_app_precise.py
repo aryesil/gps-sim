@@ -150,3 +150,37 @@ def test_preview_precise_explicit_fallback_when_out_of_coverage():
     assert r.status_code == 200
     ws = " ".join(r.json()["warnings"]).lower()
     assert "broadcast" in ws and ("fell back" in ws or "auto-download failed" in ws)
+
+
+def test_preview_precise_gps_only_product_warns(monkeypatch):
+    # When only a GPS-only SP3 product is available (no multi-GNSS),
+    # _ensure_precise_loaded should emit a warning about non-GPS fallback.
+    from backend import app as appmod
+    from backend import precise
+
+    # Create a minimal GPS-only SP3Product
+    def _fake_parse_sp3(path):
+        gps_product = precise.SP3Product(
+            source="GPS-ONLY-TEST",
+            gps_week=2433,
+            epoch_interval_s=900.0
+        )
+        # Add only GPS records (system "G")
+        gps_product.records[("G", 1)] = [(475200.0, 1e7, 2e7, 3e7, 1e-6)]
+        gps_product.epoch_times = [475200.0]
+        return gps_product
+
+    def _fake_download_sp3(gps_week, dow, cache_dir, mirrors):
+        return SP3  # return the fixture path so it exists
+
+    monkeypatch.setattr(appmod.precise, "download_sp3", _fake_download_sp3)
+    monkeypatch.setattr(appmod.precise, "parse_sp3", _fake_parse_sp3)
+
+    # Trigger the download path to hit _ensure_precise_loaded with a fresh product.
+    # Use a date outside the current loaded fixture to trigger auto-download.
+    r = client.post("/api/preview", json={
+        **RX, "start_utc": "2027-01-01T00:00:00", "rinex_path": BRDC,
+        "ephemeris_mode": "precise", "fallback_to_broadcast": True})
+    assert r.status_code == 200
+    ws = r.json()["warnings"]
+    assert any("GPS-only" in w for w in ws), f"Expected GPS-only warning in {ws}"
