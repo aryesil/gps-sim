@@ -1,16 +1,29 @@
-# GPS L1 C/A Signal Simulator
+# GNSS L1 Signal Simulator
 
 A controlled, observable, and reproducible GNSS signal testing workbench.
 
-Pick a place and time on a map, generate a baseband GPS L1 C/A IQ recording
-with [`gps-sdr-sim`](https://github.com/osqzss/gps-sdr-sim), check it with a
-built-in software receiver, decode its navigation message, and — optionally,
-into a cable and never over the air — replay it to a PlutoSDR-class SDR.
-Every RF-relevant action is written to a persistent audit log. Signal
-generation runs from broadcast ephemeris by default; in **precise mode** an
-IGS SP3 orbit/clock product is fitted into the broadcast record set that
-drives `gps-sdr-sim`, so the satellite states behind the IQ match the
-precise product to well under a metre.
+Pick a place and time on a map, generate a baseband L1 IQ recording, check it
+with a built-in software receiver, decode its navigation message, and —
+optionally, into a cable and never over the air — replay it to a
+PlutoSDR-class SDR. Every RF-relevant action is written to a persistent audit
+log.
+
+Two generation engines:
+
+- **`gps-sdr-sim`** (default) —
+  [the external GPS L1 C/A generator](https://github.com/osqzss/gps-sdr-sim).
+- **`native`** — a built-in C++20 engine that renders the same GPS L1 C/A
+  output **plus GLONASS G1, Galileo E1, BeiDou B1I, QZSS L1 C/A and SBAS L1**
+  from one correlated multi-constellation geometry (one receive epoch, so
+  cross-system acquisition lines up), with a seeded per-satellite fading
+  model baked into the IQ. GLONASS FDMA is written to its own 1602 MHz band
+  file; every other system interleaves in the 1575.42 MHz L1 group.
+
+Signal generation runs from broadcast ephemeris by default; in **precise
+mode** an IGS SP3 orbit/clock product is fitted into the record set that
+drives generation, so the satellite states behind the IQ match the precise
+product to well under a metre. Precise mode is multi-GNSS on the native
+engine (GPS + GLONASS + Galileo + BeiDou + QZSS from an MGEX SP3 product).
 
 > ⚠️ **RF safety first.** Transmit is disabled by default. Read
 > [Safety](#safety) before enabling it. Lawful, authorized operation is
@@ -39,10 +52,17 @@ precise product to well under a metre.
 
 ## Features
 
-- **Generate** — static point or dynamic waypoint route → `gps-sdr-sim` →
-  raw interleaved IQ + `meta.json`, with streamed progress.
-- **Inspect** — power spectrum, per-PRN acquisition (Doppler + code phase),
-  code-correlation curves, measured-vs-predicted geometry.
+- **Generate** — static point or dynamic waypoint route → `gps-sdr-sim` or
+  the native C++ engine → raw interleaved IQ + `meta.json`, with streamed
+  progress. The native engine adds a constellation picker (GPS always on;
+  GLONASS / Galileo / BeiDou / QZSS / SBAS opt-in), a seeded log-normal
+  fading model, and int16 / int12 / int8 quantisation.
+- **Inspect** — power spectrum (every RF band overlaid on one absolute-Hz
+  axis), per-PRN acquisition (Doppler + code phase) for a GPS-only run, a
+  per-satellite signal-power panel across **all** constellations for a
+  multi-GNSS run (elevation taper + fading, re-evaluated as the IQ scrubber
+  moves), code-correlation curves, measured-vs-predicted geometry. All
+  status-panel canvases render at the display's pixel density.
 - **Verify** — a from-scratch software receiver acquires the generated IQ,
   solves a least-squares fix, and reports the error against the map marker.
 - **Decode** — reconstruct and explain the LNAV navigation message
@@ -161,6 +181,14 @@ backend/
   ephemeris.py      RINEX download, parse, epoch realignment, RINEX-2 writer
   scenario.py       ScenarioRequest, gps-sdr-sim argv builder
   generator.py      runs gps-sdr-sim (full run + short live segments)
+  signals.py        per-system L1 signal params (carrier, chip rate, code len, BOC, secondary code, GLONASS FDMA offsets)
+  synth/            native C++ engine: Python orchestration + ctypes ABI
+    engine.py       multi-constellation run: geometry -> per-SV specs -> band planning -> meta.json
+    bands.py        splits visible SVs into RF bands (L1 group 1575.42 MHz, GLONASS G1 1602 MHz)
+    _lib.py         ctypes bindings for backend/synth/native/libgnsssynth.dylib
+    fading.py       FadingConfig (model / sigma_db / coherence_s / seed)
+    sbas.py glonass state helpers
+    native/         C++20: code generation, NCOs, mixing, quantisation, block streaming, seeded fading
   geometry.py       WGS84 / ECEF / ENU, constellation geometry, transmit-time solve
   gpstime.py        GPSTime dataclass, leap-second table, UTC<->GPS
   precise.py        SP3-c/d parser, Neville position/velocity interp, clock interp
@@ -184,9 +212,11 @@ backend/
 frontend/           vanilla JS, no build step; served static by FastAPI
   index.html        three pages: Channels, Trajectory Builder, Log
   channels.js       channel cards: config, start/stop, timeline, scrubber,
-                    scenario save/load, replay, precise-ephemeris panel
+                    scenario save/load, replay, advanced config sub-tabs
+                    (SP3 / RF impairments / Propagation / Signal engine)
   map.js trajectory.js live.js pages.js app.js
-  plots.js skyplot.js iqplot.js   spectrogram, sky plot, IQ / spectrum plots
+  plots.js skyplot.js iqplot.js   spectrogram, sky plot, IQ / spectrum plots,
+                    per-SV power bars, HiDPI canvas helper, JS fading-model port
   log.js            audit-log merge, /ws/events client, receiver-feed panel
 ```
 
@@ -195,7 +225,9 @@ Events; the multi-operator feed is a WebSocket; everything else is JSON over
 HTTP. **Concurrency:** at most two transmit slots (`TX1`, `TX2`); audit
 appends are lock-serialized. **Tech stack:** Python ≥ 3.10, FastAPI +
 uvicorn, NumPy, `georinex`, `pyadi-iio` (transmit only), `gps-sdr-sim` (C,
-built from source); dependency-free vanilla JS plus Leaflet from a CDN.
+built from source), the native engine (C++20, built from source into
+`backend/synth/native/libgnsssynth.dylib`, loaded via `ctypes` — no Python
+extension module); dependency-free vanilla JS plus Leaflet from a CDN.
 
 ---
 
@@ -208,14 +240,20 @@ Set with `ephemeris_mode` on `/api/generate`, `/api/live/start`, and
 |------|------------------|---------------|
 | **Broadcast** (default) | generation + analysis | The daily broadcast RINEX nav file, with every satellite's `toc`/`toe`/`gps_week` **stamped** to the requested start so `gps-sdr-sim`'s validity-window check passes. M0 and the perturbations are left untouched — a broadcast-compatibility mechanism, not a precise ephemeris — so orbit error grows as the requested start moves away from the real broadcast epoch. |
 | **Precise (SP3), analysis** | `/api/preview`, `/api/precise/compare` | An IGS SP3-c/d orbit/clock product, interpolated (~10th-order Neville for position, analytic derivative for velocity, linear for the coarse SP3 clock). Reports the per-PRN broadcast-vs-precise delta. |
-| **Precise (SP3), generation** | `/api/generate`, `/api/live/start` | `ephemeris_fit.py` least-squares fits the interpolated SP3 track (position over a 4 h arc, `toe` ± 2 h) into a broadcast record set — solving M0, `delta_n`, the rate terms and the six harmonic corrections, plus `af0/af1/af2` against the SP3 clock. The fitted records go to `gps-sdr-sim` with **no realignment**, so the satellite states behind the IQ match the SP3 product to sub-metre. Fit residuals land in `meta.json` (`precise_fit`); a fit that cannot get under ~2 m is an error, not a silent bad nav file. |
+| **Precise (SP3), generation — `gps-sdr-sim`** | `/api/generate`, `/api/live/start` | `ephemeris_fit.py` least-squares fits the interpolated SP3 track (position over a 4 h arc, `toe` ± 2 h) into a broadcast record set — solving M0, `delta_n`, the rate terms and the six harmonic corrections, plus `af0/af1/af2` against the SP3 clock. The fitted records go to `gps-sdr-sim` with **no realignment**, so the satellite states behind the IQ match the SP3 product to sub-metre. Fit residuals land in `meta.json` (`precise_fit`); a fit that cannot get under ~2 m is an error, not a silent bad nav file. GPS only. |
+| **Precise (SP3), generation — `native`** | `/api/generate` with `engine=native` | The native engine propagates each satellite's state directly from the MGEX SP3 product at run time (no Keplerian re-fit), for GPS + GLONASS + Galileo + BeiDou + QZSS together. A GPS-only SP3 product (or a network with no reachable MGEX mirror) degrades to the systems it covers, with the omission named in `warnings`; `meta.json` records `provenance.ephemeris = "precise"`. |
 
 When precise mode is requested and no loaded SP3 product covers the start
-time, the server auto-downloads the best free IGS product for that GPS day
-*and the day either side* (`PRECISE_SP3_MIRRORS`: rapid → final →
-ultra-rapid), merges them, and loads the result — no file to place, no
-button to press. Ultra-rapid (IGU) is only reached for epochs too recent
-for rapid/final; its second day is *predicted*, so a warning is added.
+time, the server auto-downloads the best free product for that GPS day *and
+the day either side* (`PRECISE_SP3_MIRRORS`), merges them, and loads the
+result — no file to place, no button to press. When more than GPS is
+requested the fetch prefers a multi-GNSS (MGEX, GRECJ) product and only
+falls back to a GPS-only archive as a last resort; the cache is tagged with
+its coverage (`…_GRECJ.sp3` vs `…_G.sp3`) so a GPS-only file never
+shadows a later multi-GNSS request. If only a GPS-only product can be
+obtained, the non-GPS systems are dropped with a warning that says so.
+Ultra-rapid products are only reached for epochs too recent for
+rapid/final; their second day is *predicted*, so a warning is added.
 
 The three-day merge matters because a single one-day SP3 file
 cannot supply a centred ~11-point interpolation window when the start
@@ -267,12 +305,20 @@ Three pages, switched from the left sidebar.
 - *Simulation config* — map marker, Start UTC, Duration, Sample rate,
   Format (int16 / int8), RINEX (`AUTO` or a path).
 - *Ephemeris* — Broadcast (realigned) / Precise (SP3-fitted) selector,
-  applied to Generate and live runs, plus a collapsible panel to load an
-  SP3 file and run a compare-vs-broadcast.
+  applied to Generate and live runs.
+- *Advanced config* — one row of sub-tabs, at most one open at a time,
+  each height-capped with its own scroll so opening one never stretches
+  the page: **SP3** (load a local product, compare vs broadcast),
+  **RF impairments**, **Propagation** (receiver models), **Signal engine**
+  (engine picker, constellation checkboxes, quantisation, fading model).
 - *Scenario library* — save/reload the card's config by name.
 - *Timeline* — `jog` / `time_shift` steps that fire at `t + N` s.
-- *Inspect panels* — IQ waveform + spectrum with a playback scrubber,
-  spectrogram waterfall, C/N0 trend, sky plot, LNAV decode for a PRN.
+- *Inspect panels* — IQ waveform + spectrum with a playback scrubber
+  (debounced, stale responses dropped), every RF band's spectrum overlaid
+  on one absolute-frequency axis, per-satellite signal-power bars (real
+  acquisition metric for a GPS-only run; elevation-taper + fading gain
+  across all constellations for a multi-GNSS run, redrawn as the scrubber
+  moves), spectrogram waterfall, C/N0 trend, sky plot, LNAV decode.
 - *Live manipulation* — jog buttons and GPS time-of-week shift while a live
   session runs.
 - *Start / Stop*, with a type-to-confirm gate and the mandatory
@@ -345,10 +391,10 @@ key in `X-API-Key`; a transmit *stop* never does.
 
 | Group | Endpoints |
 |-------|-----------|
-| Health / preview | `GET /api/health`, `POST /api/preview` (accepts `ephemeris_mode`, `fallback_to_broadcast`), `POST /api/preview_track` |
+| Health / preview | `GET /api/health`, `POST /api/preview` (accepts `ephemeris_mode`, `fallback_to_broadcast`, `systems` — multi-GNSS geometry preview), `POST /api/preview_track` |
 | Ephemeris | `POST /api/rinex/upload` |
 | Precise (analysis) | `GET /api/precise/status`, `POST /api/precise/load` *(operator)*, `POST /api/precise/compare` |
-| Generate / inspect | `POST /api/generate` (SSE; accepts `ephemeris_mode`, `fallback_to_broadcast`), `POST /api/receiver`, `GET /api/iqplot`, `GET /api/correlation`, `GET /api/lnav` |
+| Generate / inspect | `POST /api/generate` (SSE; accepts `ephemeris_mode`, `fallback_to_broadcast`, `engine` (`gps-sdr-sim`｜`native`), `systems`, `fading`, `sample_format` int16/int12/int8), `POST /api/receiver`, `GET /api/iqplot` (per-RF-band breakdown when multi-band), `GET /api/correlation`, `GET /api/lnav` |
 | Transmit *(needs `ALLOW_TX=1`)* | `POST /api/transmit` (SSE, operator), `POST /api/transmit/stop`, `POST /api/live/start` (SSE, operator), `POST /api/live/jog|time_shift` *(operator)*, `POST /api/live/stop` |
 | Device *(needs `ALLOW_TX=1`)* | `POST /api/device/connect|disconnect` *(operator)*, `GET /api/device/status` |
 | Recording | `GET /api/recording/list`, `GET /api/recording/replay` (SSE) |
@@ -374,8 +420,8 @@ All via environment variables (see `backend/config.py`).
 | `DATA_DIR` | `./data` | RINEX cache, saved trajectories & scenarios. |
 | `OUT_DIR` | `./out` | Generated IQ + `meta.json`, recordings. Served at `/out`. |
 | `LOG_DIR` | `./logs` | `audit.jsonl`. |
-| `PRECISE_DIR` | `./data/precise` | SP3 product cache / load directory. |
-| `PRECISE_SP3_MIRRORS` | free BKG + IGN rapid → final → ultra-rapid SP3 (anonymous) | Comma-separated SP3 URL templates (`{gpsweek}`/`{gps_week}`/`{dow}`/`{yyyy}`/`{doy}`/`{wwwwd}`/`{hh}`). Tried in order, first hit wins: rapid (final-grade orbits, ~17 h latency) → final (best, ~12 d) → ultra-rapid (IGU, ~3–9 h, 2-day file whose second half is *predicted*) as the last resort for very recent epochs. Used by an explicit `POST /api/precise/load` with `download` and by the auto-fetch on the precise `/api/preview` and `/api/generate` paths. Cached per day and tier (`IGS_wwww_d_{RAP,FIN,ULT}.sp3`); delete the file to force a refresh. Set to `""` to disable all downloads. |
+| `PRECISE_DIR` | `./data/precise` | SP3 product cache / load directory. Git-ignored — products are downloaded at run time, never committed. |
+| `PRECISE_SP3_MIRRORS` | free anonymous mirrors: ESA navigation-office + MGEX (GRECJ) rapid → final, then GPS-only IGS0OPS rapid → final → ultra-rapid | Comma-separated SP3 URL templates (`{gpsweek}`/`{gps_week}`/`{dow}`/`{yyyy}`/`{doy}`/`{wwwwd}`/`{hh}`). Tried in order, first hit wins. A request for more than GPS prefers a multi-GNSS (MGEX) product and only falls back to a GPS-only archive as a last resort. Used by an explicit `POST /api/precise/load` with `download` and by the auto-fetch on the precise `/api/preview` and `/api/generate` paths. Cached per day, tier and coverage (`IGS_wwww_d_{RAP,FIN,ULT}_{GRECJ,G}.sp3`); delete the file to force a refresh. Set to `""` to disable all downloads. |
 | `GPS_SDR_SIM_BIN` | `./gps-sdr-sim/gps-sdr-sim` | Path to the built binary. |
 | `API_KEYS_JSON` | `""` | JSON `{"<key>": "operator"｜"viewer"}`. Empty ⇒ auth disabled. |
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | uvicorn bind (via `run_server.sh`). |
@@ -428,16 +474,20 @@ operator; the authors accept no liability for misuse.
 .venv/bin/pytest -q
 ```
 
-**406 passed, 3 xfailed** as of this writing. Coverage spans ephemeris
-alignment, GPS-time conversions, the SP3 parser and orbit/clock
+**567 passed, 4 xfailed** as of this writing. Coverage spans ephemeris
+alignment, GPS-time conversions, the SP3 parser and multi-GNSS orbit/clock
 interpolation, the broadcast/precise mode selector, the SP3→broadcast
 fit (pure-Kepler recovery to millimetres, SP3-fixture fit, RINEX-2
-serialisation), precise generation wiring, geometry, acquisition, the
-receiver solve, LNAV decode, the live session, transmit plumbing
+serialisation), precise generation wiring (both engines), geometry, the
+native engine (per-system code generation, NCO/mixer continuity, BOC and
+secondary codes, GLONASS FDMA epoch, multi-constellation acquisition,
+seeded fading, band planning, C++/Python constant parity), acquisition,
+the receiver solve, LNAV decode, the live session, transmit plumbing
 (mocked hardware), the device link, audit, RBAC, NMEA parsing,
-recording/replay, the scenario library, the WebSocket hub, and the
-precise-ephemeris HTTP endpoints. The 3 `xfail` cases need real SDR
-hardware. The suite uses fixtures and mocks only — no network downloads.
+recording/replay, the scenario library, the WebSocket hub, the frontend
+assets, and the precise-ephemeris HTTP endpoints. The 4 `xfail` cases
+need real SDR hardware. The suite uses fixtures and mocks only — no
+network downloads.
 
 `tests/` is organised into flat integration tests plus `unit/`,
 `validation/` (independent cross-checks — see below), and `regression/`
@@ -480,8 +530,12 @@ A set of software-only checks that do not need hardware or the real
   `_apply_channel` post-process, troposphere not at all).
 - **The fit arc is 4 h.** Precise generation needs an SP3 product whose
   epochs cover the scenario start ± 2 h; outside that it returns HTTP 422.
-- **GPS L1 C/A only** — single band, single constellation. No GLONASS /
-  Galileo / BeiDou, no L2/L5.
+- **L1 band only** — no L2/L5. The `gps-sdr-sim` engine is GPS L1 C/A
+  only. The `native` engine adds GLONASS G1, Galileo E1, BeiDou B1I,
+  QZSS L1 C/A and SBAS L1, but only the GPS L1 C/A component is checked
+  by the built-in software receiver / acquisition inspector — the other
+  systems are verified by the constellation's own unit tests and by
+  reading back `meta.json`, not by a full end-to-end fix.
 - **Two transmit slots** (`TX1`, `TX2`) maximum.
 - **Some endpoints have limited UI wiring** (`/api/receiver`, `/api/lnav`,
   `/api/correlation`, `/api/preview_track`) — call them directly with
