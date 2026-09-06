@@ -5,7 +5,7 @@ import pathlib
 import numpy as np
 import pytest
 
-from backend import ephemeris, geometry
+from backend import ephemeris, geometry, precise
 from backend.gpstime import GPSTime
 from backend.precise import (
     PreciseEphemerisProvider, PreciseProductParseError, EpochOutOfCoverage,
@@ -39,7 +39,10 @@ def test_parse_basic_header_and_records():
     sp3 = parse_sp3(SP3)
     assert sp3.gps_week == WEEK
     assert sp3.epoch_interval_s == pytest.approx(INTERVAL)
-    assert sp3.satellites() == TRUTH["prns"]
+    # satellites() now returns tuple keys (system, prn) instead of bare PRNs
+    sats = sp3.satellites()
+    assert all(isinstance(s, tuple) and len(s) == 2 for s in sats)
+    assert [s[1] for s in sats if s[0] == "G"] == TRUTH["prns"]  # GPS satellites
     assert len(sp3.epoch_times) == TRUTH["n_epochs"]
 
 
@@ -249,3 +252,36 @@ def test_download_sp3_ultra_rapid_templating_and_cache_tiering(tmp_path, monkeyp
     (tmp_path / f"IGS_{WEEK:04d}_4_FIN.sp3").write_bytes(raw)
     again = _p.download_sp3(WEEK, 4, tmp_path, mirrors)
     assert pathlib.Path(again).name == f"IGS_{WEEK:04d}_4_FIN.sp3"
+
+
+# --- multi-GNSS support (Task 20) ----------------------------------------
+# Build test SP3 data with properly formatted P records (14-char right-aligned fields)
+def _build_sp3_mgex():
+    lines = [
+        "#dP2026  9  1  0  0  0.00000000      96 ORBIT IGb14 HLM  GFZ",
+        "## 2434 259200.00000000   900.00000000 60849 0.0000000000000",
+        "*  2026  9  1  0  0  0.00000000",
+    ]
+    # Format: PG01 + 14-char X + 14-char Y + 14-char Z + 14-char clk
+    records = [
+        ("G", 1, -12345.678901, -9876.543210, 21000.111222, 123.456789),
+        ("E", 11, 15000.000000, 20000.000000, -5000.000000, -50.000000),
+        ("C", 6, -8000.000000, 35000.000000, 100.000000, 10.000000),
+        ("R", 7, 19550.540000, 5000.000000, 15000.000000, -30.000000),
+        ("J", 2, -30000.000000, 20000.000000, 35000.000000, 7.000000),
+        ("S", 20, 42000.000000, 0.000000, 0.000000, 1.000000),
+    ]
+    for sys, prn, x, y, z, clk in records:
+        line = f"P{sys}{prn:02d}{x:14.6f}{y:14.6f}{z:14.6f}{clk:14.6f}"
+        lines.append(line)
+    lines.append("EOF")
+    return "\n".join(lines) + "\n"
+
+
+_SP3_MGEX = _build_sp3_mgex()
+
+
+def test_parse_sp3_keeps_grecj_drops_sbas():
+    p = precise.parse_sp3(_SP3_MGEX, source="mgex-test")
+    assert set(p.systems()) == {"G", "E", "C", "R", "J"}
+    assert ("E", 11) in p.records and ("S", 20) not in p.records

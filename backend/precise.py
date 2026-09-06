@@ -77,6 +77,7 @@ class SatelliteState:
     source: str
     valid_from: GPSTime
     valid_to: GPSTime
+    system: str = "G"
 
     def as_dict(self) -> dict:
         return {
@@ -90,6 +91,7 @@ class SatelliteState:
             "source": self.source,
             "valid_from_sow": self.valid_from.sow,
             "valid_to_sow": self.valid_to.sow,
+            "system": self.system,
         }
 
 
@@ -126,8 +128,8 @@ class SP3Product:
     source: str
     gps_week: int
     epoch_interval_s: float
-    # prn -> list of (t_seconds_since_gps_epoch, x_m, y_m, z_m, clk_s|nan), sorted
-    records: dict[int, list[tuple[float, float, float, float, float]]] = field(default_factory=dict)
+    # (sys, prn) -> list of (t_seconds_since_gps_epoch, x_m, y_m, z_m, clk_s|nan), sorted
+    records: dict[tuple, list[tuple[float, float, float, float, float]]] = field(default_factory=dict)
     epoch_times: list[float] = field(default_factory=list)  # union of epoch stamps, seconds
 
     # --- coverage ----------------------------------------------------
@@ -141,8 +143,11 @@ class SP3Product:
         lo, hi = self.coverage_seconds
         return GPSTime.from_seconds(lo), GPSTime.from_seconds(hi)
 
-    def satellites(self) -> list[int]:
-        return sorted(p for p, rows in self.records.items() if rows)
+    def satellites(self) -> list[tuple]:
+        return sorted(k for k, rows in self.records.items() if rows)
+
+    def systems(self) -> list[str]:
+        return sorted({k[0] for k in self.records})
 
     def available_epochs(self) -> list[GPSTime]:
         return [GPSTime.from_seconds(t) for t in self.epoch_times]
@@ -190,7 +195,7 @@ def parse_sp3(text_or_path: str | pathlib.Path, *, source: str | None = None) ->
 
     gps_week = 0
     interval_s = 0.0
-    records: dict[int, list] = {}
+    records: dict[tuple, list] = {}
     epoch_times: list[float] = []
     cur_t: float | None = None
     seen_any_epoch = False
@@ -216,8 +221,9 @@ def parse_sp3(text_or_path: str | pathlib.Path, *, source: str | None = None) ->
             if cur_t is None:
                 raise PreciseProductParseError("position record before any epoch line")
             sv = line[1:4].strip()
-            if not sv.startswith("G"):
-                continue  # GPS only, same as the broadcast path
+            sysc = sv[0]
+            if sysc not in ("G", "R", "E", "C", "J"):
+                continue  # drop SBAS and other systems
             try:
                 prn = int(sv[1:])
                 x_km = float(line[4:18])
@@ -229,17 +235,17 @@ def parse_sp3(text_or_path: str | pathlib.Path, *, source: str | None = None) ->
             if x_km == 0.0 and y_km == 0.0 and z_km == 0.0:
                 continue  # SP3 "no data" sentinel for this SV at this epoch
             clk_s = math.nan if abs(clk_us) >= _SP3_BAD_CLOCK_US else clk_us * 1e-6
-            records.setdefault(prn, []).append(
+            records.setdefault((sysc, prn), []).append(
                 (cur_t, x_km * 1e3, y_km * 1e3, z_km * 1e3, clk_s)
             )
             continue
         # 'V' velocity rows, 'EOF', '+', '%', '/*' comments: ignored.
 
     if not seen_any_epoch or not records:
-        raise PreciseProductParseError("SP3 file carries no usable GPS position records")
+        raise PreciseProductParseError("SP3 file carries no usable position records")
 
-    for prn in records:
-        records[prn].sort(key=lambda r: r[0])
+    for k in records:
+        records[k].sort(key=lambda r: r[0])
     epoch_times = sorted(set(epoch_times))
     return SP3Product(source=source, gps_week=gps_week,
                       epoch_interval_s=interval_s, records=records,
@@ -249,7 +255,7 @@ def parse_sp3(text_or_path: str | pathlib.Path, *, source: str | None = None) ->
 def merge_sp3(products: "list[SP3Product]") -> "SP3Product":
     """Concatenate several SP3 products (typically consecutive days) into
     one, so an interpolation window near a single file's edge can still be
-    centred. Rows are unioned per PRN, sorted by epoch, and de-duplicated
+    centred. Rows are unioned per (sys, PRN), sorted by epoch, and de-duplicated
     on the epoch stamp (first product wins a tie). Raises ValueError on an
     empty list.
     """
@@ -258,18 +264,18 @@ def merge_sp3(products: "list[SP3Product]") -> "SP3Product":
         raise ValueError("merge_sp3: nothing to merge")
     if len(products) == 1:
         return products[0]
-    merged: dict[int, list] = {}
+    merged: dict[tuple, list] = {}
     for p in products:
-        for prn, rows in p.records.items():
-            merged.setdefault(prn, []).extend(rows)
-    for prn, rows in merged.items():
+        for key, rows in p.records.items():
+            merged.setdefault(key, []).extend(rows)
+    for key, rows in merged.items():
         rows.sort(key=lambda r: r[0])
         deduped, last_t = [], None
         for r in rows:
             if last_t is None or r[0] != last_t:
                 deduped.append(r)
                 last_t = r[0]
-        merged[prn] = deduped
+        merged[key] = deduped
     epoch_times = sorted({t for p in products for t in p.epoch_times})
     base = min(products, key=lambda p: p.epoch_times[0] if p.epoch_times else 0.0)
     srcs = "+".join(pathlib.Path(p.source).name for p in products)
@@ -316,7 +322,7 @@ class PreciseEphemerisProvider:
     def available_epochs(self) -> list[GPSTime]:
         return self.product.available_epochs()
 
-    def satellites(self) -> list[int]:
+    def satellites(self) -> list[tuple]:
         return self.product.satellites()
 
     def coverage(self) -> tuple[GPSTime, GPSTime]:
@@ -326,12 +332,15 @@ class PreciseEphemerisProvider:
         if self._sp3 is None:
             return {"loaded": False}
         lo, hi = self.product.coverage_gpstime()
+        # For backwards compatibility, return just GPS PRNs as bare integers
+        sats = self.satellites()
+        gps_prns = sorted([prn for (sys, prn) in sats if sys == "G"])
         return {
             "loaded": True,
             "source": self.product.source,
             "gps_week": self.product.gps_week,
             "interval_s": self.product.epoch_interval_s,
-            "satellites": self.satellites(),
+            "satellites": gps_prns,
             "epochs": len(self.product.epoch_times),
             "coverage_start_utc": lo.to_datetime().isoformat() + "Z",
             "coverage_end_utc": hi.to_datetime().isoformat() + "Z",
@@ -345,7 +354,9 @@ class PreciseEphemerisProvider:
         if allow_reduced_order is not None:
             allow_boundary = allow_boundary or allow_reduced_order
         sp3 = self.product
-        rows = sp3.records.get(prn)
+        # Normalise bare-int PRN to ("G", prn) tuple for backwards compatibility
+        key = ("G", prn) if isinstance(prn, int) else tuple(prn)
+        rows = sp3.records.get(key)
         if not rows:
             raise SatelliteNotInProduct(f"PRN {prn} not in {sp3.source}")
 
@@ -414,10 +425,12 @@ class PreciseEphemerisProvider:
         rather than a silently wrong interpolation.
         """
         wk = self.product.gps_week if week is None else int(week)
+        # Normalise bare-int PRN to ("G", prn) tuple for backwards compatibility
+        key = ("G", prn) if isinstance(prn, int) else tuple(prn)
 
         def f(sow_seconds: float):
             epoch = GPSTime(wk, sow_seconds)
-            st = self.get_state(prn, epoch, order=order,
+            st = self.get_state(key, epoch, order=order,
                                 allow_boundary=allow_boundary)
             return (list(st.position_ecef_m),
                     list(st.velocity_ecef_mps),
