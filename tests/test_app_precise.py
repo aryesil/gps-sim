@@ -225,7 +225,7 @@ def test_preview_precise_raises_when_required_gps_absent(monkeypatch):
     r = client.post("/api/preview", json={
         **RX, "start_utc": TOE_UTC, "rinex_path": BRDC,
         "ephemeris_mode": "precise", "systems": ["G", "E"]})
-    assert r.status_code == 503, r.text
+    assert r.status_code == 422, r.text
     assert "GPS" in r.json()["detail"]
 
 

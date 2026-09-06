@@ -241,9 +241,12 @@ def _preview_multi_precise(body: dict, start: dt.datetime, rx,
     # A missing REQUIRED system still raises on the precise path, same as the
     # broadcast path's require=("G",) (spec: precise-ephemeris-design.md L171).
     if "G" in req_set and "G" not in covered:
-        raise ephemeris.EphemerisUnavailable(
-            "precise: the loaded SP3 product has no GPS coverage but G is a "
-            "required system")
+        try:
+            raise ephemeris.EphemerisUnavailable(
+                "precise: the loaded SP3 product has no GPS coverage but G is a "
+                "required system")
+        except ephemeris.EphemerisUnavailable as e:
+            raise HTTPException(422, detail=str(e))
     warnings = list(precise_warns)
     for s in systems:
         if s not in covered:
