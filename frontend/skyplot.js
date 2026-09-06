@@ -1,5 +1,6 @@
 // frontend/skyplot.js
 let _lastSkyEntries = {};   // canvasId -> entries, for click-to-select (positions recomputed on click)
+const _SYS_COLOR = {G:'#06c', R:'#c30', E:'#093', C:'#c60', J:'#606', S:'#888'};
 
 // cn0ByPrn (optional): {prn: metric_db} from the inspect step's acquire()
 // results -- colors each dot by measured signal strength instead of the
@@ -15,10 +16,10 @@ window.drawSkyplot = function (canvasId, entries, cn0ByPrn) {
     const r = R * (1 - e.el_deg / 90), a = (e.az_deg - 90) * Math.PI / 180;
     const x = cx + r * Math.cos(a), y = cy + r * Math.sin(a);
     const db = cn0ByPrn && cn0ByPrn[e.prn];
-    g.fillStyle = (db === undefined) ? '#06c' : _cn0Color(db);
+    g.fillStyle = (db === undefined) ? (_SYS_COLOR[e.sys] || '#06c') : _cn0Color(db);
     g.beginPath(); g.arc(x, y, 4, 0, 7); g.fill();
     g.fillStyle = '#333';
-    g.fillText((e.sys || 'G') + e.prn, x + 5, y);
+    g.fillText(e.svid || ('G' + e.prn), x + 5, y);
   });
 };
 
@@ -43,7 +44,7 @@ window.attachSkyplotClickHandler = function (canvasId, prnInputId) {
     });
     if (best && bestD < 20) {
       const prnInput = document.getElementById(prnInputId);
-      if (prnInput) prnInput.value = best.prn;
+      if (prnInput) prnInput.value = best.svid || best.prn;
     }
   });
 };

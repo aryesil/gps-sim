@@ -187,3 +187,10 @@ def test_engine_panel_has_systems_multiselect():
     assert "systems" in js
     # opt-in: only added when more than G
     assert "sysSel.length > 1" in js or "sys.length > 1" in js
+
+
+def test_skyplot_colours_by_system():
+    js = (F / "skyplot.js").read_text()
+    for s in ("R", "E", "C", "J", "S"):
+        assert f"{s}:" in js  # _SYS_COLOR entry
+    assert "svid" in js and "svid" in (F / "plots.js").read_text()
