@@ -268,10 +268,28 @@ window.pushCn0Sample = function (canvasId, db) {
 // Scrubber: after Generate, the whole .bin file exists on disk -- let the
 // user drag a slider across it and re-fetch a 2000-sample window at that
 // offset instead of always looking at sample 0.
+const _iqSeq = {};       // channelId -> latest request serial
+const _iqAbort = {};     // channelId -> AbortController of the in-flight fetch
 window.loadIqPlots = async function (channelId, outdir, offset) {
-  const r = await fetch(`/api/iqplot?outdir=${outdir}&offset=${offset || 0}`);
+  // Scrubbing fires many calls in a row against a multi-GB IQ file. Cancel
+  // the previous request and tag this one, so only the newest offset's
+  // response is ever rendered -- otherwise slow/out-of-order replies make
+  // the plots lag behind the cursor and jump around.
+  const seq = (_iqSeq[channelId] = (_iqSeq[channelId] || 0) + 1);
+  if (_iqAbort[channelId]) _iqAbort[channelId].abort();
+  const ac = new AbortController();
+  _iqAbort[channelId] = ac;
+  let r;
+  try {
+    r = await fetch(`/api/iqplot?outdir=${outdir}&offset=${offset || 0}`,
+                    { signal: ac.signal });
+  } catch (e) {
+    return;   // aborted by a newer scrub position, or network error
+  }
+  if (seq !== _iqSeq[channelId]) return;   // superseded while awaiting
   if (!r.ok) return;
   const d = await r.json();
+  if (seq !== _iqSeq[channelId]) return;
   drawWaveform(`${channelId}-iq-waveform`, d.i, d.q);
   drawConstellation(`${channelId}-iq-constellation`, d.i, d.q);
   if (Array.isArray(d.bands) && d.bands.length >= 1) {
@@ -329,5 +347,11 @@ window.loadIqPlots = async function (channelId, outdir, offset) {
 window.attachIqScrubber = function (channelId, outdir) {
   const slider = document.getElementById(`${channelId}-iq-scrub`);
   if (!slider) return;
-  slider.oninput = () => loadIqPlots(channelId, outdir, Number(slider.value));
+  // Trailing debounce while dragging (the stale-guard in loadIqPlots drops
+  // superseded replies), plus an immediate fetch on release so the final
+  // position is always rendered.
+  let timer = 0;
+  const fire = () => loadIqPlots(channelId, outdir, Number(slider.value));
+  slider.oninput = () => { clearTimeout(timer); timer = setTimeout(fire, 80); };
+  slider.onchange = () => { clearTimeout(timer); fire(); };
 };
