@@ -10,6 +10,11 @@
 // the Neumann-Hoffman secondary -- tables only, see the header for the
 // BDS-SIS-ICD-B1I v3.0 citation.
 #include "b1i_taps.hpp"
+// Galileo E1-B (data) and E1-C (pilot) are fixed 4092-chip memory codes from
+// the Galileo OS SIS ICD Annex C.7/C.8 -- not LFSR-generated. They live in a
+// compiled-in table (galileo_e1_codes.cpp) reached via codes_mem.hpp. The
+// E1-C 25-chip CS25 secondary comes from the same table.
+#include "codes_mem.hpp"
 
 namespace {
 // G2 phase-select tap pairs (1-indexed register stages) for PRN 1..32,
@@ -78,7 +83,8 @@ void b1i_ranging(int t1, int t2, int t3, int8_t *out) {
 }  // namespace
 
 // CODE-GEN sys int (distinct from the propagation sys int in synth_sat_state_sys):
-//   0 GPS, 1 QZSS, 2 SBAS, 3 BeiDou B1I (Task 7), 4 GLONASS G1 (Task 12).
+//   0 GPS, 1 QZSS, 2 SBAS, 3 BeiDou B1I (Task 7), 4 GLONASS G1 (Task 12),
+//   5 Galileo E1B (data), 6 Galileo E1C (pilot).
 // Fills `primary` with {-1,+1} chips; `prim_len` must be >= the code length.
 // `secondary` is filled only when `sec_len > 0` -- GPS/QZSS/SBAS L1 have no
 // secondary code, so it is left untouched. Returns 0 ok, -1 bad args/unsupported.
@@ -109,6 +115,18 @@ extern "C" int synth_code(int sys, int prn, int8_t *primary, int prim_len,
             const bool geo = b1i_taps::is_geo(prn);
             for (int c = 0; c < 20; ++c)
                 secondary[c] = geo ? int8_t(1) : b1i_taps::kNH20[c];
+        }
+        return 0;
+    }
+    case 5:    // Galileo E1B (data)  -- 4092-chip memory code
+    case 6: {  // Galileo E1C (pilot) -- 4092-chip memory code + CS25 secondary
+        if (prn < 1 || prn > 50 || prim_len < 4092) return -1;
+        const int8_t *mem = (sys == 5) ? mem_e1b(prn) : mem_e1c(prn);
+        if (mem == nullptr) return -1;
+        for (int c = 0; c < 4092; ++c) primary[c] = mem[c];
+        if (sys == 6 && secondary && sec_len >= 25) {
+            const int8_t *sec = cs25();
+            for (int c = 0; c < 25; ++c) secondary[c] = sec[c];
         }
         return 0;
     }
