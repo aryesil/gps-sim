@@ -4,7 +4,7 @@ import ctypes
 import pathlib
 import sys
 
-ABI_VERSION = 10
+ABI_VERSION = 11
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
@@ -74,11 +74,27 @@ def _bind_run(lib: ctypes.CDLL) -> None:
 
 
 def _bind_sat_state(lib: ctypes.CDLL) -> None:
+    _dp = ctypes.POINTER(ctypes.c_double)
     lib.synth_sat_state.restype = None
     lib.synth_sat_state.argtypes = [ctypes.POINTER(KeplerEph), ctypes.c_double,
-                                    ctypes.POINTER(ctypes.c_double),
-                                    ctypes.POINTER(ctypes.c_double),
-                                    ctypes.POINTER(ctypes.c_double)]
+                                    _dp, _dp, _dp]
+    lib.synth_sat_state_sys.restype = None
+    lib.synth_sat_state_sys.argtypes = [ctypes.POINTER(KeplerEph), ctypes.c_int,
+                                        ctypes.c_double, _dp, _dp, _dp]
+
+
+def sat_state_sys(eph_struct: "KeplerEph", sys_int: int, t: float):
+    """Propagate a KeplerEph via the native engine for a given PROPAGATION
+    sys-int (0 GPS/QZSS, 1 Galileo, 2 BeiDou MEO/IGSO, 3 BeiDou GEO -- a
+    SEPARATE enum from the code-generation `sys` int). Returns
+    ``(pos3, vel3, clk)`` with pos/vel as 3-tuples of floats."""
+    lib = load_lib()
+    pos = (ctypes.c_double * 3)()
+    vel = (ctypes.c_double * 3)()
+    clk = ctypes.c_double()
+    lib.synth_sat_state_sys(ctypes.byref(eph_struct), int(sys_int),
+                            ctypes.c_double(t), pos, vel, ctypes.byref(clk))
+    return tuple(pos), tuple(vel), clk.value
 
 
 def bind_fading(lib: ctypes.CDLL) -> None:

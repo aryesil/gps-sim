@@ -35,6 +35,22 @@ def test_keplerian_state_matches_sat_state_for_gps():
     assert abs(c_new - c_old) < 1e-15
 
 
+def test_cpp_matches_python_for_each_kepler_system():
+    from backend.synth import _lib, engine
+
+    _MIXED = str(pathlib.Path(__file__).parent.parent / "fixtures" / "brdc_mixed.rnx")
+    eph = ephemeris.parse_rinex_multi(_MIXED, ("G", "E", "C", "J"))
+    # propagation sys-int: 0 GPS/QZSS, 1 Galileo, 2 BeiDou MEO/IGSO, 3 BeiDou GEO
+    sysmap = {"G": 0, "J": 0, "E": 1, "C": 2}
+    for (s, prn), rec in eph.items():
+        st = engine.kepler_struct(rec)
+        t = rec["toe"] + 300.0
+        p_c, v_c, _c_c = _lib.sat_state_sys(st, sysmap[s], t)
+        p_p, v_p, _c_p = geometry.sat_state(rec, t)
+        assert np.max(np.abs(np.array(p_c) - p_p)) < 1e-3, (s, prn)
+        assert np.max(np.abs(np.array(v_c) - v_p)) < 1e-4, (s, prn)
+
+
 def test_beidou_geo_rotation_applied_for_low_inclination():
     eph, sow = _gps_eph()
     base = dict(eph[sorted(eph)[0]])

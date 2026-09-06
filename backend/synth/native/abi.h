@@ -39,6 +39,13 @@ typedef struct {
 // to vel3[0..2], and the SV clock correction (s) to clk1[0].
 void synth_sat_state(const KeplerEph *e, double t_gps,
                      double *pos3, double *vel3, double *clk1);
+// PROPAGATION sys-int: 0 GPS/QZSS, 1 Galileo, 2 BeiDou MEO/IGSO, 3 BeiDou GEO.
+// Selects mu / omega_e_dot / f_rel and (sys==3) the GEO reference-frame
+// rotation. This enum is SEPARATE from the code-generation `sys` int used by
+// later signal tasks -- do not unify them. synth_sat_state is
+// synth_sat_state_sys(e, 0, ...).
+void synth_sat_state_sys(const KeplerEph *e, int sys, double t_gps,
+                         double *pos3, double *vel3, double *clk1);
 // Debug shim: fills iq_interleaved[0..2*n-1] with I,Q,I,Q,... samples of a
 // unit-amplitude complex carrier at freq_hz for sample rate fs, from a single
 // phase-continuous NCO starting at phase 0.

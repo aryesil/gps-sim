@@ -8,9 +8,6 @@ from backend import ephemeris
 _MIXED = str(pathlib.Path(__file__).parent.parent / "fixtures" / "brdc_mixed.rnx")
 _GPS2 = str(pathlib.Path(__file__).parent.parent / "fixtures" / "brdc_full.rnx")
 
-_needs_mixed = pytest.mark.xfail(
-    reason="brdc_mixed.rnx from Task 5", strict=False)
-
 
 def test_parse_rinex_facade_unchanged():
     a = ephemeris.parse_rinex(_GPS2)
@@ -18,7 +15,6 @@ def test_parse_rinex_facade_unchanged():
     assert "sqrtA" in next(iter(a.values()))
 
 
-@_needs_mixed
 def test_multi_returns_tuple_keys_and_system_tag():
     eph = ephemeris.parse_rinex_multi(_MIXED, systems=("G", "E", "C", "R", "J", "S"))
     syskeys = {k[0] for k in eph}
@@ -29,7 +25,6 @@ def test_multi_returns_tuple_keys_and_system_tag():
     assert r["system"] == "R" and "x_km" in r and "vx" in r
 
 
-@_needs_mixed
 def test_multi_gps_only_matches_facade():
     a = ephemeris.parse_rinex_multi(_MIXED, ("G",))
     assert all(isinstance(k, int) for k in a)
