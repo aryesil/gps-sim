@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-ABI_VERSION = 13
+ABI_VERSION = 14
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
@@ -47,6 +47,12 @@ class SvSpec(ctypes.Structure):
         ("gain", ctypes.c_float),
         ("prn", ctypes.c_int),
         ("fading", FadingCfg),
+        # Task 10 -- appended after the frozen Phase-1 layout.
+        ("sys", ctypes.c_int),
+        ("sub_carrier_hz", ctypes.c_double),
+        ("sec_code", ctypes.POINTER(ctypes.c_int8)),
+        ("sec_len", ctypes.c_int),
+        ("sec_rate_hz", ctypes.c_double),
     ]
 
 
@@ -191,3 +197,92 @@ def debug_boc(sub_hz: float, fs: float, n: int) -> np.ndarray:
     lib.synth_debug_boc(ctypes.c_double(sub_hz), ctypes.c_double(fs),
                         ctypes.c_int(int(n)), out.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)))
     return out
+
+
+_I8 = ctypes.POINTER(ctypes.c_int8)
+_F32 = ctypes.POINTER(ctypes.c_float)
+
+
+def _as_i8(arr):
+    if arr is None:
+        return None
+    a = np.ascontiguousarray(arr, dtype=np.int8)
+    return a.ctypes.data_as(_I8), a  # keep `a` alive in caller
+
+
+def debug_one_sv(code, code_rate, code_phase0, code_doppler, carrier_freq, fs, n):
+    """Phase-1 single-SV mixer shim. Returns the interleaved I,Q,I,Q,... span
+    (float32, length 2n)."""
+    lib = load_lib()
+    lib.synth_debug_one_sv.restype = None
+    lib.synth_debug_one_sv.argtypes = [
+        _I8, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double,
+        ctypes.c_double, ctypes.c_int, _F32]
+    cptr, _keep = _as_i8(code)
+    out = (ctypes.c_float * (2 * int(n)))()
+    lib.synth_debug_one_sv(cptr, code_rate, code_phase0, code_doppler,
+                           carrier_freq, fs, int(n), out)
+    return np.array(list(out), dtype=np.float32)
+
+
+def debug_one_sv_ex(code, code_rate, code_phase0, code_doppler, carrier_freq, fs,
+                    n, *, sys=0, sub_hz=0.0, sec=None, sec_len=0, sec_rate=0.0):
+    """Task-10 single-SV mixer shim with sys / BOC sub-carrier / secondary code.
+    Starts at absolute sample 0. Returns the interleaved span (float32, 2n)."""
+    lib = load_lib()
+    lib.synth_debug_one_sv_ex.restype = None
+    lib.synth_debug_one_sv_ex.argtypes = [
+        _I8, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double,
+        ctypes.c_double, ctypes.c_int, ctypes.c_int, ctypes.c_double,
+        _I8, ctypes.c_int, ctypes.c_double, _F32]
+    cptr, _kc = _as_i8(code)
+    sptr, _ks = _as_i8(sec) if sec is not None else (None, None)
+    out = (ctypes.c_float * (2 * int(n)))()
+    lib.synth_debug_one_sv_ex(cptr, code_rate, code_phase0, code_doppler,
+                              carrier_freq, fs, int(n), int(sys), sub_hz,
+                              sptr, int(sec_len), sec_rate, out)
+    return np.array(list(out), dtype=np.float32)
+
+
+def debug_mix_range_ex(code, code_rate, code_phase0, code_doppler, carrier_freq,
+                       fs, sample0, n, *, sys=0, sub_hz=0.0, sec=None, sec_len=0,
+                       sec_rate=0.0):
+    """Task-10 mixer shim over gs::mix_block from an arbitrary absolute sample
+    index, with the five new fields. Returns complex64, length n."""
+    lib = load_lib()
+    lib.synth_debug_mix_range_ex.restype = None
+    lib.synth_debug_mix_range_ex.argtypes = [
+        _I8, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double,
+        ctypes.c_double, ctypes.c_uint64, ctypes.c_int, ctypes.c_int,
+        ctypes.c_double, _I8, ctypes.c_int, ctypes.c_double, _F32]
+    cptr, _kc = _as_i8(code)
+    sptr, _ks = _as_i8(sec) if sec is not None else (None, None)
+    out = (ctypes.c_float * (2 * int(n)))()
+    lib.synth_debug_mix_range_ex(cptr, code_rate, code_phase0, code_doppler,
+                                 carrier_freq, fs, int(sample0), int(n),
+                                 int(sys), sub_hz, sptr, int(sec_len), sec_rate,
+                                 out)
+    a = np.array(list(out), dtype=np.float32)
+    return a[0::2] + 1j * a[1::2]
+
+
+def debug_mix_parallel_ex(code, code_rate, code_phase0, code_doppler,
+                          carrier_freq, fs, sample0, n, nthreads, *, sys=0,
+                          sub_hz=0.0, sec=None, sec_len=0, sec_rate=0.0):
+    """Task-10 mixer shim over gs::mix_block_parallel with an explicit thread
+    count and the five new fields. Returns complex64, length n."""
+    lib = load_lib()
+    lib.synth_debug_mix_parallel_ex.restype = None
+    lib.synth_debug_mix_parallel_ex.argtypes = [
+        _I8, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double,
+        ctypes.c_double, ctypes.c_uint64, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_double, _I8, ctypes.c_int, ctypes.c_double, _F32]
+    cptr, _kc = _as_i8(code)
+    sptr, _ks = _as_i8(sec) if sec is not None else (None, None)
+    out = (ctypes.c_float * (2 * int(n)))()
+    lib.synth_debug_mix_parallel_ex(cptr, code_rate, code_phase0, code_doppler,
+                                    carrier_freq, fs, int(sample0), int(n),
+                                    int(nthreads), int(sys), sub_hz, sptr,
+                                    int(sec_len), sec_rate, out)
+    a = np.array(list(out), dtype=np.float32)
+    return a[0::2] + 1j * a[1::2]

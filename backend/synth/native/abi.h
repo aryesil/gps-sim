@@ -77,6 +77,29 @@ void synth_debug_mix_parallel(const int8_t *code, double code_rate,
                               double code_phase0, double code_doppler,
                               double carrier_freq, double fs, uint64_t sample0,
                               int n, int nthreads, float *iq);
+// Task 10 debug shims: like the three above but taking the five new SvSpec
+// fields (sys / sub_carrier_hz / sec_code / sec_len / sec_rate_hz) so tests can
+// exercise the BOC sign + secondary-code XOR path. Passing 0/nullptr for the
+// five reproduces the Phase-1 shims exactly.
+void synth_debug_one_sv_ex(const int8_t *code, double code_rate,
+                           double code_phase0, double code_doppler,
+                           double carrier_freq, double fs, int n,
+                           int sys, double sub_carrier_hz,
+                           const int8_t *sec_code, int sec_len,
+                           double sec_rate_hz, float *iq);
+void synth_debug_mix_range_ex(const int8_t *code, double code_rate,
+                              double code_phase0, double code_doppler,
+                              double carrier_freq, double fs, uint64_t sample0,
+                              int n, int sys, double sub_carrier_hz,
+                              const int8_t *sec_code, int sec_len,
+                              double sec_rate_hz, float *iq);
+void synth_debug_mix_parallel_ex(const int8_t *code, double code_rate,
+                                 double code_phase0, double code_doppler,
+                                 double carrier_freq, double fs,
+                                 uint64_t sample0, int n, int nthreads,
+                                 int sys, double sub_carrier_hz,
+                                 const int8_t *sec_code, int sec_len,
+                                 double sec_rate_hz, float *iq);
 // Per-SV channel spec for a full run. `code` points at 1023 int8 values in
 // {-1,+1}, owned by the caller for the whole synth_run call. Field order is
 // frozen -- _lib.py mirrors it exactly.
@@ -92,6 +115,14 @@ typedef struct {
     float  gain;               // static per-SV gain
     int    prn;                // 1..32; keys deterministic per-SV models
     FadingCfg fading;          // deterministic per-SV fading (model 0 = off)
+    // Task 10 -- appended after the frozen Phase-1 layout. Defaults 0/nullptr
+    // leave the mixer byte-identical to Phase 1 (BOC + secondary both off).
+    int    sys;                // CODE-GEN sys int (0 GPS/QZSS/SBAS, 1 Galileo E1,
+                               // 2 BeiDou B1I, ...); informational for the mixer
+    double sub_carrier_hz;     // > 0 => apply BOC(1,1) square sub-carrier sign
+    const int8_t *sec_code;    // secondary code chips {-1,+1}, sec_len entries
+    int    sec_len;            // > 0 => apply secondary-code XOR
+    double sec_rate_hz;        // secondary chip rate (Hz)
 } SvSpec;
 // Whole-run spec. Field order frozen -- _lib.py mirrors it exactly.
 typedef struct {

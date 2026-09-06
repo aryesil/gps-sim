@@ -30,6 +30,11 @@ int synth_run(const char *path, const RunSpec *rs, const SvSpec *specs, int nsv,
         ch[i].nav.bits = specs[i].nav_bits;
         ch[i].nav.nbits = specs[i].nav_nbits;
         ch[i].gain = specs[i].gain;
+        ch[i].sys = specs[i].sys;
+        ch[i].sub_carrier_hz = specs[i].sub_carrier_hz;
+        ch[i].sec_code = specs[i].sec_code;
+        ch[i].sec_len = specs[i].sec_len;
+        ch[i].sec_rate_hz = specs[i].sec_rate_hz;
     }
     // Static per-SV gain, before any per-block fading is folded in.
     std::vector<float> base_gain(static_cast<size_t>(nsv));
