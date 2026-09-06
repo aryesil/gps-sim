@@ -323,18 +323,21 @@ def run(req, progress_cb=None) -> pathlib.Path:
     # for the KnownFrame modulation path in the C++ mixer.
     nav_streams: dict = {}
     nav_prov = "none"
-    if "G" in systems and getattr(req, "nav_message", True) and not precise_multi:
+    if ("G" in systems and getattr(req, "nav_message", True)
+            and not precise_multi):
         try:
             hdr = ephemeris.rinex_header_iono_utc(req.rinex_path)
         except Exception:                       # noqa: BLE001 - degrade
             hdr = {}
-        try:
-            gps_eph = ephemeris.align_epochs(
-                ephemeris.parse_rinex(req.rinex_path), week, sow)
-        except Exception as exc:                 # noqa: BLE001 - degrade
-            warnings.append(f"LNAV: cannot load GPS broadcast records "
-                            f"({exc}); data symbol left constant")
-            gps_eph = {}
+        # Build from the same GPS records that drive the IQ geometry:
+        # `eph` here is either int-keyed (GPS-only) or ("G", prn)-keyed.
+        gps_eph = {}
+        for k, ep in eph.items():
+            if isinstance(k, tuple):
+                if k[0] == "G":
+                    gps_eph[k[1]] = ep
+            elif isinstance(k, int):
+                gps_eph[k] = ep
         for prn, ep in gps_eph.items():
             try:
                 arr = lnav_encode.nav_stream(ep, hdr, week, sow, req.duration_s)
