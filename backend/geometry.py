@@ -248,12 +248,18 @@ def constellation(eph_by_prn: dict, rx_ecef, t_rx: float,
 
 def state_fn_for(record: dict):
     """Dispatch a broadcast ``record`` to its state function by
-    ``record["system"]``. ``G J E C`` use the Kepler model; ``R S``
-    (GLONASS/SBAS) use the PZ-90 RK4 integrator in ``backend.synth.glonass``."""
+    ``record["system"]``. ``G J E C`` use the Kepler model; ``R``
+    (GLONASS) uses the PZ-90 RK4 integrator in ``backend.synth.glonass``;
+    ``S`` (SBAS) uses the ICAO Annex-10 propagator in ``backend.synth.sbas``."""
     s = record.get("system", "G")
     if s in ("G", "J", "E", "C"):
         return keplerian_state(record)
-    if s in ("R", "S"):
+    if s == "S":
+        # SBAS has its own ICAO Annex-10 constant-acceleration ECEF
+        # propagator -- not the PZ-90 integrator GLONASS uses.
+        from backend.synth import sbas
+        return sbas.sbas_state(record)
+    if s == "R":
         # Lazy import: backend.synth imports backend.geometry, so a module-level
         # import here would create a cycle.
         from backend.synth import glonass
