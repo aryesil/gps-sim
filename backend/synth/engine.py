@@ -8,6 +8,7 @@ import pathlib
 from backend import config, ephemeris, geometry
 from backend.synth import _lib
 from backend.synth._lib import RunSpec, SvSpec
+from backend.synth.fading import FadingConfig
 
 _KEPLER_KEYS = ("sqrtA e m0 delta_n omega omega0 omega_dot i0 idot cuc cus crc "
                 "crs cic cis toe toc af0 af1 af2").split()
@@ -55,6 +56,8 @@ def run(req, progress_cb=None) -> pathlib.Path:
     out_bin = outdir / "gpssim.bin"
 
     sats = _visible_gps(req)
+    cfg = FadingConfig.from_dict(getattr(req, "fading", None))
+    fading_model_int = 1 if cfg.model == "lognormal" else 0
     code_bufs = []                       # keep C-side code pointers alive
     specs = (SvSpec * len(sats))()
     for i, (prn, o) in enumerate(sats):
@@ -74,6 +77,11 @@ def run(req, progress_cb=None) -> pathlib.Path:
         specs[i].nav_bits = None
         specs[i].nav_nbits = 0
         specs[i].gain = 1.0
+        specs[i].prn = prn
+        specs[i].fading.model = fading_model_int
+        specs[i].fading.sigma_db = cfg.sigma_db
+        specs[i].fading.coherence_s = cfg.coherence_s
+        specs[i].fading.seed = cfg.seed
 
     rs = RunSpec()
     rs.fs = float(req.sample_rate)
@@ -109,6 +117,7 @@ def run(req, progress_cb=None) -> pathlib.Path:
             "engine": "native",
             "prns": [p for p, _ in sats],
             "phase1_approx": "observables at run start epoch, Doppler held constant over the run",
+            "fading": cfg.model,
         },
     }
     (outdir / "meta.json").write_text(json.dumps(meta, indent=2))

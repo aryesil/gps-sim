@@ -2,9 +2,24 @@
 #pragma once
 #include <stdint.h>
 #ifdef __cplusplus
+#include "fading.hpp"
+using gs::FadingCfg;
+#else
+typedef struct {
+    int model;
+    double sigma_db;
+    double coherence_s;
+    uint64_t seed;
+} FadingCfg;
+#endif
+#ifdef __cplusplus
 extern "C" {
 #endif
 int synth_abi_version(void);
+// Deterministic per-SV fading gain (linear), C-linkage shim over
+// gs::fading_gain_linear. Depends only on (seed, prn, floor(t_s/coherence_s))
+// plus smoothstep interpolation to the next knot.
+float fading_gain_linear(const FadingCfg *c, int prn, double t_s);
 // Fills out[0..8] with: l1_hz, ca_chip_hz, ca_code_len, nav_bit_hz, mu,
 // omega_e_dot, c, f_rel, gps_utc_leap. `n` must be >= 9.
 void synth_constants(double *out, int n);
@@ -51,6 +66,8 @@ typedef struct {
     const int8_t *nav_bits;    // may be NULL when nav_mode == 0
     int    nav_nbits;
     float  gain;               // static per-SV gain
+    int    prn;                // 1..32; keys deterministic per-SV models
+    FadingCfg fading;          // deterministic per-SV fading (model 0 = off)
 } SvSpec;
 // Whole-run spec. Field order frozen -- _lib.py mirrors it exactly.
 typedef struct {

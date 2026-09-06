@@ -1,5 +1,6 @@
 // backend/synth/native/engine.cpp
 #include "abi.h"
+#include "fading.hpp"
 #include "mixer.hpp"
 #include "quantize.hpp"
 #include "scheduler.hpp"
@@ -30,6 +31,9 @@ int synth_run(const char *path, const RunSpec *rs, const SvSpec *specs, int nsv,
         ch[i].nav.nbits = specs[i].nav_nbits;
         ch[i].gain = specs[i].gain;
     }
+    // Static per-SV gain, before any per-block fading is folded in.
+    std::vector<float> base_gain(static_cast<size_t>(nsv));
+    for (int i = 0; i < nsv; ++i) base_gain[i] = specs[i].gain;
 
     const int blk = rs->block_samples > 0 ? rs->block_samples : 65536;
     std::vector<float> fbuf(static_cast<size_t>(2 * blk));
@@ -50,6 +54,15 @@ int synth_run(const char *path, const RunSpec *rs, const SvSpec *specs, int nsv,
         const int n = static_cast<int>(
             std::min<uint64_t>(static_cast<uint64_t>(blk),
                                rs->total_samples - done));
+        // Recompute deterministic per-SV fading at the block midpoint every
+        // block (do not hoist -- it is time-varying). Off model => factor 1.0f.
+        const double block_mid_t_seconds =
+            (static_cast<double>(done) + n / 2.0) / rs->fs;
+        for (int i = 0; i < nsv; ++i) {
+            const float fade = gs::fading_gain_linear(
+                &specs[i].fading, specs[i].prn, block_mid_t_seconds);
+            ch[i].gain = base_gain[i] * fade;
+        }
         gs::mix_block_parallel(ch.data(), nsv, rs->fs, done, n, fbuf.data(),
                                rs->nthreads);
         void *q = (rs->quant == 0) ? static_cast<void *>(qbuf8.data())

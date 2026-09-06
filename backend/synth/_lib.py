@@ -4,7 +4,7 @@ import ctypes
 import pathlib
 import sys
 
-ABI_VERSION = 8
+ABI_VERSION = 9
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
@@ -21,6 +21,16 @@ class KeplerEph(ctypes.Structure):
         "cic cis toe toc af0 af1 af2 _pad".split())]
 
 
+class FadingCfg(ctypes.Structure):
+    # Field order MUST match `FadingCfg` in native/fading.hpp exactly.
+    _fields_ = [
+        ("model", ctypes.c_int),         # 0 = off, 1 = lognormal
+        ("sigma_db", ctypes.c_double),
+        ("coherence_s", ctypes.c_double),
+        ("seed", ctypes.c_uint64),
+    ]
+
+
 class SvSpec(ctypes.Structure):
     # Field order MUST match `SvSpec` in native/abi.h exactly.
     _fields_ = [
@@ -33,6 +43,8 @@ class SvSpec(ctypes.Structure):
         ("nav_bits", ctypes.POINTER(ctypes.c_int8)),
         ("nav_nbits", ctypes.c_int),
         ("gain", ctypes.c_float),
+        ("prn", ctypes.c_int),
+        ("fading", FadingCfg),
     ]
 
 
@@ -69,6 +81,12 @@ def _bind_sat_state(lib: ctypes.CDLL) -> None:
                                     ctypes.POINTER(ctypes.c_double)]
 
 
+def bind_fading(lib: ctypes.CDLL) -> None:
+    lib.fading_gain_linear.restype = ctypes.c_float
+    lib.fading_gain_linear.argtypes = [
+        ctypes.POINTER(FadingCfg), ctypes.c_int, ctypes.c_double]
+
+
 class NativeEngineUnavailable(RuntimeError):
     pass
 
@@ -92,6 +110,7 @@ def load_lib() -> ctypes.CDLL:
             f"ABI mismatch: library reports {got}, code expects {ABI_VERSION}. Rebuild:\n    {_BUILD_HINT}")
     _bind_sat_state(lib)
     _bind_run(lib)
+    bind_fading(lib)
     _CACHED = lib
     return lib
 
