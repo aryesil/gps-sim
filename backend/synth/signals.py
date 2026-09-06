@@ -13,6 +13,8 @@ class Signal:
     boc: tuple | None
     nav_sym_hz: float
     band: str
+    sys: str = "G"
+    sub_carrier_hz: float = 0.0
 
 
 SIGNALS = {

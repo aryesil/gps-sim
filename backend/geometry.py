@@ -122,7 +122,7 @@ def _enu(rx_ecef):
 
 def observables(eph, rx_ecef, t_rx: float, rx_vel=(0.0, 0.0, 0.0),
                 atmo_delay_fn=None, rx_clock_range_m: float = 0.0,
-                mp_code_bias_m: float = 0.0) -> dict:
+                mp_code_bias_m: float = 0.0, *, signal=None) -> dict:
     """``eph`` is a broadcast-ephemeris dict or a ``state_fn`` (see
     ``as_state_fn``). Everything downstream -- az/el, geometric range,
     Doppler, pseudorange, code phase -- is identical for both.
@@ -137,6 +137,10 @@ def observables(eph, rx_ecef, t_rx: float, rx_vel=(0.0, 0.0, 0.0),
     ``mp_code_bias_m`` is the multipath code-tracking bias for this line of
     sight (see ``backend.multipath``). Both default to 0 -- no effect.
     """
+    carrier_hz = config.L1_HZ if signal is None else signal.carrier_hz
+    chip_hz = config.CA_CHIP_HZ if signal is None else signal.chip_rate_hz
+    code_len = config.CA_CODE_LEN if signal is None else signal.code_len
+
     rx = np.asarray(rx_ecef, float)
     pos, vel, tof, clk = solve_transmit_time(eph, rx, t_rx)
     los_vec = pos - rx
@@ -146,7 +150,7 @@ def observables(eph, rx_ecef, t_rx: float, rx_vel=(0.0, 0.0, 0.0),
     az = (np.degrees(np.arctan2(los @ e, los @ n))) % 360.0
     el = np.degrees(np.arcsin(np.clip(los @ u, -1, 1)))
     v_rel = vel - np.asarray(rx_vel, float)
-    fd = -config.L1_HZ * (v_rel @ los) / config.C
+    fd = -carrier_hz * (v_rel @ los) / config.C
     pr = geo - config.C * clk
     atmo_m = 0.0
     if atmo_delay_fn is not None:
@@ -155,12 +159,12 @@ def observables(eph, rx_ecef, t_rx: float, rx_vel=(0.0, 0.0, 0.0),
     rx_clk_m = float(rx_clock_range_m)
     mp_m = float(mp_code_bias_m)
     pr += rx_clk_m + mp_m
-    code_phase = (pr / config.C * config.CA_CHIP_HZ) % config.CA_CODE_LEN
+    code_phase = (pr / config.C * chip_hz) % code_len
     return {
         "az_deg": float(az), "el_deg": float(el), "geo_range_m": geo,
         "pseudorange_m": float(pr), "code_phase_chips": float(code_phase),
         "carrier_doppler_hz": float(fd),
-        "code_doppler_hz": float(fd * config.CA_CHIP_HZ / config.L1_HZ),
+        "code_doppler_hz": float(fd * chip_hz / carrier_hz),
         "atmo_delay_m": atmo_m,
         "rx_clock_range_m": rx_clk_m,
         "multipath_code_bias_m": mp_m,
