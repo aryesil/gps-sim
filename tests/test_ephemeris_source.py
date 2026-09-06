@@ -86,3 +86,18 @@ def test_missing_prn_skip_is_not_a_silent_fallback(eph, provider):
                                  provider=provider, on_missing="skip")
     assert 30 not in out                        # omitted, NOT substituted
     assert any("omitted" in w and "30" in w for w in warns)
+
+
+def test_build_precise_state_fns_probes_span_and_skips_out_of_span(provider):
+    # S7: build_precise_state_fns probes each closure once at `sow`, so a
+    # satellite whose epoch is outside its SP3 row span lands in `skipped`
+    # rather than raising later inside geometry.observables and aborting the run.
+    from backend.ephemeris_source import build_precise_state_fns
+    keys = [("G", 1), ("G", 2), ("G", 3)]
+
+    good, skipped = build_precise_state_fns(provider, keys, WEEK, TOE)
+    assert set(good) == set(keys) and skipped == []
+
+    bad, bad_skipped = build_precise_state_fns(
+        provider, keys, WEEK, TOE + 500_000.0)         # far past coverage end
+    assert bad == {} and set(bad_skipped) == set(keys)

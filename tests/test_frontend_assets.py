@@ -194,3 +194,12 @@ def test_skyplot_colours_by_system():
     for s in ("R", "E", "C", "J", "S"):
         assert f"{s}:" in js  # _SYS_COLOR entry
     assert "svid" in js and "svid" in (F / "plots.js").read_text()
+
+
+def test_skyplot_click_select_assigns_numeric_prn():
+    # B1: the LNAV PRN field is <input type="number">; assigning a non-numeric
+    # svid ("G01") blanks it and breaks click-select for every system. The
+    # click handler must assign the bare numeric prn.
+    js = (F / "skyplot.js").read_text()
+    assert "prnInput.value = best.prn;" in js
+    assert "best.svid || best.prn" not in js

@@ -196,6 +196,14 @@ def run(req, progress_cb=None) -> pathlib.Path:
         provider = nav_override["precise_provider"]
         p_week = int(nav_override["week"])
         p_sow = float(nav_override["sow"])
+        # The payload's (week, sow) win for the geometry epoch and the meta/IQ
+        # time base. In production they are derived from the same req.start, but
+        # flag a drift rather than silently running two different epochs.
+        if p_week != week or abs(p_sow - sow) > 5.0:
+            warnings.append(
+                f"precise run: payload epoch (week {p_week}, sow {p_sow:.1f}) "
+                f"differs from the req.start-derived epoch (week {week}, sow "
+                f"{sow:.1f}); the payload values are used")
         req_systems = tuple(nav_override.get("systems") or systems)
         req_set = set(req_systems)
         try:
@@ -204,12 +212,19 @@ def run(req, progress_cb=None) -> pathlib.Path:
             sats = []
         keys = [k for k in sats if k[0] in req_set]
         covered = {k[0] for k in keys}
+        # A missing REQUIRED system still raises on the precise path, same as
+        # the broadcast path's require=("G",) (spec: precise-ephemeris-design
+        # .md L171). Optional systems still degrade with a warning below.
+        if "G" in req_set and "G" not in covered:
+            raise ephemeris.EphemerisUnavailable(
+                "precise: the SP3 product has no GPS coverage but G is a "
+                "required system")
         for s in req_systems:
             if s not in covered:
                 warnings.append(f"precise ephemeris has no {s} satellites; "
                                 "system omitted from this run")
         state_fns, skipped = ephemeris_source.build_precise_state_fns(
-            provider, keys, p_week)
+            provider, keys, p_week, p_sow)
         for k in skipped:
             warnings.append(f"precise ephemeris does not cover "
                             f"{k[0]}{k[1]:02d}; satellite omitted")
@@ -265,6 +280,10 @@ def run(req, progress_cb=None) -> pathlib.Path:
                                 f"systems {extra!r} for this run")
             eph = dict(nav_override)
             systems = ("G",)
+            # The precise path was taken (SP3-fitted broadcast records), even
+            # though coverage is effectively GPS-only -- provenance reflects
+            # which branch ran, not the system count.
+            ephemeris_mode = "precise"
         else:
             eph = ephemeris.parse_rinex_multi(req.rinex_path, systems,
                                               require=("G",))

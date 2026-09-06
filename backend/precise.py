@@ -341,6 +341,7 @@ class PreciseEphemerisProvider:
             "gps_week": self.product.gps_week,
             "interval_s": self.product.epoch_interval_s,
             "satellites": gps_prns,
+            "systems": self.product.systems(),
             "epochs": len(self.product.epoch_times),
             "coverage_start_utc": lo.to_datetime().isoformat() + "Z",
             "coverage_end_utc": hi.to_datetime().isoformat() + "Z",
@@ -410,7 +411,8 @@ class PreciseEphemerisProvider:
             position_ecef_m=(px, py, pz),
             velocity_ecef_mps=(vx, vy, vz),
             clock_bias_s=clk_bias, clock_drift_sps=clk_drift,
-            source=src, valid_from=vf, valid_to=vt)
+            source=src, valid_from=vf, valid_to=vt,
+            system=key[0])
 
     def state_fn(self, prn: int, *, week: int | None = None,
                  order: int | None = None, allow_boundary: bool = False):

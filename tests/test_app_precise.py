@@ -25,6 +25,7 @@ def test_status_reports_coverage():
     assert s["loaded"] is True
     assert s["gps_week"] == 2433
     assert s["satellites"] == list(range(1, 11))
+    assert s["systems"] == ["G"]          # S2: product coverage surfaced
     assert s["coverage_start_utc"].startswith("2026-08-28")
 
 
@@ -166,7 +167,7 @@ def test_preview_precise_multignss_includes_galileo(monkeypatch):
     def _fake_satellites():
         return [("G", n) for n in range(1, 11)] + [("E", 11), ("E", 12)]
 
-    def _fake_state_fns(provider, keys, week):
+    def _fake_state_fns(provider, keys, week, sow):
         return ({k: (lambda sow: (sat_pos, (0.0, 0.0, 0.0), 0.0)) for k in keys},
                 [])
 
@@ -181,6 +182,51 @@ def test_preview_precise_multignss_includes_galileo(monkeypatch):
     j = r.json()
     assert any(s["sys"] == "E" for s in j["satellites"]), j
     assert any("precise" in w for w in j["warnings"]), j["warnings"]
+
+
+def test_preview_precise_multignss_honours_mask_deg(monkeypatch):
+    # B2: the precise multi-GNSS preview must use the request's mask_deg, not a
+    # hardcoded 5 deg. Every fake SV sits ~overhead, so a 89.9 deg mask hides
+    # them all while the default mask keeps them.
+    import numpy as np
+    from backend import app as appmod
+    from backend import geometry
+
+    rx = np.asarray(geometry.llh_to_ecef(RX["lat"], RX["lon"], RX["alt"]), float)
+    sat_pos = tuple(rx * 2.6)  # roughly overhead (el ~ 90 deg)
+
+    def _fake_satellites():
+        return [("G", n) for n in range(1, 11)] + [("E", 11), ("E", 12)]
+
+    def _fake_state_fns(provider, keys, week, sow):
+        return ({k: (lambda sow: (sat_pos, (0.0, 0.0, 0.0), 0.0)) for k in keys},
+                [])
+
+    monkeypatch.setattr(appmod._precise_provider, "satellites", _fake_satellites)
+    monkeypatch.setattr(appmod.ephemeris_source, "build_precise_state_fns",
+                        _fake_state_fns)
+
+    base = {**RX, "start_utc": TOE_UTC, "rinex_path": BRDC,
+            "ephemeris_mode": "precise", "systems": ["G", "E"]}
+    lo = client.post("/api/preview", json={**base, "mask_deg": 5.0})
+    hi = client.post("/api/preview", json={**base, "mask_deg": 90.0})
+    assert lo.status_code == 200 and hi.status_code == 200, (lo.text, hi.text)
+    assert len(lo.json()["satellites"]) > 0
+    assert len(hi.json()["satellites"]) == 0
+
+
+def test_preview_precise_raises_when_required_gps_absent(monkeypatch):
+    # S8: G is a required system; if the SP3 product carries no GPS the precise
+    # path RAISES (like the broadcast path's require=("G",)), not warn-and-omit.
+    from backend import app as appmod
+
+    monkeypatch.setattr(appmod._precise_provider, "satellites",
+                        lambda: [("E", 11), ("E", 12)])
+    r = client.post("/api/preview", json={
+        **RX, "start_utc": TOE_UTC, "rinex_path": BRDC,
+        "ephemeris_mode": "precise", "systems": ["G", "E"]})
+    assert r.status_code == 503, r.text
+    assert "GPS" in r.json()["detail"]
 
 
 def test_preview_precise_gps_only_product_warns(monkeypatch):
@@ -214,4 +260,5 @@ def test_preview_precise_gps_only_product_warns(monkeypatch):
         "ephemeris_mode": "precise", "fallback_to_broadcast": True})
     assert r.status_code == 200
     ws = r.json()["warnings"]
-    assert any("GPS-only" in w for w in ws), f"Expected GPS-only warning in {ws}"
+    assert any("covers GPS only" in w and "omitted" in w for w in ws), \
+        f"Expected GPS-only coverage warning in {ws}"

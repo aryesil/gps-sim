@@ -77,7 +77,10 @@ def _precise_error(request: Request, exc: precise.PreciseProductError):
 
 
 # One process-wide precise (SP3) product, loaded on demand via
-# /api/precise/load. Analysis only -- it never reaches signal generation.
+# /api/precise/load. Used for analysis (the /api/precise/compare panel and
+# the geometry preview) and, since the precise multi-GNSS path landed, handed
+# straight into engine.run so a native precise run generates its IQ from the
+# SP3 state-fn interpolants.
 _precise_provider = precise.PreciseEphemerisProvider()
 _FRONT = pathlib.Path(__file__).resolve().parent.parent / "frontend"
 # TX1/TX2 -- the PlutoSDR's two real simultaneous outputs (KNOWN hardware
@@ -235,6 +238,12 @@ def _preview_multi_precise(body: dict, start: dt.datetime, rx,
         have = []
     keys = [k for k in have if k[0] in req_set]
     covered = {k[0] for k in keys}
+    # A missing REQUIRED system still raises on the precise path, same as the
+    # broadcast path's require=("G",) (spec: precise-ephemeris-design.md L171).
+    if "G" in req_set and "G" not in covered:
+        raise ephemeris.EphemerisUnavailable(
+            "precise: the loaded SP3 product has no GPS coverage but G is a "
+            "required system")
     warnings = list(precise_warns)
     for s in systems:
         if s not in covered:
@@ -242,7 +251,7 @@ def _preview_multi_precise(body: dict, start: dt.datetime, rx,
                             "system omitted from this preview")
 
     state_fns, skipped = ephemeris_source.build_precise_state_fns(
-        _precise_provider, keys, week)
+        _precise_provider, keys, week, sow)
     for k in skipped:
         warnings.append(f"precise ephemeris does not cover "
                         f"{k[0]}{k[1]:02d}; satellite omitted")
@@ -278,7 +287,8 @@ def _preview_multi_precise(body: dict, start: dt.datetime, rx,
         stubs[k] = rec
 
     ents = geometry.constellation_multi(stubs, rx, sow, signals.signal_for,
-                                        mask_deg=5.0, state_fn_by_key=state_fns)
+                                        mask_deg=float(body.get("mask_deg", 5.0)),
+                                        state_fn_by_key=state_fns)
     sats = []
     for o in ents:
         s = {k: v for k, v in o.items() if k not in ("signal_id", "_los")}
@@ -438,12 +448,21 @@ def _ensure_precise_loaded(start: dt.datetime, fallback: bool) -> list[str]:
     week, sow = ephemeris.gps_week_and_sow(gps_start)
     t_want = GPSTime(week, sow).seconds
 
+    def _coverage_warns() -> list[str]:
+        # Fires on both the manual-load and auto-download paths: a GPS-only
+        # SP3 means the precise path OMITS the other requested systems (with a
+        # per-system warning) -- it does NOT fall back to broadcast for them.
+        if _precise_provider.loaded and _precise_provider.product.systems() == ["G"]:
+            return ["precise: SP3 product covers GPS only; other requested "
+                    "systems are omitted from this run"]
+        return []
+
     if _precise_provider.loaded:
         lo, hi = _precise_provider.product.coverage_seconds
         # keep clear of the interpolation-window edges (~11-point Lagrange
         # over 15-min epochs); if inside, the loaded product is fine.
         if lo + 1800.0 <= t_want <= hi - 1800.0:
-            return []
+            return _coverage_warns()
 
     if not config.PRECISE_SP3_MIRRORS:
         if fallback:
@@ -493,9 +512,7 @@ def _ensure_precise_loaded(start: dt.datetime, fallback: bool) -> list[str]:
     src = st.get("source") or ""
     warns = [f"precise: auto-downloaded SP3 for GPS week {week} "
              f"day(s) {','.join(got)}"]
-    if _precise_provider.product.systems() == ["G"]:
-        warns.append("precise: only a GPS-only SP3 was available for this "
-                     "epoch; non-GPS systems fall back to broadcast")
+    warns.extend(_coverage_warns())
     if "ULT" in src:
         warns.append("precise: only an ultra-rapid (IGU) product was available "
                      "for this epoch; its predicted portion is less accurate "
@@ -592,8 +609,10 @@ def generate(body: dict):
         if isinstance(nav_override, dict) and "precise_provider" in nav_override:
             try:
                 rinex_path = _resolve_rinex(body, start) or rinex_path
-            except Exception:
-                pass  # R degrades with the existing engine.run warning
+            except Exception as exc:               # noqa: BLE001 - non-fatal
+                precise_warnings.append(
+                    "precise: could not resolve a broadcast RINEX "
+                    f"({exc}); GLONASS FDMA channels unavailable, R omitted")
     else:
         rinex_path = _resolve_rinex(body, start)
     req = scenario.ScenarioRequest(

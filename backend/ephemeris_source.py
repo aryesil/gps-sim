@@ -106,14 +106,17 @@ def build_state_fns(
     return out, warnings
 
 
-def build_precise_state_fns(provider, keys, week):
+def build_precise_state_fns(provider, keys, week, sow):
     """Build ``f(sow) -> (pos_ecef, vel_ecef, clk_bias_s)`` interpolants from a
     precise (SP3) ``provider`` for a collection of constellation ``keys``.
 
     ``keys`` are ``(sysc, prn)`` tuples (a bare int is treated as ``("G", prn)``).
     Returns ``({key: fn}, skipped)`` where ``skipped`` lists the keys the precise
-    product does not cover for ``week`` -- a not-covered key is swallowed and
-    surfaced in the list, never raised. Callers decide whether a given skipped
+    product does not cover for ``(week, sow)`` -- a not-covered key, or one whose
+    epoch falls outside its own SP3 row span, is swallowed and surfaced in the
+    list, never raised. Each surviving closure is probed once at ``sow`` so an
+    out-of-span satellite is skipped here rather than aborting the whole run
+    later inside ``geometry.observables``. Callers decide whether a given skipped
     key is a hard failure (REQUIRED system) or an acceptable degrade.
     """
     try:
@@ -128,7 +131,9 @@ def build_precise_state_fns(provider, keys, week):
             skipped.append(key)
             continue
         try:
-            out[key] = provider.state_fn(key, week=week)
-        except (_precise.PreciseProductError, KeyError, ValueError):
+            fn = provider.state_fn(key, week=week)
+            fn(sow)  # probe: raises EpochOutOfCoverage etc. eagerly
+            out[key] = fn
+        except (_precise.PreciseProductError, KeyError, ValueError, TypeError):
             skipped.append(key)
     return out, skipped

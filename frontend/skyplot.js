@@ -44,7 +44,10 @@ window.attachSkyplotClickHandler = function (canvasId, prnInputId) {
     });
     if (best && bestD < 20) {
       const prnInput = document.getElementById(prnInputId);
-      if (prnInput) prnInput.value = best.svid || best.prn;
+      // prnInput is <input type="number">; assigning a non-numeric svid
+      // ("G01") blanks it. Keep the numeric prn here -- the dot *label*
+      // still shows svid || 'G'+prn above.
+      if (prnInput) prnInput.value = best.prn;
     }
   });
 };
