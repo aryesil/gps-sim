@@ -249,11 +249,16 @@ def constellation(eph_by_prn: dict, rx_ecef, t_rx: float,
 def state_fn_for(record: dict):
     """Dispatch a broadcast ``record`` to its state function by
     ``record["system"]``. ``G J E C`` use the Kepler model; ``R S``
-    (GLONASS/SBAS) are added in a later task."""
+    (GLONASS/SBAS) use the PZ-90 RK4 integrator in ``backend.synth.glonass``."""
     s = record.get("system", "G")
     if s in ("G", "J", "E", "C"):
         return keplerian_state(record)
-    raise NotImplementedError("GLONASS/SBAS state added in a later task")
+    if s in ("R", "S"):
+        # Lazy import: backend.synth imports backend.geometry, so a module-level
+        # import here would create a cycle.
+        from backend.synth import glonass
+        return glonass.glonass_state(record)
+    raise NotImplementedError(s)
 
 
 def constellation_multi(eph_by_key, rx_ecef, t_rx: float, signal_for,

@@ -22,7 +22,7 @@ def test_multi_returns_tuple_keys_and_system_tag():
     g = next(v for k, v in eph.items() if k[0] == "G")
     assert g["system"] == "G" and "sqrtA" in g
     r = next(v for k, v in eph.items() if k[0] == "R")
-    assert r["system"] == "R" and "x_km" in r and "vx" in r
+    assert r["system"] == "R" and "x_m" in r and "vx" in r
 
 
 def test_multi_gps_only_matches_facade():

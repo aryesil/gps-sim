@@ -35,7 +35,7 @@ _VARMAP_KEPLER = dict(_VARMAP)   # GPS map; QZSS + Galileo + BeiDou share it
 # "glo_k" (FreqNum) is the GLONASS FDMA channel number -- carried from the
 # start for a later task even though the state integrator does not need it.
 _VARMAP_STATE = {
-    "x_km": "X", "y_km": "Y", "z_km": "Z",
+    "x_m": "X", "y_m": "Y", "z_m": "Z",
     "vx": "dX", "vy": "dY", "vz": "dZ",
     "ax": "dX2", "ay": "dY2", "az": "dZ2",
     "tau": "SVclockBias", "gamma": "SVrelFreqBias",
