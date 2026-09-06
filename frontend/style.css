@@ -132,21 +132,30 @@ section { display: block; }
 
 .warn { color: var(--warning); font-size: 12px; margin: 0 0 var(--sp-3) 0; }
 .hint { color: var(--text-faint); font-size: 12px; }
-.precise-panel { margin-top: var(--sp-2); font-size: 12px; }
-.precise-panel summary { cursor: pointer; color: var(--text-faint); }
-.precise-panel .hint { white-space: pre-wrap; }
-.impairments-panel { margin-top: var(--sp-2); font-size: 12px; }
-.impairments-panel summary { cursor: pointer; color: var(--text-faint); }
-.impairments-panel label { display: block; margin-top: 4px; }
-.impairments-panel input[type="number"] { width: 8em; }
-.impairments-panel select { margin-left: 4px; }
-
-.models-panel { margin-top: var(--sp-2); font-size: 12px; }
-.models-panel summary { cursor: pointer; color: var(--text-faint); }
-.models-panel label { display: block; margin-top: 4px; }
-.models-panel input[type="number"] { width: 8em; }
-.models-panel select { margin-left: 4px; }
-#\31 -mdl-summary, [id$="-mdl-summary"] { color: var(--text); margin-top: 6px; }
+/* Advanced config: one row of sub-tabs, at most one open panel, each panel
+   height-capped so opening it never stretches the page. */
+.adv-panel { margin-top: var(--sp-3); }
+.adv-tabbar { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+.adv-tabbar .adv-btn {
+  background: var(--surface-2, #f0f0f0); border: 1px solid var(--border);
+  color: var(--text-faint); font-size: 12px; padding: 3px 10px;
+  border-radius: 4px 4px 0 0; cursor: pointer;
+}
+.adv-tabbar .adv-btn:hover { color: var(--text); }
+.adv-tabbar .adv-btn.active {
+  background: var(--surface, #fff); color: var(--text);
+  border-bottom-color: var(--surface, #fff); font-weight: 600;
+}
+.adv-tab {
+  font-size: 12px; border: 1px solid var(--border); margin-top: -1px;
+  padding: var(--sp-2) var(--sp-3); max-height: 40vh; overflow-y: auto;
+}
+.adv-tab .adv-head { margin: 0 0 var(--sp-2) 0; color: var(--text-faint); font-weight: 600; }
+.adv-tab label { display: block; margin-top: 4px; }
+.adv-tab input[type="number"] { width: 8em; }
+.adv-tab select { margin-left: 4px; }
+.adv-tab .hint { white-space: pre-wrap; }
+[id$="-mdl-summary"] { color: var(--text); margin-top: 6px; }
 
 /* small hover-tooltip info marker -- replaces inline help paragraphs */
 .info {

@@ -58,15 +58,22 @@ window.addChannel = function () {
           </select>
           <span class="info" title="precise: SP3 orbit/clock fitted into the broadcast records that drive generation. Preview/Generate auto-download the best free IGS product (rapid, then final) for the Start UTC — no file to place. Rapid lags ~17 h, final ~12 d; very recent epochs may have no product yet.">i</span>
         </label>
-        <details class="precise-panel">
-          <summary>Precise ephemeris (SP3) — optional manual override <span class="info" title="Only needed to pin a specific local SP3 instead of the auto-downloaded one.">i</span></summary>
+        <div class="adv-panel">
+          <div class="adv-tabbar">
+            <button type="button" class="adv-btn" data-adv="sp3">SP3</button>
+            <button type="button" class="adv-btn" data-adv="imp">RF impairments</button>
+            <button type="button" class="adv-btn" data-adv="mdl">Propagation</button>
+            <button type="button" class="adv-btn" data-adv="eng">Signal engine</button>
+          </div>
+        <section class="adv-tab" data-adv="sp3" hidden>
+          <p class="adv-head">Precise ephemeris (SP3) — optional manual override <span class="info" title="Only needed to pin a specific local SP3 instead of the auto-downloaded one.">i</span></p>
           <label>SP3 path <input id="${id}-sp3-path" size="26" placeholder="(leave blank — auto-downloaded)"></label>
           <button id="${id}-sp3-load" type="button">Load this file</button>
           <button id="${id}-sp3-compare" type="button">Compare vs broadcast</button>
           <div id="${id}-sp3-status" class="hint"></div>
-        </details>
-        <details class="impairments-panel">
-          <summary>RF impairments (advanced) <span class="info" title="Deterministic, seeded. Post-processes the gps-sdr-sim output; a clean copy is kept as gpssim.clean.bin. All-zero fields = no-op.">i</span></summary>
+        </section>
+        <section class="adv-tab" data-adv="imp" hidden>
+          <p class="adv-head">RF impairments (advanced) <span class="info" title="Deterministic, seeded. Post-processes the gps-sdr-sim output; a clean copy is kept as gpssim.clean.bin. All-zero fields = no-op.">i</span></p>
           <label>Preset <select id="${id}-imp-preset">
             <option value="manual">Custom (enter values below)</option>
             <option value="bench">Bench cable test (near-ideal)</option>
@@ -85,9 +92,9 @@ window.addChannel = function () {
           <label>Target SNR dB <input id="${id}-imp-snr" type="number" placeholder="none"></label>
           <label>Clip fraction <input id="${id}-imp-clip" type="number" value="0" min="0" max="1" step="0.001"></label>
           <label>Quantizer bits <input id="${id}-imp-bits" type="number" value="0" min="0" max="16"></label>
-        </details>
-        <details class="models-panel">
-          <summary>Propagation &amp; receiver models (advanced) <span class="info" title="Deterministic, RNG-free. These always shape the Preview / truth observables. They alter the generated IQ only when 'apply to IQ' is ticked: ionosphere then rides gps-sdr-sim's own broadcast Klobuchar, and a quasi-static receiver-clock + multipath channel is convolved onto the composite signal (clean copy kept as gpssim.prechannel.bin). Troposphere stays truth-only. All 'off' = no change.">i</span></summary>
+        </section>
+        <section class="adv-tab" data-adv="mdl" hidden>
+          <p class="adv-head">Propagation &amp; receiver models (advanced) <span class="info" title="Deterministic, RNG-free. These always shape the Preview / truth observables. They alter the generated IQ only when 'apply to IQ' is ticked: ionosphere then rides gps-sdr-sim's own broadcast Klobuchar, and a quasi-static receiver-clock + multipath channel is convolved onto the composite signal (clean copy kept as gpssim.prechannel.bin). Troposphere stays truth-only. All 'off' = no change.">i</span></p>
           <label>Preset <select id="${id}-mdl-preset">
             <option value="manual">Custom (set fields below)</option>
             <option value="open-sky">Open sky — mid-latitude, clean</option>
@@ -119,8 +126,9 @@ window.addChannel = function () {
           <label>· #2 phase rad <input id="${id}-mdl-mp2-phase" type="number" value="3.14159" step="0.01"></label>
           <label><input type="checkbox" id="${id}-mdl-to-iq"> Also apply these models to the generated IQ</label>
           <div id="${id}-mdl-summary" class="hint"></div>
-        </details>
-        <details class="engine-panel"><summary>Signal engine <span class="info" title="gps-sdr-sim is the default external generator (GPS L1 C/A only). native is the built-in C++ engine: same GPS L1 C/A output plus a seeded per-satellite fading model baked into the IQ. Leave on gps-sdr-sim for the unchanged workflow.">i</span></summary>
+        </section>
+        <section class="adv-tab" data-adv="eng" hidden>
+          <p class="adv-head">Signal engine <span class="info" title="gps-sdr-sim is the default external generator (GPS L1 C/A only). native is the built-in C++ engine: same GPS L1 C/A output plus a seeded per-satellite fading model baked into the IQ. Leave on gps-sdr-sim for the unchanged workflow.">i</span></p>
           <label>Engine <select id="${id}-engine">
             <option value="gps-sdr-sim">gps-sdr-sim (default)</option>
             <option value="native">native (C++ engine, GPS L1 C/A + fading)</option>
@@ -146,7 +154,8 @@ window.addChannel = function () {
           <label>sigma dB <input id="${id}-fade-sigma" type="number" step="0.5" value="3"></label>
           <label>coherence s <input id="${id}-fade-coh" type="number" step="0.5" value="2"></label>
           <label>seed <input id="${id}-fade-seed" type="number" step="1" value="1"></label>
-        </details>
+        </section>
+        </div>
         <div id="${id}-size-estimate" class="hint"></div>
         <div class="scenario-lib-row">
           <input id="${id}-scenario-name" placeholder="scenario name" size="14">
@@ -288,6 +297,20 @@ window.addChannel = function () {
       card.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       card.querySelectorAll('.tab-content').forEach(c => { c.hidden = c.dataset.tab !== btn.dataset.tab; });
       btn.classList.add('active');
+    };
+  });
+
+  // Advanced config sub-tabs (SP3 / RF impairments / Propagation / Signal
+  // engine): only one open at a time, and clicking the active one collapses
+  // the whole area, so the config column stays short by default.
+  card.querySelectorAll('.adv-btn').forEach(btn => {
+    btn.onclick = () => {
+      const open = btn.classList.contains('active');
+      card.querySelectorAll('.adv-btn').forEach(b => b.classList.remove('active'));
+      card.querySelectorAll('.adv-tab').forEach(s => {
+        s.hidden = open || s.dataset.adv !== btn.dataset.adv;
+      });
+      if (!open) btn.classList.add('active');
     };
   });
   document.getElementById(`${id}-remove`).onclick = () => {

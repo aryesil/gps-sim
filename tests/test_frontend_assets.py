@@ -40,7 +40,7 @@ def test_impairments_panel_present_and_wired():
     into the /api/generate body only when enabled -- so an untouched panel
     leaves the generate request byte-identical to before it existed."""
     js = (F / "channels.js").read_text()
-    assert 'class="impairments-panel"' in js
+    assert 'data-adv="imp"' in js   # advanced sub-tab
     assert '${id}-imp-enabled' in js
     for sfx in ("seed", "cfo", "ppm", "phn", "gain", "iqphase",
                 "dci", "dcq", "snr", "clip", "bits"):
@@ -103,7 +103,7 @@ def test_channel_models_panel_present_and_opt_in():
     sub-model to 'off', and fold into the request body only when something
     is enabled (untouched panel -> _channelModelsBody() returns null)."""
     js = (F / "channels.js").read_text()
-    assert 'class="models-panel"' in js
+    assert 'data-adv="mdl"' in js   # advanced sub-tab
     for sfx in ("iono", "tropo", "rxclk", "rxclk-bias", "rxclk-drift",
                 "mp", "mp1-delay", "mp1-amp", "mp1-phase", "to-iq"):
         assert f'${{id}}-mdl-{sfx}' in js, sfx
@@ -117,7 +117,7 @@ def test_channel_models_panel_present_and_opt_in():
 
 def test_signal_engine_panel_present_and_opt_in():
     js = (F / "channels.js").read_text()
-    assert 'class="engine-panel"' in js
+    assert 'data-adv="eng"' in js   # advanced sub-tab
     assert '${id}-engine' in js
     for sfx in ("fade-model", "fade-sigma", "fade-coh", "fade-seed", "fs", "quant"):
         assert f'${{id}}-{sfx}' in js, sfx
