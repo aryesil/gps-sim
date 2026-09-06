@@ -11,3 +11,11 @@ void synth_debug_carrier(double freq_hz, double fs, int n, float *iq_interleaved
         iq_interleaved[2 * k + 1] = v.imag();
     }
 }
+
+void synth_debug_boc(double sub_hz, double fs, int n, int8_t *out) {
+    gs::BocNco nco;
+    nco.set_freq(sub_hz, fs);
+    for (int k = 0; k < n; ++k) {
+        out[k] = nco.sign();
+    }
+}

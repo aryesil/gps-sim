@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-ABI_VERSION = 12
+ABI_VERSION = 13
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
@@ -177,3 +177,17 @@ def code(sys: int, prn: int, prim_len: int, sec_len: int = 0):
     if rc != 0:
         raise ValueError(f"synth_code failed: sys={sys} prn={prn}")
     return primary, (secondary if sec_len > 0 else None)
+
+
+def debug_boc(sub_hz: float, fs: float, n: int) -> np.ndarray:
+    """BOC(1,1) square sub-carrier debug shim. Fills an n-element buffer with
+    the {+1,-1} sign sequence of a BOC(1,1) sub-carrier at sub_hz Hz for sample
+    rate fs. Returns np.int8 array."""
+    lib = load_lib()
+    lib.synth_debug_boc.restype = None
+    lib.synth_debug_boc.argtypes = [ctypes.c_double, ctypes.c_double,
+                                    ctypes.c_int, ctypes.POINTER(ctypes.c_int8)]
+    out = np.zeros(int(n), np.int8)
+    lib.synth_debug_boc(ctypes.c_double(sub_hz), ctypes.c_double(fs),
+                        ctypes.c_int(int(n)), out.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)))
+    return out

@@ -40,4 +40,21 @@ struct Nco {
     }
 };
 
+// BOC(1,1) square sub-carrier: phase-continuous NCO that produces +1/-1
+// sign samples. The top bit of the phase determines the sign.
+struct BocNco {
+    uint32_t phase = 0;
+    uint32_t inc = 0;
+    void set_freq(double hz, double fs) {
+        double frac = hz / fs;
+        frac -= std::floor(frac);
+        inc = static_cast<uint32_t>(std::llround(frac * 4294967296.0) & 0xFFFFFFFFll);
+    }
+    inline int8_t sign() {
+        int8_t s = (phase & 0x80000000u) ? int8_t(-1) : int8_t(1);
+        phase += inc;
+        return s;
+    }
+};
+
 }  // namespace gs

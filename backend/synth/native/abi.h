@@ -54,6 +54,9 @@ void synth_debug_carrier(double freq_hz, double fs, int n, float *iq_interleaved
 // mode: 0=Zero (always +1), 1=KnownFrame (repeats bits[0..nbits-1]).
 void synth_debug_nav(int mode, const int8_t *bits, int nbits,
                      double fs, int n, int8_t *out);
+// Debug shim: fills out[0..n-1] with the BOC(1,1) square sub-carrier sign sequence
+// ({+1,-1}) at frequency sub_hz for sample rate fs.
+void synth_debug_boc(double sub_hz, double fs, int n, int8_t *out);
 // Debug shim: zeroes iq[0..2*n-1], then synthesizes a single satellite
 // (gain 1, nav mode Zero) into it via mix_block from absolute sample 0.
 // iq holds I,Q,I,Q,... interleaved (2*n floats).
