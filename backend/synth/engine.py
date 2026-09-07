@@ -467,8 +467,13 @@ def run(req, progress_cb=None) -> pathlib.Path:
     # Keyed by native PRN so `_sv_spec_for` can look it up directly.
     nav_streams: dict = {}
     nav_prov: dict = {}
-    _NAV_PROV_NAME = {"G": "lnav", "J": "lnav", "E": "inav",
-                      "C": "d1", "R": "strings", "S": "sbas"}
+
+    def _nav_prov_name(sysc: str, band: str) -> str:
+        if sysc in ("G", "J") and band in ("L2", "L5"):
+            return "cnav"          # IS-GPS-200 Sec. 30/40 CNAV
+        return {"G": "lnav", "J": "lnav", "E": "inav",
+                "C": "d1", "R": "strings", "S": "sbas"}.get(sysc, "on")
+
     if getattr(req, "nav_message", True) and not precise_multi:
         try:
             hdr = ephemeris.rinex_header_iono_utc(req.rinex_path)
@@ -491,9 +496,11 @@ def run(req, progress_cb=None) -> pathlib.Path:
                 continue
             arr, sym_rate = res
             nbuf = (ctypes.c_int8 * len(arr))(*arr.tolist())
-            nav_streams[(e["prn"], e["signal_id"].band)] = (
+            band_id = e["signal_id"].band
+            nav_streams[(e["prn"], band_id)] = (
                 nbuf, len(arr), float(sym_rate))
-            nav_prov.setdefault(sysc, _NAV_PROV_NAME.get(sysc, "on"))
+            nav_prov.setdefault(f"{sysc}/{band_id}",
+                                _nav_prov_name(sysc, band_id))
     if not nav_prov:
         nav_prov = "none"
 
@@ -613,6 +620,10 @@ def run(req, progress_cb=None) -> pathlib.Path:
             "route": ({"waypoints": len(route), "mode": "linear-interp"}
                       if route else "static"),
             "nav": nav_prov,
+            "signals": sorted({
+                {v: k for k, v in signals.SIGNALS.items()}.get(
+                    e["signal_id"], f"{e['sys']}/{e['signal_id'].band}")
+                for e in entries}),
             "fading": cfg.model,
             "svs": meta_svs,
             "systems": sorted({e["sys"] for e in entries}),

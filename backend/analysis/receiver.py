@@ -51,6 +51,7 @@ def _fix_from_iq_l2(iq_path, sample_format, sample_rate, eph_by_prn,
                     approx_time_gps, marker_llh) -> dict:
     """GPS L2C closed-loop fix: acquire CM, decode CNAV 10/11/30, solve."""
     from backend.analysis import band_acquire, cnav_decode
+    from backend.synth import _lib
     from backend.synth import signals as _sig
 
     l2c = _sig.SIGNALS["GPS_L2C"]
@@ -77,8 +78,16 @@ def _fix_from_iq_l2(iq_path, sample_format, sample_rate, eph_by_prn,
             sym = cnav_decode.demod_symbols(iq, sample_rate, prn,
                                             dopp_hz=r["doppler_hz"],
                                             code_phase_chips=r["code_phase_chips"])
-            rec = cnav_decode.reconstruct_ephemeris(
-                cnav_decode.decode_messages(sym.tolist()))
+            msgs = cnav_decode.decode_messages(sym.tolist())
+            # Only trust CRC-valid messages whose PRN field is this SV: a
+            # cross-correlation lock onto a sibling at a near-equal Doppler
+            # decodes that sibling's CNAV, which would otherwise be assigned
+            # the wrong geometry.
+            own = [msg for msg in msgs if msg["crc_ok"] and msg["prn"] == prn]
+            if not ({10, 11} <= {msg["type"] for msg in own}):
+                nav_decode[prn] = "no own-PRN 10/11"
+                continue
+            rec = cnav_decode.reconstruct_ephemeris(own)
             rec["prn"] = prn
             decoded[prn] = rec
             nav_decode[prn] = "ok"
@@ -101,10 +110,16 @@ def _fix_from_iq_l2(iq_path, sample_format, sample_rate, eph_by_prn,
             continue
         pos, _, _, clk = geometry.solve_transmit_time(rec, approx_rx,
                                                       approx_time_gps)
-        # band_acquire reports the circular lag of the local replica; the
-        # engine's transmit code phase is the opposite sign.
-        acq_cp = (_CM_LEN - acq[prn]["code_phase_chips"]) % _CM_LEN
-        err_c = ((acq_cp - o["code_phase_chips"] + _CM_LEN / 2) % _CM_LEN
+        # band_acquire and observables both report the code phase as the
+        # gps-sdr-sim correlation lag (rho/c in chips), so they subtract
+        # directly; wrap the difference into +/- half a code period. The
+        # coarse acquisition lag is only sample-resolved (~0.2 chip), so
+        # refine it with a parabolic peak fit at the acquired Doppler.
+        cm, _cl = _lib.code_l2c(int(prn))
+        cp = band_acquire.fine_code_phase(
+            iq, sample_rate, cm.astype(float), chip_hz=_CM_CHIP_HZ,
+            code_len=_CM_LEN, dopp_hz=acq[prn]["doppler_hz"])
+        err_c = ((cp - o["code_phase_chips"] + _CM_LEN / 2) % _CM_LEN
                  ) - _CM_LEN / 2
         if abs(err_c) > 0.45 * _CM_LEN:
             nav_decode[prn] = "unaligned"

@@ -23,6 +23,7 @@ _CODEGEN = {
     "S": (2, 1023, 1_023_000.0),
     "C": (3, 2046, 2_046_000.0),
     "E": (6, 4092, 1_023_000.0),   # E1C pilot primary (pass boc=True for BOC(1,1))
+    "G_L2C": (None, 10230, 511_500.0),   # L2C CM component (20 ms period)
 }
 
 
@@ -30,6 +31,9 @@ def primary_code(sysc: str, prn: int) -> np.ndarray:
     if sysc == "R":
         from backend.synth.engine import _glo_g1_code
         return _glo_g1_code().astype(np.float64)
+    if sysc == "G_L2C":
+        cm, _cl = _lib.code_l2c(prn)
+        return cm.astype(np.float64)
     csys, clen, _ = _CODEGEN[sysc]
     sec_len = 25 if sysc == "E" else 0
     prim, _sec = _lib.code(csys, prn, clen, sec_len)

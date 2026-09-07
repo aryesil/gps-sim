@@ -140,13 +140,34 @@ _CM_CHIP_HZ = 0.5115e6
 _SYM_S = _CM_LEN / _CM_CHIP_HZ          # 0.02 s -- one CNAV symbol
 
 
+_SUBCHUNKS = 20            # sub-symbol partials -> +/-500 Hz residual search room
+
+
+def _concentration(corr):
+    """Fraction of correlator energy on the real axis after the best
+    constant-phase rotation -- ~1 for a locked BPSK stream, ~0.5 for a
+    spinning one. Data-blind (corr**2 cancels the +/-1 symbol)."""
+    c2 = np.sum(corr ** 2)
+    aligned = corr * np.exp(-1j * 0.5 * np.angle(c2))
+    return float(np.sum(np.real(aligned) ** 2) / np.sum(np.abs(corr) ** 2))
+
+
 def demod_symbols(iq, fs, prn, *, dopp_hz=None, code_phase_chips=None):
     """Hard {0,1} convolutional symbols (50 sym/s) from a GPS L2C capture.
 
-    Acquires with band_acquire when Doppler / code phase are not supplied,
-    then prompt-correlates one CM period per symbol, removes a residual
-    carrier with a degree-2 phase fit on the data-wiped samples, and hard
-    -decides the real part.
+    band_acquire's Doppler (100 Hz grid, 4-period non-coherent) is far too
+    coarse to hold carrier phase over a 30-40 s capture -- a 100 Hz error
+    spins the prompt correlator through 2 cycles per symbol and, through the
+    code-rate/carrier tie, slips the code by chips. The tracker therefore:
+
+    1. locks Doppler to < 0.1 Hz on a ~2 s prefix (a coarse concentration
+       grid, then a linear data-wiped-phase fit iterated to convergence);
+    2. prompt-correlates the whole capture with one continuous code + carrier
+       replica at that Doppler;
+    3. estimates the residual carrier phase locally, per 0.5 s block, from a
+       fine concentration search on the sub-symbol partials -- drift-robust,
+       needs only < 1 Hz residual at any instant -- and integrates it into a
+       smooth phase(t) that is de-rotated before the hard decision.
     """
     from backend.analysis import band_acquire
     from backend.synth import _lib
@@ -164,32 +185,88 @@ def demod_symbols(iq, fs, prn, *, dopp_hz=None, code_phase_chips=None):
                             else code_phase_chips)
 
     npp = int(round(fs * _SYM_S))
-    k = np.arange(iq.size, dtype=np.float64)
-    x = iq * np.exp(-2j * np.pi * float(dopp_hz) * k / fs)
-
-    nsym = x.size // npp
+    nsym = iq.size // npp
     if nsym < 4:
         return np.zeros(0, dtype=np.int8)
+    m = _SUBCHUNKS
+    while npp % m:
+        m -= 1
+    # band_acquire reports the circular correlation lag (gps-sdr-sim
+    # convention); the replica's start chip is its complement.
+    cp0 = (_CM_LEN - float(code_phase_chips)) % _CM_LEN
+    tt = np.arange(nsym * npp, dtype=np.float64) / fs
 
-    # prompt replica: CM code resampled to npp samples, rotated by the
-    # acquired code phase.
-    t = np.arange(npp) / fs
-    base_rate = _CM_CHIP_HZ * (1.0 + float(dopp_hz) / 1_227_600_000.0)
-    idx = (np.floor(t * base_rate + float(code_phase_chips)).astype(np.int64)
-           % _CM_LEN)
-    replica = cm[idx]
+    def _subcorr(dopp0, drift=0.0):
+        """Code+carrier-wiped sub-symbol partials over the whole capture,
+        shape (nsym, m). The carrier is a linear-frequency chirp
+        ``dopp0 + drift*t``; the code rate is tied to it through the
+        L2 carrier ratio, so both the carrier phase and the code phase are
+        the exact time integrals -- code Doppler, its drift, and a
+        non-integer samples-per-symbol are all tracked across the capture."""
+        ramp = dopp0 * tt + 0.5 * drift * tt * tt        # integral of f(t)
+        wipe = np.exp(-2j * np.pi * ramp)
+        code_phase = cp0 + _CM_CHIP_HZ * tt + (
+            _CM_CHIP_HZ / 1_227_600_000.0) * ramp
+        idx = (np.floor(code_phase).astype(np.int64)) % _CM_LEN
+        prod = (iq[:nsym * npp] * wipe * cm[idx]).reshape(nsym, m, npp // m)
+        return prod.sum(axis=2)
 
-    corr = np.empty(nsym, dtype=np.complex128)
-    for s in range(nsym):
-        seg = x[s * npp:(s + 1) * npp]
-        corr[s] = np.sum(seg * replica)
+    # --- 1. lock Doppler. band_acquire's 100 Hz grid can sit >150 Hz off,
+    # which spins the correlator and, via the code-rate/carrier tie, slips
+    # the code. A per-symbol concentration metric is ambiguous at multiples
+    # of 25 Hz (a half-cycle-per-symbol residual just alternates the sign of
+    # every symbol -- indistinguishable from data), so the coarse pull-in
+    # runs on the *sub-symbol* partials: squaring cancels the +/-1 symbol
+    # and leaves a tone at twice the residual carrier, unambiguous out to
+    # +/- m/(2*_SYM_S) Hz. A linear data-wiped-phase fit then trims the rest.
+    pn = min(nsym, 200)
+    for _ in range(3):
+        sq = (_subcorr(dopp_hz)[:pn].reshape(-1)) ** 2
+        fr = np.fft.fftfreq(sq.size, d=_SYM_S / m)
+        step = float(fr[np.argmax(np.abs(np.fft.fft(sq)))]) / 2.0
+        dopp_hz += step
+        if abs(step) < 1.0:
+            break
+    for _ in range(6):
+        corr = _subcorr(dopp_hz)[:pn].sum(axis=1)
+        slope = np.polyfit(np.arange(pn, dtype=np.float64),
+                           np.unwrap(np.angle(corr ** 2)), 1)[0] / 2.0
+        dfr = slope / (2.0 * np.pi * _SYM_S)
+        dopp_hz += dfr
+        if abs(dfr) < 0.02:
+            break
 
-    # residual carrier: degree-2 fit on the data-wiped phase (corr**2
-    # cancels the +/-1 symbol), then a constant phase.
+    # --- 2. estimate the Doppler drift from the per-block residual carrier
+    # frequency (FFT of the squared sub-symbol partials -> a tone at twice
+    # the residual, alias-free out to +/- m/(2*_SYM_S) Hz), then rebuild the
+    # replica as a linear-frequency chirp. Without this the code rate -- tied
+    # to the carrier -- slips a third of a chip over 40 s at 0.9 Hz/s.
+    B = 50
+
+    def _block_freqs(p):
+        nbk = max(1, p.shape[0] // B)
+        out = np.zeros(nbk)
+        for k in range(nbk):
+            sq = (p[k * B:(k + 1) * B].reshape(-1)) ** 2
+            fr = np.fft.fftfreq(sq.size, d=_SYM_S / m)
+            out[k] = float(fr[np.argmax(np.abs(np.fft.fft(sq)))]) / 2.0
+        return out, nbk
+
+    p_full = _subcorr(dopp_hz)
+    fblk, nb = _block_freqs(p_full)
+    if nb > 3:
+        bt_s = (np.arange(nb) + 0.5) * B * _SYM_S
+        c1, c0 = np.polyfit(bt_s, fblk, 1)
+        dopp_hz += float(c0)
+        p_full = _subcorr(dopp_hz, float(c1))
+
+    # --- 3. residual carrier phase. After the chirp rebuild the residual is
+    # small and smooth, so a plain unwrap of the data-wiped phase (corr**2
+    # cancels the +/-1 symbol) fitted to a low-order polynomial is safe.
     si = np.arange(nsym, dtype=np.float64)
-    ph = np.unwrap(np.angle(corr ** 2))
-    deg = 2 if nsym >= 5 else 1
-    coef = np.polyfit(si, ph, deg) / 2.0
+    corr = p_full.sum(axis=1)
+    deg = min(4, nsym - 1) if nsym >= 5 else 1
+    coef = np.polyfit(si, np.unwrap(np.angle(corr ** 2)), deg) / 2.0
     corr = corr * np.exp(-1j * np.polyval(coef, si))
     corr = corr * np.exp(-1j * 0.5 * np.angle(np.sum(corr ** 2)))
 

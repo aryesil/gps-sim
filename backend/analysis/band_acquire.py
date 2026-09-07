@@ -57,6 +57,35 @@ def acquire(iq, fs, code, *, chip_hz, code_len, center_hz=0.0,
     }
 
 
+def fine_code_phase(iq, fs, code, *, chip_hz, code_len, dopp_hz,
+                    center_hz=0.0, nperiods=20) -> float:
+    """Sub-sample code phase (chips) for a known Doppler: one non-coherent
+    accumulation over ``nperiods`` code periods, then a 3-point parabolic
+    interpolation of the correlation peak. band_acquire.acquire only
+    resolves the peak to a sample (~0.2 chip at 2.6 MHz / 511.5 kcps)."""
+    code = np.asarray(code, dtype=np.float64)
+    period_s = code_len / chip_hz
+    npp = int(round(fs * period_s))
+    nc = min(nperiods, len(iq) // npp)
+    if nc < 1:
+        return 0.0
+    seg = np.asarray(iq[: npp * nc], dtype=np.complex128)
+    t = np.arange(npp) / fs
+    local = code[np.floor(t * chip_hz).astype(np.int64) % code_len]
+    LOC = np.conj(np.fft.fft(local))
+    acc = np.zeros(npp)
+    for k in range(nc):
+        blk = seg[k * npp:(k + 1) * npp]
+        ph = np.exp(-1j * 2 * np.pi * (center_hz + dopp_hz) *
+                    np.arange(k * npp, (k + 1) * npp) / fs)
+        acc += np.abs(np.fft.ifft(np.fft.fft(blk * ph) * LOC))
+    p = int(acc.argmax())
+    y0, y1, y2 = acc[(p - 1) % npp], acc[p], acc[(p + 1) % npp]
+    denom = y0 - 2.0 * y1 + y2
+    delta = 0.5 * (y0 - y2) / denom if denom != 0.0 else 0.0
+    return float(((p + delta) * chip_hz / fs) % code_len)
+
+
 def acquire_l2c(iq, fs, prn, *, center_hz=0.0) -> dict:
     """Acquire GPS / QZSS L2C on the CM component (10230 chips, 511.5 kcps,
     20 ms period)."""

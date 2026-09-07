@@ -22,7 +22,7 @@ def test_closed_loop_fix_from_lnav_decoded_out_of_native_iq(tmp_path, monkeypatc
         engine="native", systems=("G",), nav_message=True)
     outdir = engine.run(req)
     meta = json.loads((outdir / "meta.json").read_text())
-    assert meta["provenance"]["nav"].get("G") == "lnav"
+    assert meta["provenance"]["nav"].get("G/L1") == "lnav"
 
     gps_start = start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
     _week, sow = ephemeris.gps_week_and_sow(gps_start)

@@ -29,8 +29,8 @@ def _run(tmp_path, monkeypatch, systems, nav=True):
 def test_qzss_gets_lnav_provenance(tmp_path, monkeypatch):
     outdir = _run(tmp_path, monkeypatch, ["G", "J"])
     prov = json.loads((outdir / "meta.json").read_text())["provenance"]["nav"]
-    assert prov.get("G") == "lnav"
-    assert prov.get("J") == "lnav"
+    assert prov.get("G/L1") == "lnav"
+    assert prov.get("J/L1") == "lnav"
 
 
 def test_gps_still_acquires_alongside_qzss_nav(tmp_path, monkeypatch):
@@ -53,7 +53,7 @@ def test_galileo_gets_inav_on_the_e1b_component(tmp_path, monkeypatch):
 
     outdir = _run(tmp_path, monkeypatch, ["G", "E"])
     meta = json.loads((outdir / "meta.json").read_text())
-    assert meta["provenance"]["nav"].get("E") == "inav"
+    assert meta["provenance"]["nav"].get("E/L1") == "inav"
     # I/NAV rides E1-B (data), not the E1-C pilot: primary code length 4092,
     # no CS25 secondary. The svs meta records code_len; the secondary is a
     # mixer detail, so just assert the SV is present and the run succeeded.
@@ -68,7 +68,7 @@ def test_galileo_gets_inav_on_the_e1b_component(tmp_path, monkeypatch):
 def test_beidou_gets_d1_provenance(tmp_path, monkeypatch):
     outdir = _run(tmp_path, monkeypatch, ["G", "C"])
     prov = json.loads((outdir / "meta.json").read_text())["provenance"]["nav"]
-    assert prov.get("C") == "d1"
+    assert prov.get("C/L1") == "d1"
     a = _run(tmp_path / "b", monkeypatch, ["G", "C"])
     assert (outdir / "gpssim.bin").read_bytes() == (a / "gpssim.bin").read_bytes()
 
@@ -76,21 +76,21 @@ def test_beidou_gets_d1_provenance(tmp_path, monkeypatch):
 def test_glonass_gets_strings_provenance(tmp_path, monkeypatch):
     outdir = _run(tmp_path, monkeypatch, ["G", "R"])
     prov = json.loads((outdir / "meta.json").read_text())["provenance"]["nav"]
-    assert prov.get("R") == "strings"
+    assert prov.get("R/G1") == "strings"
 
 
 def test_sbas_gets_sbas_provenance(tmp_path, monkeypatch):
     outdir = _run(tmp_path, monkeypatch, ["G", "S"])
     prov = json.loads((outdir / "meta.json").read_text())["provenance"]["nav"]
-    assert prov.get("S") == "sbas"
+    assert prov.get("S/L1") == "sbas"
 
 
 def test_all_systems_carry_a_message(tmp_path, monkeypatch):
     outdir = _run(tmp_path, monkeypatch, ["G", "J", "E", "C", "R", "S"])
     prov = json.loads((outdir / "meta.json").read_text())["provenance"]["nav"]
-    for sysc, name in (("G", "lnav"), ("J", "lnav"), ("E", "inav"),
-                       ("C", "d1"), ("R", "strings"), ("S", "sbas")):
-        assert prov.get(sysc) == name, (sysc, prov)
+    for key, name in (("G/L1", "lnav"), ("J/L1", "lnav"), ("E/L1", "inav"),
+                      ("C/L1", "d1"), ("R/G1", "strings"), ("S/L1", "sbas")):
+        assert prov.get(key) == name, (key, prov)
 
 
 def test_nav_off_leaves_provenance_none(tmp_path, monkeypatch):
