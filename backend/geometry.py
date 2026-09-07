@@ -175,7 +175,8 @@ def _enu(rx_ecef):
 
 def observables(eph, rx_ecef, t_rx: float, rx_vel=(0.0, 0.0, 0.0),
                 atmo_delay_fn=None, rx_clock_range_m: float = 0.0,
-                mp_code_bias_m: float = 0.0, *, signal=None) -> dict:
+                mp_code_bias_m: float = 0.0, *, signal=None,
+                sv_clock_bias_s: float = 0.0) -> dict:
     """``eph`` is a broadcast-ephemeris dict or a ``state_fn`` (see
     ``as_state_fn``). Everything downstream -- az/el, geometric range,
     Doppler, pseudorange, code phase -- is identical for both.
@@ -204,7 +205,7 @@ def observables(eph, rx_ecef, t_rx: float, rx_vel=(0.0, 0.0, 0.0),
     el = np.degrees(np.arcsin(np.clip(los @ u, -1, 1)))
     v_rel = vel - np.asarray(rx_vel, float)
     fd = -carrier_hz * (v_rel @ los) / config.C
-    pr = geo - config.C * clk
+    pr = geo - config.C * (clk + float(sv_clock_bias_s))
     atmo_m = 0.0
     if atmo_delay_fn is not None:
         atmo_m = float(atmo_delay_fn(np.radians(az), np.radians(el)))
@@ -218,6 +219,7 @@ def observables(eph, rx_ecef, t_rx: float, rx_vel=(0.0, 0.0, 0.0),
         "pseudorange_m": float(pr), "code_phase_chips": float(code_phase),
         "carrier_doppler_hz": float(fd),
         "code_doppler_hz": float(fd * chip_hz / carrier_hz),
+        "sv_clock_bias_s": float(sv_clock_bias_s),
         "atmo_delay_m": atmo_m,
         "rx_clock_range_m": rx_clk_m,
         "multipath_code_bias_m": mp_m,
@@ -283,18 +285,23 @@ def constellation_multi(eph_by_key, rx_ecef, t_rx: float, signal_for,
     for key, rec in eph_by_key.items():
         sys = key[0] if isinstance(key, tuple) else "G"
         prn = key[1] if isinstance(key, tuple) else key
-        sig = signal_for(sys)
+        sigs = signal_for(sys)
+        if not isinstance(sigs, (list, tuple)):
+            sigs = (sigs,)
         sf = state_fn_by_key[key] if state_fn_by_key is not None else state_fn_for(rec)
-        o = observables(sf, rx_ecef, t_rx, signal=sig)
-        if o["el_deg"] < mask_deg:
-            continue
-        o["sys"], o["prn"], o["signal_id"] = sys, prn, sig
-        if sys == "R":
-            # glo_k (FDMA channel number) lives on the ephemeris record, not the
-            # observables dict; carry it so the synth layer can apply the FDMA
-            # carrier offset. Missing -> None (SV skipped downstream, explicitly).
-            o["glo_k"] = rec.get("glo_k")
-        out.append(o)
+        glo_k = rec.get("glo_k") if sys == "R" else None
+        for sig in sigs:
+            o = observables(sf, rx_ecef, t_rx, signal=sig)
+            if o["el_deg"] < mask_deg:
+                continue
+            o["sys"], o["prn"], o["signal_id"] = sys, prn, sig
+            if sys == "R":
+                # glo_k (FDMA channel number) lives on the ephemeris record,
+                # not the observables dict; carry it so the synth layer can
+                # apply the FDMA carrier offset. Missing -> None (SV skipped
+                # downstream, explicitly).
+                o["glo_k"] = glo_k
+            out.append(o)
     return out
 
 

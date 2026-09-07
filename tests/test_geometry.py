@@ -54,6 +54,33 @@ def test_observables_are_physical():
     assert abs(obs["carrier_doppler_hz"]) < 6000
 
 
+def test_observables_sv_clock_bias_shifts_pseudorange_by_c_times_bias():
+    from backend import config
+    eph = ephemeris.parse_rinex(FIXDIR / "brdc_sample.rnx")
+    rx = geometry.llh_to_ecef(*RX_LLH)
+    prn = max(geometry.constellation(eph, rx, T_RX),
+              key=lambda e: e["el_deg"])["prn"]
+    base = geometry.observables(eph[prn], rx, T_RX)
+    biased = geometry.observables(eph[prn], rx, T_RX, sv_clock_bias_s=1e-8)
+    assert biased["pseudorange_m"] == pytest.approx(
+        base["pseudorange_m"] - config.C * 1e-8, abs=1e-6)
+
+
+def test_constellation_multi_signal_list_emits_one_entry_per_signal():
+    from backend.synth import signals
+    eph = ephemeris.parse_rinex(FIXDIR / "brdc_sample.rnx")
+    rx = geometry.llh_to_ecef(*RX_LLH)
+    prn = max(geometry.constellation(eph, rx, T_RX),
+              key=lambda e: e["el_deg"])["prn"]
+    rec = dict(eph[prn])
+    rec["system"] = "G"
+    ents = geometry.constellation_multi(
+        {("G", prn): rec}, rx, T_RX,
+        lambda s: signals.signals_for(s, {"L1", "L2"}), mask_deg=0.0)
+    assert sorted(e["signal_id"].band for e in ents) == ["L1", "L2"]
+    assert all(e["sys"] == "G" and e["prn"] == prn for e in ents)
+
+
 def test_constellation_matches_golden():
     golden = json.loads((FIXDIR / "known_geometry.json").read_text())
     eph = ephemeris.parse_rinex(FIXDIR / "brdc_sample.rnx")
