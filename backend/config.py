@@ -14,6 +14,8 @@ def _float(name: str, default: float) -> float:
     return float(os.environ.get(name, default))
 
 L1_HZ = 1575.42e6
+L2_HZ = 1227.60e6   # 120 * 10.23 MHz  -- GPS L2 / GLONASS L2 band centre
+L5_HZ = 1176.45e6   # 115 * 10.23 MHz  -- GPS L5 / E5a / B2a / NavIC L5 band centre
 CA_CHIP_HZ = 1.023e6
 CA_CODE_LEN = 1023
 NAV_BIT_HZ = 50

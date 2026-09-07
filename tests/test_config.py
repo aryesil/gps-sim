@@ -13,6 +13,14 @@ def test_constants_have_expected_values():
     assert cfg.DEFAULT_SAMPLE_RATE == 2.6e6
 
 
+def test_l2_l5_band_centres_are_integer_multiples_of_1023():
+    from backend import config
+    base = 10.23e6
+    assert config.L2_HZ == 120 * base
+    assert config.L5_HZ == 115 * base
+    assert config.L1_HZ == 154 * base
+
+
 def test_precise_defaults():
     cfg = importlib.import_module("backend.config")
     assert cfg.PRECISE_DIR == cfg.DATA_DIR / "precise"
