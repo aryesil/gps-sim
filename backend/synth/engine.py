@@ -154,6 +154,43 @@ def _sv_spec_for(entry, gain, nav=None):
     ``run()`` wiring lands in Task 16/17; here it is unit-tested directly."""
     sig = entry["signal_id"]
     sysc = entry["sys"]
+
+    # GPS / QZSS L2C: the CM ranging code at 1.023 Mcps, CNAV riding it as
+    # one 50 Hz data symbol per 20 ms CM period (exactly like LNAV on L1).
+    # The CL pilot is not needed for the data-signal closed-loop fix and is
+    # left out of Phase 1.
+    if sysc in ("G", "J") and getattr(sig, "band", "L1") == "L2":
+        cm, _cl = _lib.code_l2c(entry["prn"])
+        spec = _lib.SvSpec()
+        pbuf = (ctypes.c_int8 * 10230)(*cm.tolist())
+        spec.code = pbuf
+        keep = [pbuf]
+        spec.code_len = 10230
+        spec.chip_rate_hz = 1.023e6
+        spec.carrier_freq_hz = entry["carrier_doppler_hz"]
+        spec.carrier_phase0_rad = 0.0
+        spec.code_phase0_chips = entry["code_phase_chips"]
+        spec.code_doppler_hz = entry["code_doppler_hz"]
+        spec.nav_mode = 0
+        spec.nav_bits = None
+        spec.nav_nbits = 0
+        spec.nav_sym_rate_hz = 0.0
+        if nav is not None:
+            nbuf, nbits, sym_rate = nav
+            spec.nav_mode = 1
+            spec.nav_bits = nbuf
+            spec.nav_nbits = nbits
+            spec.nav_sym_rate_hz = float(sym_rate)
+            keep.append(nbuf)
+        spec.gain = gain
+        spec.prn = entry["prn"]
+        spec.sys = _SYS_INT[sysc]
+        spec.sub_carrier_hz = 0.0
+        spec.sec_code = None
+        spec.sec_len = 0
+        spec.sec_rate_hz = 0.0
+        return spec, keep
+
     if sysc == "R":
         k = entry.get("glo_k")
         if k is None or (isinstance(k, float) and math.isnan(k)):
