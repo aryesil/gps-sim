@@ -215,6 +215,11 @@ int synth_code(int sys, int prn, int8_t *primary, int prim_len,
 // and cl_len >= 767250, fills cl with the CL code. Returns 0 on success,
 // -1 on bad prn (outside 1..63) / short buffer / NULL cm.
 int synth_code_l2c(int prn, int8_t *cm, int cm_len, int8_t *cl, int cl_len);
+// GPS / QZSS L5 civil codes (IS-GPS-200 3.3.2). Fills i5[0..i5_len-1]
+// (i5_len >= 10230) with the I5 code chips in {-1,+1}; when q5 != NULL
+// and q5_len >= 10230, fills q5 with the Q5 pilot code. Returns 0 on
+// success, -1 on bad prn (outside 1..210) / short buffer / NULL i5.
+int synth_code_l5(int prn, int8_t *i5, int i5_len, int8_t *q5, int q5_len);
 #ifdef __cplusplus
 }
 #endif

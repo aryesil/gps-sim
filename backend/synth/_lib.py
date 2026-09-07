@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-ABI_VERSION = 20
+ABI_VERSION = 21
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
@@ -207,6 +207,10 @@ def _bind_run(lib: ctypes.CDLL) -> None:
     lib.synth_code_l2c.argtypes = [
         ctypes.c_int, ctypes.POINTER(ctypes.c_int8), ctypes.c_int,
         ctypes.POINTER(ctypes.c_int8), ctypes.c_int]
+    lib.synth_code_l5.restype = ctypes.c_int
+    lib.synth_code_l5.argtypes = [
+        ctypes.c_int, ctypes.POINTER(ctypes.c_int8), ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int8), ctypes.c_int]
 
 
 def _bind_sat_state(lib: ctypes.CDLL) -> None:
@@ -337,6 +341,23 @@ def code_l2c(prn: int):
     if rc != 0:
         raise ValueError(f"synth_code_l2c rejected prn {prn}")
     return cm, cl
+
+
+def code_l5(prn: int):
+    """(i5[10230], q5[10230]) int8 {-1,+1} arrays for GPS / QZSS L5 PRN `prn`.
+
+    I5 carries the CNAV data component; Q5 is the dataless pilot. The
+    Neuman-Hoffman secondaries (NH10 on I5, NH20 on Q5) are applied by the
+    mixer via SvSpec.sec_code, not here."""
+    lib = load_lib()
+    _p = ctypes.POINTER(ctypes.c_int8)
+    i5 = np.zeros(10230, np.int8)
+    q5 = np.zeros(10230, np.int8)
+    rc = lib.synth_code_l5(int(prn), i5.ctypes.data_as(_p), 10230,
+                           q5.ctypes.data_as(_p), 10230)
+    if rc != 0:
+        raise ValueError(f"synth_code_l5 rejected prn {prn}")
+    return i5, q5
 
 
 def debug_boc(sub_hz: float, fs: float, n: int) -> np.ndarray:

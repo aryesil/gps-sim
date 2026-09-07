@@ -99,5 +99,5 @@ def test_bad_prn_and_short_buffer():
 
 
 def test_abi_version_is_current():
-    assert _lib.load_lib().synth_abi_version() == 20
-    assert _lib.ABI_VERSION == 20
+    assert _lib.load_lib().synth_abi_version() == 21
+    assert _lib.ABI_VERSION == 21

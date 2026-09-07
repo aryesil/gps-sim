@@ -41,6 +41,10 @@ _BLOCK_SAMPLES = 65536
 # differ: spec.sys == 5 (Galileo) while code_sys == 6 (E1C pilot).
 _SYS_INT = {"G": 0, "J": 1, "S": 2, "C": 3, "R": 4, "E": 5}
 _E1_IS_PILOT = True     # E1C pilot for acquisition; E1B when nav bits added
+# GPS L5 I5 Neuman-Hoffman secondary NH10 = 0b0000110101 (IS-GPS-200
+# 3.3.2.4). Chip bit 0 -> +1, 1 -> -1, matching the ranging-code sign
+# convention. One NH chip per 1 ms primary code period (1 kHz).
+_NH10_CHIPS = tuple(1 if b == "0" else -1 for b in "0000110101")
 
 # RINEX per-system satellite numbers -> native synth_code PRN domain.
 #   QZSS  Jnn  -> PRN 192+nn  (J01 = 193, native range 193..202)
@@ -189,6 +193,50 @@ def _sv_spec_for(entry, gain, nav=None):
         spec.sec_code = None
         spec.sec_len = 0
         spec.sec_rate_hz = 0.0
+        return spec, keep
+
+    # GPS / QZSS L5: the I5 ranging code at 10.23 Mcps (10230 chips, 1 ms
+    # primary period) with the NH10 Neuman-Hoffman secondary (one chip per
+    # primary period -> 1 kHz), CNAV riding I5 as one 50 Hz symbol per 20
+    # primary periods -- the same message set as L2C. The Q5 dataless
+    # pilot is not needed for the data-signal closed-loop fix and is left
+    # out (as the CL pilot is on L2C).
+    if sysc in ("G", "J") and getattr(sig, "band", "L1") == "L5":
+        if getattr(sig, "nav_sym_hz", 0) == 0:
+            return None, (f"{sysc}{entry['prn']}: L5 Q5 pilot component "
+                          "not emitted (data-signal fix path), skipped")
+        i5, _q5 = _lib.code_l5(entry["prn"])
+        spec = _lib.SvSpec()
+        pbuf = (ctypes.c_int8 * 10230)(*i5.tolist())
+        spec.code = pbuf
+        keep = [pbuf]
+        spec.code_len = 10230
+        spec.chip_rate_hz = 10.23e6
+        spec.carrier_freq_hz = entry["carrier_doppler_hz"]
+        spec.carrier_phase0_rad = 0.0
+        spec.code_phase0_chips = entry["code_phase_chips"]
+        spec.code_doppler_hz = entry["code_doppler_hz"]
+        spec.nav_mode = 0
+        spec.nav_bits = None
+        spec.nav_nbits = 0
+        spec.nav_sym_rate_hz = 0.0
+        if nav is not None:
+            nbuf, nbits, sym_rate = nav
+            spec.nav_mode = 1
+            spec.nav_bits = nbuf
+            spec.nav_nbits = nbits
+            spec.nav_sym_rate_hz = float(sym_rate)
+            keep.append(nbuf)
+        spec.gain = gain
+        spec.prn = entry["prn"]
+        spec.sys = _SYS_INT[sysc]
+        spec.sub_carrier_hz = 0.0
+        nh10 = _NH10_CHIPS
+        sbuf = (ctypes.c_int8 * 10)(*nh10)
+        spec.sec_code = sbuf
+        spec.sec_len = 10
+        spec.sec_rate_hz = 1000.0
+        keep.append(sbuf)
         return spec, keep
 
     if sysc == "R":

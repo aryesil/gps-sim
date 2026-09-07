@@ -12,6 +12,8 @@
 #include "b1i_taps.hpp"
 // GPS L2C CM/CL codes (IS-GPS-200 3.2.1.4) -- 27-stage LFSR, see l2c_codes.cpp.
 #include "l2c_codes.hpp"
+// GPS / QZSS L5 I5/Q5 codes (IS-GPS-200 3.3.2) -- XA(short-cycled) XOR XBi.
+#include "l5_codes.hpp"
 // Galileo E1-B (data) and E1-C (pilot) are fixed 4092-chip memory codes from
 // the Galileo OS SIS ICD Annex C.7/C.8 -- not LFSR-generated. They live in a
 // compiled-in table (galileo_e1_codes.cpp) reached via codes_mem.hpp. The
@@ -148,5 +150,14 @@ extern "C" int synth_code_l2c(int prn, int8_t *cm, int cm_len,
     if (prn < 1 || prn > 63) return -1;
     gs::l2c_cm(prn, cm, cm_len);
     if (cl != nullptr && cl_len >= 767250) gs::l2c_cl(prn, cl, cl_len);
+    return 0;
+}
+
+extern "C" int synth_code_l5(int prn, int8_t *i5, int i5_len,
+                             int8_t *q5, int q5_len) {
+    if (i5 == nullptr || i5_len < 10230) return -1;
+    if (prn < 1 || prn > 210) return -1;
+    gs::l5_i(prn, i5, i5_len);
+    if (q5 != nullptr && q5_len >= 10230) gs::l5_q(prn, q5, q5_len);
     return 0;
 }
