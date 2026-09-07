@@ -19,6 +19,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+from backend import config
+
 _C = 299792458.0
 _SC = 1.0 / math.pi          # semicircles per radian
 
@@ -65,12 +67,16 @@ class AtmosphereConfig:
 
 def klobuchar_delay_m(alpha, beta, gps_sow: float,
                       rx_lat_rad: float, rx_lon_rad: float,
-                      az_rad: float, el_rad: float) -> dict:
-    """IS-GPS-200 20.3.3.5.2.5 ionospheric delay on L1, in metres.
+                      az_rad: float, el_rad: float, *,
+                      freq_hz: float | None = None) -> dict:
+    """IS-GPS-200 20.3.3.5.2.5 ionospheric delay, in metres.
 
     ``el_rad`` / ``az_rad`` are the satellite's elevation and azimuth at the
-    receiver. Returns ``{delay_m, vertical_delay_m, iono_latitude_deg,
-    slant_factor, period_s, model}``.
+    receiver. The model is defined on L1; when ``freq_hz`` is given and
+    differs from L1 the group delay is scaled by ``(L1 / freq_hz) ** 2``
+    (ionospheric delay is dispersive, proportional to 1/f^2). Returns
+    ``{delay_m, vertical_delay_m, iono_latitude_deg, slant_factor,
+    period_s, model, freq_hz, dispersion_scale}``.
     """
     a0, a1, a2, a3 = alpha
     b0, b1, b2, b3 = beta
@@ -102,15 +108,20 @@ def klobuchar_delay_m(alpha, beta, gps_sow: float,
         vert = 5e-9 + amp * (1 - x * x / 2.0 + x ** 4 / 24.0)
     else:
         vert = 5e-9
+    scale = 1.0
+    if freq_hz is not None and freq_hz != config.L1_HZ:
+        scale = (config.L1_HZ / float(freq_hz)) ** 2
     delay_s = slant * vert
     return {
         "model": "klobuchar",
-        "delay_m": delay_s * _C,
-        "vertical_delay_m": vert * _C,
+        "delay_m": delay_s * _C * scale,
+        "vertical_delay_m": vert * _C * scale,
         "slant_factor": slant,
         "iono_latitude_deg": phi_m / _SC * 180.0 / math.pi,
         "period_s": per,
         "local_time_s": t,
+        "freq_hz": float(freq_hz) if freq_hz is not None else config.L1_HZ,
+        "dispersion_scale": scale,
     }
 
 

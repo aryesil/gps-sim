@@ -73,6 +73,24 @@ def test_klobuchar_is_continuous_in_elevation():
 
 # ---- Saastamoinen ---------------------------------------------------
 
+def test_klobuchar_dispersive_scaling_matches_freq_ratio_squared():
+    from backend import config
+    args = (ALPHA, BETA, 345600.0, 0.71, 0.51, 1.0, 0.6)
+    l1 = klobuchar_delay_m(*args)
+    l5 = klobuchar_delay_m(*args, freq_hz=config.L5_HZ)
+    ratio = (config.L1_HZ / config.L5_HZ) ** 2
+    assert l5["delay_m"] == pytest.approx(l1["delay_m"] * ratio, rel=1e-12)
+    assert l5["dispersion_scale"] == pytest.approx(ratio, rel=1e-12)
+
+
+def test_klobuchar_default_call_is_unchanged():
+    args = (ALPHA, BETA, 345600.0, 0.71, 0.51, 1.0, 0.6)
+    d0 = klobuchar_delay_m(*args)
+    d1 = klobuchar_delay_m(*args, freq_hz=None)
+    assert d0["delay_m"] == d1["delay_m"]
+    assert "freq_hz" in d1
+
+
 def test_saastamoinen_zenith_delay_near_2_3_m_at_sea_level():
     d = saastamoinen_delay_m(math.radians(90), 0.0)
     assert 2.2 < d["delay_m"] < 2.6
