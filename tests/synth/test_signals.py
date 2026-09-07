@@ -6,7 +6,7 @@ def test_l2c_signal_registered_on_l2_band():
     s = signals.SIGNALS["GPS_L2C"]
     assert s.band == "L2"
     assert s.carrier_hz == config.L2_HZ
-    assert s.chip_rate_hz == 1.023e6
+    assert s.chip_rate_hz == 0.5115e6
     assert s.code_len == 10230
     assert s.sys == "G"
 

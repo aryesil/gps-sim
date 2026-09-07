@@ -15,11 +15,11 @@ def _l2c_entry():
     }
 
 
-def test_sv_spec_l2c_uses_cm_code_at_1023_mcps():
+def test_sv_spec_l2c_uses_cm_code_at_511_kcps():
     spec, keep = engine._sv_spec_for(_l2c_entry(), 1.0, nav=None)
     assert spec is not None
     assert spec.code_len == 10230
-    assert spec.chip_rate_hz == 1.023e6
+    assert spec.chip_rate_hz == 0.5115e6
     assert spec.sub_carrier_hz == 0.0
     assert spec.sec_len == 0
     cm, _cl = _lib.code_l2c(1)

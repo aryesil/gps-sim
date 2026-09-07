@@ -27,7 +27,7 @@ SIGNALS = {
     "BDS_B1I": Signal(config.L1_HZ, 2.046e6, 2046, None, 50.0, "L1", sys="C"),
     "GLO_G1": Signal(1_602_000_000.0, 0.511e6, 511, None, 100.0, "G1", sys="R"),
     # --- L2 band (1227.60 MHz) ---------------------------------------------
-    "GPS_L2C": Signal(config.L2_HZ, 1.023e6, 10230, None, 50.0, "L2"),
+    "GPS_L2C": Signal(config.L2_HZ, 0.5115e6, 10230, None, 50.0, "L2"),
     "GLO_L2OF": Signal(config.L2_HZ, 0.511e6, 511, None, 100.0, "G2", sys="R"),
     # --- L5 band (1176.45 MHz) -------------------------------------------
     "GPS_L5I": Signal(config.L5_HZ, 10.23e6, 10230, None, 50.0, "L5"),

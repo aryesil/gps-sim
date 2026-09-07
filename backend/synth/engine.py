@@ -155,10 +155,10 @@ def _sv_spec_for(entry, gain, nav=None):
     sig = entry["signal_id"]
     sysc = entry["sys"]
 
-    # GPS / QZSS L2C: the CM ranging code at 1.023 Mcps, CNAV riding it as
-    # one 50 Hz data symbol per 20 ms CM period (exactly like LNAV on L1).
-    # The CL pilot is not needed for the data-signal closed-loop fix and is
-    # left out of Phase 1.
+    # GPS / QZSS L2C: the CM ranging code at 511.5 kcps (10230 chips, 20 ms
+    # period), CNAV riding it as one 50 Hz data symbol per CM period (like
+    # LNAV on L1). The CL pilot and the CM/CL chip interleave are not needed
+    # for the data-signal closed-loop fix and are left out of Phase 1.
     if sysc in ("G", "J") and getattr(sig, "band", "L1") == "L2":
         cm, _cl = _lib.code_l2c(entry["prn"])
         spec = _lib.SvSpec()
@@ -166,7 +166,7 @@ def _sv_spec_for(entry, gain, nav=None):
         spec.code = pbuf
         keep = [pbuf]
         spec.code_len = 10230
-        spec.chip_rate_hz = 1.023e6
+        spec.chip_rate_hz = 0.5115e6
         spec.carrier_freq_hz = entry["carrier_doppler_hz"]
         spec.carrier_phase0_rad = 0.0
         spec.code_phase0_chips = entry["code_phase_chips"]
