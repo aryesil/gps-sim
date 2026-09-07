@@ -25,8 +25,8 @@ def test_two_bands_write_two_files(tmp_path):
     assert (tmp_path / "G1.bin").stat().st_size == 160000 * 4
 
 
-def test_abi_version_is_19():
-    assert _lib.load_lib().synth_abi_version() == _lib.ABI_VERSION == 19
+def test_abi_version_is_20():
+    assert _lib.load_lib().synth_abi_version() == _lib.ABI_VERSION == 20
 
 
 def test_el_gain_is_monotonic_and_bounded():

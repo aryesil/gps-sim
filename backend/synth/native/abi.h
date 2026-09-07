@@ -210,6 +210,11 @@ int synth_run_bands(const BandSpec *bands, int nband,
 // synth_code(0, prn, out, n, nullptr, 0).
 int synth_code(int sys, int prn, int8_t *primary, int prim_len,
                int8_t *secondary, int sec_len);
+// GPS L2C civil codes (IS-GPS-200 3.2.1.4). Fills cm[0..cm_len-1]
+// (cm_len >= 10230) with the CM code chips in {-1,+1}; when cl != NULL
+// and cl_len >= 767250, fills cl with the CL code. Returns 0 on success,
+// -1 on bad prn (outside 1..63) / short buffer / NULL cm.
+int synth_code_l2c(int prn, int8_t *cm, int cm_len, int8_t *cl, int cl_len);
 #ifdef __cplusplus
 }
 #endif

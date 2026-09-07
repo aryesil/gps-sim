@@ -10,6 +10,8 @@
 // the Neumann-Hoffman secondary -- tables only, see the header for the
 // BDS-SIS-ICD-B1I v3.0 citation.
 #include "b1i_taps.hpp"
+// GPS L2C CM/CL codes (IS-GPS-200 3.2.1.4) -- 27-stage LFSR, see l2c_codes.cpp.
+#include "l2c_codes.hpp"
 // Galileo E1-B (data) and E1-C (pilot) are fixed 4092-chip memory codes from
 // the Galileo OS SIS ICD Annex C.7/C.8 -- not LFSR-generated. They live in a
 // compiled-in table (galileo_e1_codes.cpp) reached via codes_mem.hpp. The
@@ -138,4 +140,13 @@ extern "C" int synth_code(int sys, int prn, int8_t *primary, int prim_len,
 
 int synth_ca_code(int prn, int8_t *out, int n) {
     return synth_code(0, prn, out, n, nullptr, 0);
+}
+
+extern "C" int synth_code_l2c(int prn, int8_t *cm, int cm_len,
+                              int8_t *cl, int cl_len) {
+    if (cm == nullptr || cm_len < 10230) return -1;
+    if (prn < 1 || prn > 63) return -1;
+    gs::l2c_cm(prn, cm, cm_len);
+    if (cl != nullptr && cl_len >= 767250) gs::l2c_cl(prn, cl, cl_len);
+    return 0;
 }

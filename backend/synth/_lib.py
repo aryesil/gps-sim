@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-ABI_VERSION = 19
+ABI_VERSION = 20
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
@@ -203,6 +203,10 @@ def _bind_run(lib: ctypes.CDLL) -> None:
     lib.synth_code.argtypes = [
         ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_int8), ctypes.c_int,
         ctypes.POINTER(ctypes.c_int8), ctypes.c_int]
+    lib.synth_code_l2c.restype = ctypes.c_int
+    lib.synth_code_l2c.argtypes = [
+        ctypes.c_int, ctypes.POINTER(ctypes.c_int8), ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int8), ctypes.c_int]
 
 
 def _bind_sat_state(lib: ctypes.CDLL) -> None:
@@ -320,6 +324,19 @@ def code(sys: int, prn: int, prim_len: int, sec_len: int = 0):
     if rc != 0:
         raise ValueError(f"synth_code failed: sys={sys} prn={prn}")
     return primary, (secondary if sec_len > 0 else None)
+
+
+def code_l2c(prn: int):
+    """(cm[10230], cl[767250]) int8 {-1,+1} arrays for GPS L2C PRN `prn`."""
+    lib = load_lib()
+    _p = ctypes.POINTER(ctypes.c_int8)
+    cm = np.zeros(10230, np.int8)
+    cl = np.zeros(767250, np.int8)
+    rc = lib.synth_code_l2c(int(prn), cm.ctypes.data_as(_p), 10230,
+                            cl.ctypes.data_as(_p), 767250)
+    if rc != 0:
+        raise ValueError(f"synth_code_l2c rejected prn {prn}")
+    return cm, cl
 
 
 def debug_boc(sub_hz: float, fs: float, n: int) -> np.ndarray:
