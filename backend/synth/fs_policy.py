@@ -59,6 +59,31 @@ def band_floor(band_id: str, signal_ids: list[str], ks=()) -> float:
             if f >= need:
                 return f
         return math.ceil(need / 1e5) * 1e5
+    elif band_id == "G2":
+        if not ks:
+            ks = range(-7, 7)
+        max_abs_k = max(abs(k) for k in ks)
+        max_chip_rate = max(SIGNALS[s].chip_rate_hz for s in signal_ids)
+        channel_span = 2 * (max_abs_k * 437_500.0 + max_chip_rate)
+        need = max(fs_min(signal_ids), channel_span)
+        for f in _STANDARD:
+            if f >= need:
+                return f
+        return math.ceil(need / 1e5) * 1e5
+    elif band_id == "L2":
+        # GPS L2C main lobe +/- 1.023 MHz; GLONASS L2 rides the G2 band, so
+        # L2 here is the GPS-only group.
+        need = 2.0 * fs_min(signal_ids)
+        for f in _STANDARD:
+            if f >= need:
+                return f
+        return math.ceil(need / 1e5) * 1e5
+    elif band_id == "L5":
+        # 10.23 Mcps BPSK(10): main lobe +/- 10.23 MHz. Round up to a
+        # 0.1 MHz grid above 2x the chip rate.
+        max_chip = max(SIGNALS[s].chip_rate_hz for s in signal_ids)
+        need = max(2.0 * max_chip, fs_min(signal_ids))
+        return math.ceil(need / 1e5) * 1e5
     else:
         raise ValueError(f"unknown band {band_id!r}")
 
