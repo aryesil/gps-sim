@@ -81,6 +81,14 @@ class ScenarioRequest:
     # back to the Phase-1 constant-Doppler approximation.
     continuous_doppler: bool = True
 
+    # RF bands to synthesise. None => L1 only (every legacy scenario is
+    # byte-identical). A list like ["L1", "L2", "L5"] opts into extra bands;
+    # l2_sample_rate / l5_sample_rate are optional per-band fs overrides
+    # (floored by fs_policy.band_floor).
+    bands: list[str] | None = None
+    l2_sample_rate: float | None = None
+    l5_sample_rate: float | None = None
+
     def __post_init__(self):
         self.systems = _norm_systems(self.systems)
 

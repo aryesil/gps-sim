@@ -85,6 +85,19 @@ def test_route_llh_at_clamps_out_of_range():
     assert scenario.route_llh_at(route, 10, 999.0) == pytest.approx(route[1])
 
 
+def test_scenario_request_band_fields_default_to_none():
+    req = _req()
+    assert req.bands is None
+    assert req.l2_sample_rate is None
+    assert req.l5_sample_rate is None
+
+
+def test_scenario_request_accepts_band_list():
+    req = _req(bands=["L1", "L2", "L5"], l5_sample_rate=25e6)
+    assert req.bands == ["L1", "L2", "L5"]
+    assert req.l5_sample_rate == 25e6
+
+
 def test_estimate_bytes():
     assert scenario.estimate_bytes(_req(duration_s=10, sample_rate=2.6e6)) == 2 * 2 * 2_600_000 * 10
     assert scenario.estimate_bytes(_req(duration_s=10, sample_format="int8")) == 2 * 1 * 2_600_000 * 10
