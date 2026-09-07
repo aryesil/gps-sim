@@ -22,3 +22,17 @@ def test_solve_position_recovers_known_point():
     assert np.linalg.norm(np.array(out["ecef"]) - true) < 30.0
     assert abs(out["clock_bias_s"] - b_true) < 1e-7
     assert out["iterations"] < 10
+
+
+def test_fix_from_iq_band_param_guard():
+    import inspect
+    import pytest
+
+    sig = inspect.signature(receiver.fix_from_iq)
+    p = sig.parameters["band"]
+    assert p.default == "L1"
+    assert p.kind is inspect.Parameter.KEYWORD_ONLY
+
+    with pytest.raises(ValueError):
+        receiver.fix_from_iq("/nonexistent.bin", "int8", 5e6, {}, 0.0,
+                             band="L9")

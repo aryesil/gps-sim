@@ -43,8 +43,111 @@ def _ecef_to_llh(x, y, z):
     return np.degrees(lat), np.degrees(lon), float(h)
 
 
+_CM_LEN = 10230
+_CM_CHIP_HZ = 0.5115e6
+
+
+def _fix_from_iq_l2(iq_path, sample_format, sample_rate, eph_by_prn,
+                    approx_time_gps, marker_llh) -> dict:
+    """GPS L2C closed-loop fix: acquire CM, decode CNAV 10/11/30, solve."""
+    from backend.analysis import band_acquire, cnav_decode
+    from backend.synth import signals as _sig
+
+    l2c = _sig.SIGNALS["GPS_L2C"]
+    fl1, fl2 = config.L1_HZ, config.L2_HZ
+    m_per_chip = config.C / _CM_CHIP_HZ
+
+    # CNAV messages 10 + 11 arrive once per 12 s each; 50 s of data gives a
+    # comfortable margin for acquisition slack plus a full 10/11/30 set.
+    iq = inspector.read_iq(iq_path, sample_format,
+                           max_samples=int(sample_rate * 50.0))
+    approx_rx = (np.array(geometry.llh_to_ecef(*marker_llh))
+                 if marker_llh else np.zeros(3))
+
+    scan = eph_by_prn if eph_by_prn else {p: None for p in range(1, 33)}
+    acq = {}
+    for prn in scan:
+        r = band_acquire.acquire_l2c(iq, sample_rate, prn)
+        if r["metric_db"] > 11.0:
+            acq[prn] = r
+
+    decoded, nav_decode = {}, {}
+    for prn, r in list(acq.items()):
+        try:
+            sym = cnav_decode.demod_symbols(iq, sample_rate, prn,
+                                            dopp_hz=r["doppler_hz"],
+                                            code_phase_chips=r["code_phase_chips"])
+            rec = cnav_decode.reconstruct_ephemeris(
+                cnav_decode.decode_messages(sym.tolist()))
+            rec["prn"] = prn
+            decoded[prn] = rec
+            nav_decode[prn] = "ok"
+        except (ValueError, IndexError):
+            nav_decode[prn] = "decode fail"
+
+    if len(decoded) < 4:
+        return {"error": f"only {len(decoded)} PRNs decoded on L2C",
+                "prns_used": sorted(decoded), "nav_decode": nav_decode}
+
+    sat_pos, pr, usable = {}, {}, []
+    for prn in sorted(decoded):
+        rec = decoded[prn]
+        tgd = rec.get("tgd", 0.0)
+        svb = -tgd * (fl1 / fl2) ** 2 + rec.get("isc_l2c", 0.0)
+        o = geometry.observables(rec, approx_rx, approx_time_gps,
+                                 signal=l2c, sv_clock_bias_s=svb)
+        if o["el_deg"] < 5.0:
+            nav_decode[prn] = "low el"
+            continue
+        pos, _, _, clk = geometry.solve_transmit_time(rec, approx_rx,
+                                                      approx_time_gps)
+        # band_acquire reports the circular lag of the local replica; the
+        # engine's transmit code phase is the opposite sign.
+        acq_cp = (_CM_LEN - acq[prn]["code_phase_chips"]) % _CM_LEN
+        err_c = ((acq_cp - o["code_phase_chips"] + _CM_LEN / 2) % _CM_LEN
+                 ) - _CM_LEN / 2
+        if abs(err_c) > 0.45 * _CM_LEN:
+            nav_decode[prn] = "unaligned"
+            continue
+        sat_pos[prn] = pos
+        pr[prn] = o["pseudorange_m"] + err_c * m_per_chip + config.C * (clk + svb)
+        usable.append(prn)
+
+    if len(usable) < 4:
+        return {"error": f"only {len(usable)} PRNs usable on L2C",
+                "prns_used": sorted(usable), "nav_decode": nav_decode}
+
+    sol = solve_position(pr, sat_pos, x0=[*approx_rx, 0.0])
+    lat, lon, h = _ecef_to_llh(*sol["ecef"])
+    entries = []
+    for prn in usable:
+        los = sat_pos[prn] - np.array(sol["ecef"])
+        entries.append({"_los": (los / np.linalg.norm(los)).tolist()})
+    out = {
+        "ecef": sol["ecef"], "llh": [lat, lon, h],
+        "clock_bias_s": sol["clock_bias_s"], "prns_used": sorted(usable),
+        "pdop": geometry.dop(entries, sol["ecef"])["pdop"],
+        "residual_rms_m": sol["residual_rms_m"], "nav_decode": nav_decode,
+    }
+    if marker_llh:
+        truth = np.array(geometry.llh_to_ecef(*marker_llh))
+        out["error_m"] = float(np.linalg.norm(np.array(sol["ecef"]) - truth))
+    return out
+
+
 def fix_from_iq(iq_path, sample_format, sample_rate, eph_by_prn,
-                approx_time_gps, marker_llh=None, decode_nav=False) -> dict:
+                approx_time_gps, marker_llh=None, decode_nav=False,
+                *, band: str = "L1") -> dict:
+    """``band`` selects the signal family. ``"L1"`` is the GPS L1 C/A path
+    (all params as before). ``"L2"`` runs the GPS L2C path: CM acquisition
+    via :mod:`backend.analysis.band_acquire`, CNAV ephemeris decode via
+    :mod:`backend.analysis.cnav_decode`, then the same WLS position solve.
+    """
+    if band == "L2":
+        return _fix_from_iq_l2(iq_path, sample_format, sample_rate,
+                               eph_by_prn, approx_time_gps, marker_llh)
+    if band != "L1":
+        raise ValueError(f"unsupported band {band!r}")
     # A LNAV decode needs at least one full set of subframes 1-3 (18 s of
     # 50 bps data) plus acquisition slack; a plain code-phase fix needs
     # only a short slice.
