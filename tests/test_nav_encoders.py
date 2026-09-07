@@ -73,6 +73,26 @@ def test_other_systems_return_their_rate(eph_multi, sysc, rate):
     assert set(np.unique(arr)).issubset({-1, 1})
 
 
+def test_l2c_signal_dispatches_to_cnav(eph_multi):
+    from backend.synth import signals
+    rec = _first(eph_multi, "G")
+    res = nav_encoders.nav_stream_for(
+        "G", signals.SIGNALS["GPS_L2C"], rec, {}, _WEEK, _SOW, 12, prn=1)
+    assert res is not None
+    arr, rate = res
+    assert rate == 50.0
+    assert set(np.unique(arr)).issubset({-1, 1})
+    assert len(arr) % 600 == 0
+
+
+def test_l1_dispatch_still_lnav(eph_multi):
+    from backend.synth import signals
+    rec = _first(eph_multi, "G")
+    arr, rate = nav_encoders.nav_stream_for(
+        "G", signals.signal_for("G"), rec, {}, _WEEK, _SOW, 12)
+    assert rate == 50.0
+
+
 def test_unknown_system_returns_none(eph_multi):
     assert nav_encoders.nav_stream_for("X", signals.signal_for("G"), {},
                                        {}, _WEEK, _SOW, 6) is None

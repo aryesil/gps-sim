@@ -34,6 +34,16 @@ def nav_stream_for(sysc, signal, eph, header, week, sow, duration_s,
     broadcast record (dict); ``signal`` is its ``signals.Signal``; ``prn`` is
     the constellation PRN (used to pick BeiDou D1 vs D2).
     """
+    band = getattr(signal, "band", "L1")
+    if band in ("L2", "L5") and sysc in ("G", "J"):
+        # GPS / QZSS L2C and L5 carry CNAV (IS-GPS-200 Sec. 30 / 40), not
+        # LNAV. Same message set on both bands; QZSS reuses it verbatim.
+        from backend.analysis import cnav_encode
+        p = int(prn if prn is not None else (eph.get("prn", 1) or 1))
+        arr, rate = cnav_encode.nav_stream(eph, header or {}, week, sow,
+                                           duration_s, prn=p,
+                                           eph_by_prn=eph_by_prn)
+        return arr, rate
     if sysc in ("G", "J"):
         # QZSS L1 C/A LNAV is frame-identical to GPS LNAV -- same subframes,
         # TLM/HOW, parity. The PRN (193..202 for QZSS) does not enter the bit
