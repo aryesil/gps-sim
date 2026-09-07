@@ -374,7 +374,7 @@ def run(req, progress_cb=None) -> pathlib.Path:
         entries = geometry.constellation_multi(
             stubs, rx, p_sow, signals.signal_for, mask_deg=5.0,
             state_fn_by_key=state_fns)
-        entries.sort(key=lambda e: (e["sys"], e["prn"]))
+        entries.sort(key=lambda e: (e["sys"], e["prn"], e["signal_id"].band))
         for e in entries:
             e["_state"] = state_fns.get((e["sys"], e["prn"]))
             e["prn"] = _native_prn(e["sys"], e["prn"])
@@ -407,9 +407,15 @@ def run(req, progress_cb=None) -> pathlib.Path:
         eph = ephemeris.align_epochs(eph, week, sow)
         rx = (rx_fn(0.0)[0] if rx_fn is not None
               else geometry.llh_to_ecef(req.lat, req.lon, req.alt))
-        entries = geometry.constellation_multi(eph, rx, sow, signals.signal_for,
+        req_bands = getattr(req, "bands", None)
+        if req_bands:
+            def sig_for(s, _b=tuple(req_bands)):
+                return signals.signals_for(s, _b)
+        else:
+            sig_for = signals.signal_for
+        entries = geometry.constellation_multi(eph, rx, sow, sig_for,
                                                mask_deg=5.0)
-        entries.sort(key=lambda e: (e["sys"], e["prn"]))
+        entries.sort(key=lambda e: (e["sys"], e["prn"], e["signal_id"].band))
         for e in entries:
             e["_state"] = eph.get((e["sys"], e["prn"]), eph.get(e["prn"]))
             e["prn"] = _native_prn(e["sys"], e["prn"])
@@ -448,7 +454,8 @@ def run(req, progress_cb=None) -> pathlib.Path:
                 continue
             arr, sym_rate = res
             nbuf = (ctypes.c_int8 * len(arr))(*arr.tolist())
-            nav_streams[e["prn"]] = (nbuf, len(arr), float(sym_rate))
+            nav_streams[(e["prn"], e["signal_id"].band)] = (
+                nbuf, len(arr), float(sym_rate))
             nav_prov.setdefault(sysc, _NAV_PROV_NAME.get(sysc, "on"))
     if not nav_prov:
         nav_prov = "none"
@@ -467,8 +474,9 @@ def run(req, progress_cb=None) -> pathlib.Path:
         for e in plan.entries:
             el_deg = float(e.get("el_deg", 90.0))
             static_gain = _el_gain(el_deg)
-            spec, keep = _sv_spec_for(e, static_gain,
-                                      nav=nav_streams.get(e["prn"]))
+            spec, keep = _sv_spec_for(
+                e, static_gain,
+                nav=nav_streams.get((e["prn"], e["signal_id"].band)))
             if spec is None:
                 _log.warning("engine.run: %s", keep)
                 warnings.append(str(keep))
