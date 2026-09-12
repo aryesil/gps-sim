@@ -227,6 +227,14 @@ progress { width: 100%; height: 6px; }
 .iq-block-grow { flex: 1 1 320px; min-width: 0; }
 .iq-block-grow canvas { width: 100%; }
 
+/* Small-multiples spectrum: one cell per RF band, stacked, each with its
+   own local axis -- shown instead of the single spectrum canvas whenever a
+   run covers more than one band (see frontend/js/iqplot.js loadIqPlots). */
+.iq-spectrum-multi { display: flex; flex-direction: column; gap: var(--sp-3); }
+.iq-spectrum-cell { display: flex; flex-direction: column; gap: var(--sp-1); min-width: 0; }
+.iq-spectrum-cell canvas { width: 100%; }
+.iq-spectrum-cell-label { font-size: 11px; color: var(--text-muted); }
+
 /* channel cards */
 .channel-card {
   background: var(--surface);

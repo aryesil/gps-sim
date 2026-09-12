@@ -94,6 +94,35 @@ window.drawSpectrum = function (canvasId, freqs, db) {
   });
 };
 
+// Small-multiples spectrum rendering: one plain (non-overlay) canvas per RF
+// band, each on its own local baseband axis, instead of merging every band
+// onto one shared absolute-Hz axis (see drawSpectrum above) -- bands sit
+// tens to hundreds of MHz apart (L1 1575.42, G1 1602, L2 1227.60, L5
+// 1176.45 MHz) while each band's own span is only a few MHz, so a shared
+// axis crushes every band but the widest into an unreadable sliver at one
+// edge of the plot.
+const _spectrumMultiBands = {};   // channelId -> joined band ids currently rendered
+
+function _renderSpectrumMulti(channelId, bandList) {
+  const host = document.getElementById(`${channelId}-iq-spectrum-multi`);
+  if (!host) return;
+  const key = bandList.map(b => b.id).join(',');
+  if (_spectrumMultiBands[channelId] !== key) {
+    host.innerHTML = bandList.map(b => `
+      <div class="iq-spectrum-cell">
+        <div class="iq-spectrum-cell-label">${b.id} (${(b.systems || []).join('') || '—'})
+          · ${(b.centre_hz / 1e6).toFixed(2)} MHz</div>
+        <canvas id="${channelId}-iq-spectrum-b-${b.id}" width="520" height="140"></canvas>
+        <div id="${channelId}-iq-spectrum-b-${b.id}-readout" class="iq-readout"></div>
+      </div>`).join('');
+    bandList.forEach(b => attachSpectrumHover(
+      `${channelId}-iq-spectrum-b-${b.id}`, `${channelId}-iq-spectrum-b-${b.id}-readout`));
+    _spectrumMultiBands[channelId] = key;
+  }
+  bandList.forEach(b => drawSpectrum(
+    `${channelId}-iq-spectrum-b-${b.id}`, b.spectrum_freq_hz, b.spectrum_db));
+}
+
 window.attachSpectrumHover = function (canvasId, readoutId) {
   document.getElementById(canvasId).addEventListener('mousemove', (ev) => {
     const last = _lastSpectrum[canvasId];
@@ -306,16 +335,19 @@ window.loadIqPlots = async function (channelId, outdir, offset) {
   if (seq !== _iqSeq[channelId]) return;
   drawWaveform(`${channelId}-iq-waveform`, d.i, d.q);
   drawConstellation(`${channelId}-iq-constellation`, d.i, d.q);
-  if (Array.isArray(d.bands) && d.bands.length >= 1) {
-    // "all bands together": overlay every RF band's spectrum on one shared
-    // absolute-frequency axis. Waveform/constellation stay on the primary
-    // band only (top-level d.i/d.q) -- overlaying different-fs time series
-    // is not meaningful.
-    drawSpectrum(`${channelId}-iq-spectrum`, d.bands.map((b, k) => ({
-      freqs: b.spectrum_freq_hz, db: b.spectrum_db, centre_hz: b.centre_hz,
-      label: b.id + ' (' + (b.systems || []).join('') + ')',
-      color: ['#06c', '#c60', '#093', '#a06'][k % 4],
-    })));
+  // Waveform/constellation stay on the primary band only (top-level d.i/d.q)
+  // regardless of how many bands this run has -- comparing different-fs
+  // time series on one plot is not meaningful.
+  const singleCanvas = document.getElementById(`${channelId}-iq-spectrum`);
+  const singleReadout = document.getElementById(`${channelId}-iq-spectrum-readout`);
+  const multiHost = document.getElementById(`${channelId}-iq-spectrum-multi`);
+  if (Array.isArray(d.bands) && d.bands.length > 1) {
+    // Small multiples: one plain canvas per band, each on its own local
+    // axis (see _renderSpectrumMulti above for why overlay doesn't work).
+    if (singleCanvas) singleCanvas.hidden = true;
+    if (singleReadout) singleReadout.hidden = true;
+    if (multiHost) multiHost.hidden = false;
+    _renderSpectrumMulti(channelId, d.bands);
     const wf = document.getElementById(`${channelId}-iq-waveform-readout`);
     const primary = d.bands.find(b => b.id === 'L1') || d.bands[0];
     // Set, do not prepend: this runs on every scrubber `oninput`, and
@@ -323,7 +355,18 @@ window.loadIqPlots = async function (channelId, outdir, offset) {
     // overwrites this line with the per-sample readout anyway.
     if (wf && primary) wf.textContent = 'primary band: ' + primary.id;
   } else {
-    drawSpectrum(`${channelId}-iq-spectrum`, d.spectrum_freq_hz, d.spectrum_db);
+    if (singleCanvas) singleCanvas.hidden = false;
+    if (singleReadout) singleReadout.hidden = false;
+    if (multiHost) { multiHost.hidden = true; multiHost.innerHTML = ''; }
+    delete _spectrumMultiBands[channelId];
+    const only = Array.isArray(d.bands) && d.bands.length === 1 ? d.bands[0] : null;
+    if (only) {
+      drawSpectrum(`${channelId}-iq-spectrum`, only.spectrum_freq_hz, only.spectrum_db);
+      const wf = document.getElementById(`${channelId}-iq-waveform-readout`);
+      if (wf) wf.textContent = 'primary band: ' + only.id;
+    } else {
+      drawSpectrum(`${channelId}-iq-spectrum`, d.spectrum_freq_hz, d.spectrum_db);
+    }
   }
 
   const slider = document.getElementById(`${channelId}-iq-scrub`);

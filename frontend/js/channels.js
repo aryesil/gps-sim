@@ -141,6 +141,11 @@ window.addChannel = function () {
             <label><input type="checkbox" id="${id}-sys-J"> QZSS</label>
             <label><input type="checkbox" id="${id}-sys-S"> SBAS</label>
           </fieldset>
+          <fieldset class="band-set"><legend>RF bands (native)</legend>
+            <label><input type="checkbox" id="${id}-band-L1" checked disabled> L1 <span class="hint">1575.42 MHz</span></label>
+            <label><input type="checkbox" id="${id}-band-L2" title="GPS L2C, GLONASS L2OF"> L2 <span class="hint">1227.60 MHz</span></label>
+            <label><input type="checkbox" id="${id}-band-L5" title="GPS/QZSS L5, Galileo E5a, BeiDou B2a"> L5 <span class="hint">1176.45 MHz</span></label>
+          </fieldset>
           <label>Sample rate Hz <input id="${id}-fs" type="number" step="100000" placeholder="auto from signals"></label>
           <label>Quantization <select id="${id}-quant">
             <option value="int16">int16</option>
@@ -228,6 +233,14 @@ window.addChannel = function () {
                 <div class="iq-label">Spectrum</div>
                 <canvas id="${id}-iq-spectrum" width="520" height="200"></canvas>
                 <div id="${id}-iq-spectrum-readout" class="iq-readout"></div>
+                <!-- Shown instead of the single canvas above whenever a run
+                     covers more than one RF band: each band gets its own
+                     small-multiple canvas with its own baseband axis, since
+                     bands can sit hundreds of MHz apart (e.g. L1 1575.42 vs
+                     L5 1176.45) and merging them onto one absolute-Hz axis
+                     crushes every band but the widest into an unreadable
+                     sliver at one edge of the plot. -->
+                <div id="${id}-iq-spectrum-multi" class="iq-spectrum-multi" hidden></div>
               </div>
             </div>
             <div class="iq-block">
@@ -346,7 +359,8 @@ function wireChannelActions(id) {
   _updateSizeEstimate();
 
   // Engine select: toggle disabled state on non-G constellation checkboxes
-  // (they are only available when native engine is selected).
+  // and on the L2/L5 band checkboxes (both are only available when native
+  // engine is selected -- gps-sdr-sim only ever emits GPS L1 C/A).
   function _updateEngineConstellationState() {
     const isNative = document.getElementById(`${id}-engine`).value === 'native';
     ['R', 'E', 'C', 'J', 'S'].forEach(s => {
@@ -357,9 +371,26 @@ function wireChannelActions(id) {
       // native only re-enables them (no auto-check).
       if (!isNative) box.checked = false;
     });
+    ['L2', 'L5'].forEach(b => {
+      const box = document.getElementById(`${id}-band-${b}`);
+      box.disabled = !isNative;
+      if (!isNative) box.checked = false;
+    });
   }
   document.getElementById(`${id}-engine`).addEventListener('change', _updateEngineConstellationState);
   _updateEngineConstellationState();
+
+  // Band checkboxes: L1 is always implicitly available (it's the legacy
+  // default), so never let a user land on zero bands checked -- fall back
+  // to L1 rather than send /api/generate a request `_engineBody()` would
+  // turn into `bands: []` (422 on the backend).
+  ['L2', 'L5'].forEach(b => {
+    document.getElementById(`${id}-band-${b}`).addEventListener('change', () => {
+      const anyChecked = ['L1', 'L2', 'L5'].some(
+        x => document.getElementById(`${id}-band-${x}`).checked);
+      if (!anyChecked) document.getElementById(`${id}-band-L1`).checked = true;
+    });
+  });
 
   // Scenario library: save/load this channel's whole config by name, the
   // same file-per-name pattern as trajectory save/load (backend/scenario_lib.py).
@@ -730,6 +761,13 @@ function wireChannelActions(id) {
     const sys = ["G", "R", "E", "C", "J", "S"].filter(
       s => document.getElementById(`${id}-sys-${s}`).checked);
     if (sys.length > 1) out.systems = sys;
+    const bandBoxes = ["L1", "L2", "L5"].filter(
+      b => document.getElementById(`${id}-band-${b}`).checked);
+    // ["L1"] alone is the implicit legacy default -- omit it so an untouched
+    // panel still produces a byte-identical request.
+    if (bandBoxes.length && !(bandBoxes.length === 1 && bandBoxes[0] === "L1")) {
+      out.bands = bandBoxes;
+    }
     return Object.keys(out).length ? out : null;
   }
 

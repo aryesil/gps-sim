@@ -4,7 +4,8 @@ import datetime as dt
 from dataclasses import dataclass
 
 from backend import config
-from backend.synth import signals
+from backend.synth import bands as _bandsmod
+from backend.synth import fs_policy, signals
 
 
 def _norm_systems(systems) -> tuple:
@@ -98,7 +99,29 @@ def _bytes_per_sample(fmt: str) -> int:
 
 
 def estimate_bytes(req: ScenarioRequest) -> int:
-    return int(2 * _bytes_per_sample(req.sample_format) * req.sample_rate * req.duration_s)
+    """Bytes for the primary output plus any extra bands ``req.bands`` opts
+    into. The primary term is the pre-existing estimate (``req.sample_rate``
+    directly); each additional band gets its own file sized at its
+    ``fs_policy`` floor (or its ``l{2,5}_sample_rate`` override), since an
+    extra band's floor (L5 is >=25 Msps) can dwarf the primary band's rate --
+    without this the disk-space guard below would pass on the primary band's
+    few Msps alone and the run could still run out of space partway through.
+    """
+    bps = _bytes_per_sample(req.sample_format)
+    total = int(2 * bps * req.sample_rate * req.duration_s)
+    for band_id in (req.bands or []):
+        if band_id == "L1":
+            continue
+        sig_ids = sorted({
+            _bandsmod._signal_key(sig)
+            for sysc in req.systems
+            for sig in signals.signals_for(sysc, (band_id,))})
+        if not sig_ids:
+            continue
+        override = getattr(req, f"{band_id.lower()}_sample_rate", None)
+        fs = max(float(override or 0.0), fs_policy.band_floor(band_id, sig_ids))
+        total += int(2 * bps * fs * req.duration_s)
+    return total
 
 
 def build_args(req: ScenarioRequest, out_bin: str, motion_csv: str | None) -> list[str]:

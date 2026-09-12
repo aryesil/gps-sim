@@ -28,10 +28,18 @@ window.drawSvPowerTable = function (tableId, svs, bands) {
   if (!svs || !svs.length) { t.innerHTML = ''; return; }
   const SYS = { G: 'GPS', R: 'GLONASS', E: 'Galileo', C: 'BeiDou',
                 J: 'QZSS', S: 'SBAS', I: 'NavIC' };
+  // Fallback only: a satellite can carry more than one signal in the same
+  // run (GPS L1 C/A and L2C are two separate rows for the same PRN), so a
+  // system-keyed guess picks one band and mislabels every other row for
+  // that system. Each row's own `band` field (added alongside per-channel
+  // band selection) is authoritative; the system-keyed map only covers
+  // older meta.json without it, and even then only when a system rode a
+  // single band.
   const bandFor = {};
   (bands || []).forEach(b => (b.systems || []).forEach(s => { bandFor[s] = b.id; }));
   const rows = svs.slice().sort((a, b) =>
-    (a.sys + '').localeCompare(b.sys + '') || a.prn - b.prn);
+    (a.sys + '').localeCompare(b.sys + '') || a.prn - b.prn
+    || (a.band || '').localeCompare(b.band || ''));
   t.innerHTML =
     '<tr><th>SV</th><th>sys</th><th>band</th><th>el °</th><th>az °</th>'
     + '<th>gain dB</th><th>fade σ dB</th><th>code Doppler Hz</th></tr>'
@@ -44,7 +52,7 @@ window.drawSvPowerTable = function (tableId, svs, bands) {
         const az = (typeof s.az_deg === 'number') ? s.az_deg.toFixed(1) : '—';
         const cd = (typeof s.code_doppler_hz === 'number') ? s.code_doppler_hz.toFixed(1) : '—';
         return `<tr><td>${s.sys}${s.prn}</td><td>${SYS[s.sys] || s.sys}</td>`
-          + `<td>${bandFor[s.sys] || 'L1'}</td><td>${el}</td><td>${az}</td>`
+          + `<td>${s.band || bandFor[s.sys] || 'L1'}</td><td>${el}</td><td>${az}</td>`
           + `<td>${gdb}</td><td>${sig}</td><td>${cd}</td></tr>`;
       }).join('');
 };

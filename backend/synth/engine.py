@@ -593,6 +593,12 @@ def run(req, progress_cb=None) -> pathlib.Path:
             band_sys.add(e["sys"])
             sig = e["signal_id"]
             sv_meta = {"sys": e["sys"], "prn": e["prn"],
+                       # A satellite can carry more than one signal_id in the
+                       # same run (e.g. GPS L1 C/A and L2C are two separate
+                       # entries for the same PRN) -- this field says which
+                       # band THIS row is, so a client rendering one row per
+                       # (sv, band) does not have to guess it back from `sys`.
+                       "band": sig.band,
                        "code_len": sig.code_len,
                        "chip_hz": sig.chip_rate_hz,
                        "code_doppler_hz": e["code_doppler_hz"],

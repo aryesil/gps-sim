@@ -86,6 +86,10 @@ def _precise_error(request: Request, exc: precise.PreciseProductError):
 # SP3 state-fn interpolants.
 _precise_provider = precise.PreciseEphemerisProvider()
 _FRONT = pathlib.Path(__file__).resolve().parent.parent / "frontend"
+# RF bands a caller may opt into via /api/generate's "bands". G1/G2 (GLONASS
+# FDMA) are never in this list -- they ride their own file automatically
+# whenever GLONASS is in `systems`, independent of this selector.
+_USER_BANDS = ("L1", "L2", "L5")
 # TX1/TX2 -- the PlutoSDR's two real simultaneous outputs (KNOWN hardware
 # fact, not an arbitrary cap). Each slot holds {"stop": Event, "session":
 # LiveSession | None} for whatever is currently occupying it, or None.
@@ -630,6 +634,15 @@ def generate(body: dict):
     if engine != "native" and sorted(set(systems)) != ["G"]:
         raise HTTPException(422,
             "gps-sdr-sim is GPS-only; use engine=native for other systems")
+    bands_req = body.get("bands")
+    if bands_req is not None:
+        if (not isinstance(bands_req, list) or not bands_req or not all(
+                isinstance(b, str) and b in _USER_BANDS for b in bands_req)):
+            raise HTTPException(422,
+                f"bands: must be a non-empty list from {_USER_BANDS}, got {bands_req!r}")
+        if engine != "native":
+            raise HTTPException(422,
+                "gps-sdr-sim only emits L1 C/A; use engine=native for other bands")
     nav_override, precise_warnings = _precise_nav_override(body, start)
     # In precise mode the broadcast nav file is never read; only resolve
     # (and possibly download) one when it will actually be used.
@@ -663,6 +676,7 @@ def generate(body: dict):
         engine=body.get("engine", "gps-sdr-sim"),
         fading=body.get("fading"),
         systems=systems,
+        bands=bands_req,
     )
     if req.impairments is not None:
         try:
