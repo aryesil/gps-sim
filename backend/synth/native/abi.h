@@ -220,6 +220,12 @@ int synth_code_l2c(int prn, int8_t *cm, int cm_len, int8_t *cl, int cl_len);
 // and q5_len >= 10230, fills q5 with the Q5 pilot code. Returns 0 on
 // success, -1 on bad prn (outside 1..210) / short buffer / NULL i5.
 int synth_code_l5(int prn, int8_t *i5, int i5_len, int8_t *q5, int q5_len);
+// Galileo E5a civil codes (Galileo OS SIS ICD Annex C, fixed 10230-chip
+// memory codes). Fills ei[0..ei_len-1] (ei_len >= 10230) with the E5a-I
+// (data) code chips in {-1,+1}; when eq != NULL and eq_len >= 10230, fills
+// eq with the E5a-Q (pilot) code. Returns 0 on success, -1 on bad prn
+// (outside 1..50) / short buffer / NULL ei.
+int synth_code_e5a(int prn, int8_t *ei, int ei_len, int8_t *eq, int eq_len);
 #ifdef __cplusplus
 }
 #endif

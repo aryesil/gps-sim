@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-ABI_VERSION = 21
+ABI_VERSION = 22
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
@@ -211,6 +211,10 @@ def _bind_run(lib: ctypes.CDLL) -> None:
     lib.synth_code_l5.argtypes = [
         ctypes.c_int, ctypes.POINTER(ctypes.c_int8), ctypes.c_int,
         ctypes.POINTER(ctypes.c_int8), ctypes.c_int]
+    lib.synth_code_e5a.restype = ctypes.c_int
+    lib.synth_code_e5a.argtypes = [
+        ctypes.c_int, ctypes.POINTER(ctypes.c_int8), ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int8), ctypes.c_int]
 
 
 def _bind_sat_state(lib: ctypes.CDLL) -> None:
@@ -358,6 +362,23 @@ def code_l5(prn: int):
     if rc != 0:
         raise ValueError(f"synth_code_l5 rejected prn {prn}")
     return i5, q5
+
+
+def code_e5a(prn: int):
+    """(ei[10230], eq[10230]) int8 {-1,+1} arrays for Galileo E5a PRN `prn`.
+
+    Fixed ICD memory codes (not LFSR-generated). E5a-I carries F/NAV data
+    plus the CS20 secondary (applied by the mixer via SvSpec.sec_code, not
+    here); E5a-Q is the dataless pilot, not emitted by the engine."""
+    lib = load_lib()
+    _p = ctypes.POINTER(ctypes.c_int8)
+    ei = np.zeros(10230, np.int8)
+    eq = np.zeros(10230, np.int8)
+    rc = lib.synth_code_e5a(int(prn), ei.ctypes.data_as(_p), 10230,
+                            eq.ctypes.data_as(_p), 10230)
+    if rc != 0:
+        raise ValueError(f"synth_code_e5a rejected prn {prn}")
+    return ei, eq
 
 
 def debug_boc(sub_hz: float, fs: float, n: int) -> np.ndarray:

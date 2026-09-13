@@ -19,6 +19,9 @@
 // compiled-in table (galileo_e1_codes.cpp) reached via codes_mem.hpp. The
 // E1-C 25-chip CS25 secondary comes from the same table.
 #include "codes_mem.hpp"
+// Galileo E5a-I (data) and E5a-Q (pilot) -- fixed 10230-chip memory codes
+// from the same ICD family, Annex C. See galileo_e5a_codes.cpp / .hpp.
+#include "galileo_e5a_codes.hpp"
 
 namespace {
 // G2 phase-select tap pairs (1-indexed register stages) for PRN 1..32,
@@ -159,5 +162,14 @@ extern "C" int synth_code_l5(int prn, int8_t *i5, int i5_len,
     if (prn < 1 || prn > 210) return -1;
     gs::l5_i(prn, i5, i5_len);
     if (q5 != nullptr && q5_len >= 10230) gs::l5_q(prn, q5, q5_len);
+    return 0;
+}
+
+extern "C" int synth_code_e5a(int prn, int8_t *ei, int ei_len,
+                              int8_t *eq, int eq_len) {
+    if (ei == nullptr || ei_len < 10230) return -1;
+    if (prn < 1 || prn > 50) return -1;
+    gs::e5a_i(prn, ei, ei_len);
+    if (eq != nullptr && eq_len >= 10230) gs::e5a_q(prn, eq, eq_len);
     return 0;
 }

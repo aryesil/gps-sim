@@ -24,6 +24,8 @@ _CODEGEN = {
     "C": (3, 2046, 2_046_000.0),
     "E": (6, 4092, 1_023_000.0),   # E1C pilot primary (pass boc=True for BOC(1,1))
     "G_L2C": (None, 10230, 511_500.0),   # L2C CM component (20 ms period)
+    "G_L5I": (None, 10230, 10_230_000.0),  # L5 I5 primary (1 ms period)
+    "E_E5AI": (None, 10230, 10_230_000.0),  # E5a-I primary (1 ms period)
 }
 
 
@@ -34,6 +36,12 @@ def primary_code(sysc: str, prn: int) -> np.ndarray:
     if sysc == "G_L2C":
         cm, _cl = _lib.code_l2c(prn)
         return cm.astype(np.float64)
+    if sysc == "G_L5I":
+        i5, _q5 = _lib.code_l5(prn)
+        return i5.astype(np.float64)
+    if sysc == "E_E5AI":
+        ei, _eq = _lib.code_e5a(prn)
+        return ei.astype(np.float64)
     csys, clen, _ = _CODEGEN[sysc]
     sec_len = 25 if sysc == "E" else 0
     prim, _sec = _lib.code(csys, prn, clen, sec_len)
