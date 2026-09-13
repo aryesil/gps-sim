@@ -942,7 +942,8 @@ def start_transmit(body: dict, request: Request):
             lo_hz=float(body.get("lo_hz", config.L1_HZ)),
             tx_gain_db=float(body.get("tx_gain_db", -50.0)),
             uri=body.get("uri", config.DEVICE_URI),
-            tx_scale=float(body.get("tx_scale", 1.0)))
+            tx_scale=float(body.get("tx_scale", 1.0)),
+            slot=slot)
         itemsize = 1 if params.sample_format == "int8" else 2
         try:
             total_samples = pathlib.Path(params.iq_path).stat().st_size // (2 * itemsize)
@@ -1239,7 +1240,8 @@ def live_start(body: dict, request: Request):
             iq_path="(live)", sample_rate=band_fs, sample_format=req.sample_format,
             lo_hz=float(body.get("lo_hz", band_centre_hz)),
             tx_gain_db=float(body.get("tx_gain_db", -50.0)),
-            uri=body.get("uri", config.DEVICE_URI))
+            uri=body.get("uri", config.DEVICE_URI),
+            slot=slot)
     except Exception:
         _release_tx_slot(slot)
         raise

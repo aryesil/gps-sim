@@ -29,6 +29,11 @@ class TxParams:
     tx_gain_db: float = -50.0
     uri: str = config.DEVICE_URI
     chunk_samples: int = 262144
+    # Which of the AD9361/AD9363's two TX ports this session drives. TX1
+    # and TX2 share one card (one LO, one sample rate -- see
+    # backend/rf/dual_tx.py); the slot only selects the physical output
+    # port and its independent gain, not a separate device.
+    slot: str = "TX1"
     # KNOWN_ISSUES I2 originally assumed gps-sdr-sim's `-b 16` output sits
     # near full int16 scale and defaulted this to 0.25 to protect the
     # AD936x's 12-bit DAC from clipping. Measured against a real generated
@@ -61,27 +66,14 @@ class _DrySink:
 
 
 def _open_device(params: TxParams):
-    import adi  # pyadi-iio
-    sdr = adi.Pluto(uri=params.uri)
-    sdr.tx_lo = int(params.lo_hz)
-    sdr.sample_rate = int(params.sample_rate)
-    sdr.tx_hardwaregain_chan0 = float(params.tx_gain_db)
-    sdr.tx_cyclic_buffer = False
-    if abs(sdr.tx_lo - params.lo_hz) > 1000:
-        raise TransmitError(f"device clamped LO to {sdr.tx_lo}")
-    if abs(sdr.sample_rate - params.sample_rate) > 1.0:
-        raise TransmitError(f"device clamped rate to {sdr.sample_rate}")
-
-    class _PyadiSink:
-        underflow = 0
-
-        def push(self, chunk):
-            sdr.tx(chunk)
-
-        def close(self):
-            sdr.tx_destroy_buffer()
-
-    return _PyadiSink()
+    # TX1/TX2 share one AD9361/AD9363 card (one LO, one sample rate) --
+    # dual_tx owns the shared context and the synchronized dual-channel
+    # feed; see its module docstring. A TransmitError it raises for a
+    # LO/rate conflict between the two slots propagates unchanged (see the
+    # try/except in stream() below).
+    from backend.rf import dual_tx
+    return dual_tx.acquire(params.slot, params.uri, params.lo_hz,
+                            params.sample_rate, params.tx_gain_db)
 
 
 def _iter_chunks(path: str, fmt: str, chunk_samples: int):
