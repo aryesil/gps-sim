@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from backend import config
 from backend.app import _tee_spectrogram, app
+from backend.rf import transmit
 
 client = TestClient(app)
 
@@ -45,6 +46,21 @@ def test_tee_spectrogram_skips_cn0_without_track_prn():
                            on_row=lambda f, d: None,
                            on_cn0=lambda db: cn0_samples.append(db)))
     assert cn0_samples == []
+
+
+def test_internal_bands_for_no_bands_uses_each_systems_own_default():
+    from backend.app import _internal_bands_for
+    assert _internal_bands_for(["G"], None) == {"L1"}
+    # GPS -> L1, GLONASS -> its own G1: two outputs with no "bands" sent.
+    assert _internal_bands_for(["G", "R"], None) == {"L1", "G1"}
+
+
+def test_internal_bands_for_explicit_bands_drops_systems_with_no_signal_there():
+    from backend.app import _internal_bands_for
+    # GLONASS has no signal on "L1" (only G1) -- explicit bands=["L1"]
+    # silently contributes nothing for it, unlike the no-bands-sent case.
+    assert _internal_bands_for(["G", "R"], ["L1"]) == {"L1"}
+    assert _internal_bands_for(["G"], ["L2"]) == {"L2"}
 
 
 def test_live_start_needs_allow_tx_and_confirm(monkeypatch):
@@ -177,6 +193,72 @@ def test_transmit_409_when_both_slots_full(monkeypatch, tmp_path):
     finally:
         app_module._tx_slots["TX1"] = None
         app_module._tx_slots["TX2"] = None
+
+
+def test_live_start_rejects_systems_bands_needing_two_outputs(monkeypatch):
+    """GPS + GLONASS with no explicit `bands` (the UI's implicit-default
+    request, sent whenever only L1 stays checked) resolves each system to
+    its OWN native band -- GPS -> L1, GLONASS -> its own G1 -- so this is
+    already two physical outputs with nothing "L2/L5" involved at all.
+    Live transmit has exactly one output, so this must 422 before a TX
+    slot is even acquired, and no slot should be left occupied."""
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    from backend import app as app_module
+    r = client.post("/api/live/start", json={
+        "rinex_path": "AUTO", "lat": 0, "lon": 0, "alt": 0,
+        "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
+        "engine": "native", "systems": ["G", "R"], "dry_run": True})
+    assert r.status_code == 422
+    assert "exactly one RF output" in r.json()["detail"]
+    assert app_module._tx_slots["TX1"] is None
+    assert app_module._tx_slots["TX2"] is None
+
+
+def test_live_start_forwards_native_band_selection(monkeypatch):
+    """The reported bug: bands/systems picked in the UI never reached
+    /api/live/start at all -- Start always transmitted L1 regardless. A
+    native engine=native, bands=["L5"] request must actually flow through
+    to ScenarioRequest (proven by the SSE stream finishing without error
+    against a GPS-only fixture, which has no signal on L1 disabled -- L5
+    is a real distinct band with its own, much higher, sample-rate floor)."""
+    import pathlib
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    r = client.post("/api/live/start", json={
+        "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
+        "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
+        "engine": "native", "systems": ["G"], "bands": ["L5"],
+        "dry_run": True, "duration_s": 3600, "max_duration_s": 0.05})
+    assert r.status_code == 200
+    body = r.text
+    assert '"error"' not in body
+    assert '"finished": true' in body
+
+
+def test_live_start_uses_the_resolved_bands_real_sample_rate(monkeypatch):
+    """L5's native floor (>=25 Msps for GPS L5 I5/Q5) sits far above the
+    request's nominal 2.6 Msps sample_rate, which only ever governs L1 --
+    the SDR must be told L5's real rate, not the nominal one, or real
+    hardware would play the IQ back at the wrong speed."""
+    import pathlib
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    seen = {}
+    real_stream = transmit.stream
+    def spy_stream(params, **kwargs):
+        seen["sample_rate"] = params.sample_rate
+        seen["lo_hz"] = params.lo_hz
+        return real_stream(params, **kwargs)
+    monkeypatch.setattr(transmit, "stream", spy_stream)
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    r = client.post("/api/live/start", json={
+        "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
+        "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
+        "engine": "native", "systems": ["G"], "bands": ["L5"],
+        "sample_rate": 2.6e6, "dry_run": True, "duration_s": 3600,
+        "max_duration_s": 0.05})
+    assert r.status_code == 200
+    assert seen["sample_rate"] == pytest.approx(20_500_000.0)
+    assert seen["lo_hz"] == pytest.approx(config.L5_HZ)
 
 
 def test_live_start_auto_stops_after_max_duration(monkeypatch):

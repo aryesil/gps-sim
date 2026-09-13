@@ -51,14 +51,24 @@ def _band_fs(band_id: str, sig_ids: list[str], req) -> float:
     return max(float(override or 0.0), floor)
 
 
+def full_band_registry() -> dict[str, "Band"]:
+    """BAND_REGISTRY plus GLONASS's G2 (its own FDMA band id for L2OF,
+    never a user-facing band choice -- it rides alongside G1 whenever
+    GLONASS is in ``systems``). Single source of truth for anything that
+    needs a band id's centre frequency / out_file, in or out of
+    plan_bands."""
+    reg = dict(BAND_REGISTRY)
+    reg.setdefault("G2", Band("G2", 1_227_600_000.0, "gpssim_g2.bin"))
+    return reg
+
+
 def plan_bands(entries, req) -> list[BandPlan]:
     """Group ``constellation_multi`` entries into per-RF-band synthesis
     plans, one per entry in ``BAND_REGISTRY`` (L1 first -> ``gpssim.bin``
     back-compat). A band with no entries is omitted. GLONASS L2 rides its
     own ``G2`` FDMA band id, handled alongside ``G1``."""
     quant = _QUANT[req.sample_format]
-    reg = dict(BAND_REGISTRY)
-    reg.setdefault("G2", Band("G2", 1_227_600_000.0, "gpssim_g2.bin"))
+    reg = full_band_registry()
     plans: list[BandPlan] = []
     for band_id, band in reg.items():
         group = [e for e in entries if e["signal_id"].band == band_id]

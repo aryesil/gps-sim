@@ -20,6 +20,40 @@ _ENU_DIRECTIONS = {
 # exists, nothing here pretends to offer it.
 _TIME_FIELDS = {"time_offset_s"}
 
+# Every RF-band output file the native/gps-sdr-sim engines can produce
+# (backend.synth.bands.BAND_REGISTRY's out_file values, GLONASS's G1/G2
+# included even though they aren't one of the user-facing "L1"/"L2"/"L5"
+# band choices -- GLONASS rides its own file whenever it's in `systems`).
+# A live TX stream feeds exactly one physical output, so exactly one of
+# these may exist in a segment's outdir; see _resolve_band_file.
+_BAND_FILES = ("gpssim.bin", "gpssim_g1.bin", "gpssim_g2.bin",
+               "gpssim_l2.bin", "gpssim_l5.bin")
+
+
+def _resolve_band_file(outdir) -> str:
+    """Which of ``_BAND_FILES`` this segment actually produced.
+
+    A live session's engine/systems/bands are fixed for its whole run (only
+    position and time are live-adjustable), so this only needs to run once
+    -- LiveSession caches the result after the first segment. Zero matches
+    means the request selected a system RINEX has no records for; more than
+    one means the systems/bands combination would need more than one
+    physical RF output (e.g. GPS L1 + GLONASS, which sits on its own G1
+    band) -- live transmit has exactly one output per channel, so that is
+    rejected here rather than silently streaming just one of the bands."""
+    present = [f for f in _BAND_FILES if (outdir / f).exists()]
+    if not present:
+        raise RuntimeError(
+            "live segment produced no known IQ output file -- check that "
+            "`systems`/`bands` actually have RINEX coverage for this run")
+    if len(present) > 1:
+        raise RuntimeError(
+            "live transmit supports exactly one RF output per channel, but "
+            f"this systems/bands selection produced {len(present)}: "
+            f"{present!r} -- pick a single band (or drop an overlapping "
+            "system, e.g. GLONASS alongside GPS on the same band) for Start")
+    return present[0]
+
 
 @dataclass
 class LiveState:
@@ -35,6 +69,7 @@ class LiveSession:
         self._lock = threading.Lock()
         self.running = False
         self.consecutive_errors = 0
+        self._iq_filename: str | None = None   # resolved from the first segment
 
     def jog(self, direction: str, distance_m: float) -> None:
         if direction not in _ENU_DIRECTIONS:
@@ -68,9 +103,19 @@ class LiveSession:
                     self.base_req, llh=tuple(snap.llh),
                     time_offset_s=snap.time_offset_s,
                     duration_s=self.segment_duration_s)
-                iq = inspector.read_iq(outdir / "gpssim.bin", self.base_req.sample_format)
+                if self._iq_filename is None:
+                    # A systems/bands combination needing >1 physical output
+                    # is a static config error, not a transient generation
+                    # hiccup -- surface it immediately rather than burning
+                    # through the retry budget below on a request that can
+                    # never succeed.
+                    self._iq_filename = _resolve_band_file(outdir)
+                iq = inspector.read_iq(outdir / self._iq_filename, self.base_req.sample_format)
                 self.consecutive_errors = 0
                 yield iq
+            except RuntimeError:
+                self.running = False
+                raise
             except Exception:
                 self.consecutive_errors += 1
                 if self.consecutive_errors >= 3:

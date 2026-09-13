@@ -90,9 +90,102 @@ _FRONT = pathlib.Path(__file__).resolve().parent.parent / "frontend"
 # FDMA) are never in this list -- they ride their own file automatically
 # whenever GLONASS is in `systems`, independent of this selector.
 _USER_BANDS = ("L1", "L2", "L5")
-# TX1/TX2 -- the PlutoSDR's two real simultaneous outputs (KNOWN hardware
-# fact, not an arbitrary cap). Each slot holds {"stop": Event, "session":
-# LiveSession | None} for whatever is currently occupying it, or None.
+def _validate_native_request(body: dict) -> tuple[str, list[str], list[str] | None]:
+    """Shared engine/systems/bands validation for /api/generate and
+    /api/live/start: unknown engine, gps-sdr-sim asked for non-GPS systems
+    or non-L1 bands, and bad fading/sample_format combinations all reject
+    with a plain 422 before any ephemeris resolution or TX slot is touched.
+    Returns (engine, systems, bands_req)."""
+    engine = body.get("engine", "gps-sdr-sim")
+    if engine not in ("gps-sdr-sim", "native"):
+        raise HTTPException(422, f"engine: unknown {engine!r}")
+    if body.get("fading") is not None:
+        from backend.synth.fading import FadingConfig
+        try:
+            FadingConfig.from_dict(body["fading"])
+        except ValueError as e:
+            raise HTTPException(422, f"fading: {e}")
+    if body.get("sample_format") == "int12" and engine != "native":
+        raise HTTPException(422, "sample_format 'int12' requires engine 'native'")
+    systems = body.get("systems", ["G"])
+    if not isinstance(systems, list) or not all(
+            isinstance(s, str) and s in signals.SYSTEMS for s in systems):
+        raise HTTPException(422, f"systems: unknown entry in {systems!r}")
+    if engine != "native" and sorted(set(systems)) != ["G"]:
+        raise HTTPException(422,
+            "gps-sdr-sim is GPS-only; use engine=native for other systems")
+    bands_req = body.get("bands")
+    if bands_req is not None:
+        if (not isinstance(bands_req, list) or not bands_req or not all(
+                isinstance(b, str) and b in _USER_BANDS for b in bands_req)):
+            raise HTTPException(422,
+                f"bands: must be a non-empty list from {_USER_BANDS}, got {bands_req!r}")
+        if engine != "native":
+            raise HTTPException(422,
+                "gps-sdr-sim only emits L1 C/A; use engine=native for other bands")
+    return engine, systems, bands_req
+
+
+def _resolved_band_output(internal_band: str, systems: list[str],
+                          req: scenario.ScenarioRequest) -> tuple[float, float]:
+    """(sample_rate_hz, centre_hz) the resolved single internal RF band
+    (a backend.synth.bands id, e.g. "L2" or GLONASS's "G1"/"G2" -- not
+    necessarily the user-facing "L1"/"L2"/"L5" string) will actually be
+    generated at. Mirrors bands._band_fs exactly: L1 uses req.sample_rate
+    (validated, not auto-floored -- matching generation's own behaviour);
+    every other band floats to its own floor independent of req.sample_rate
+    (native L2/L5 floors, e.g. L5's >=25 Msps, can sit well above whatever
+    nominal/L1-oriented rate the request carries). A live TX stream's SDR
+    must be told this real rate, not the request's nominal one, or it will
+    play the generated IQ back at the wrong speed."""
+    from backend.synth import bands as _bandsmod
+    sig_ids = sorted({
+        _bandsmod._signal_key(sig)
+        for sysc in systems
+        for sig in signals.signals_for(sysc, (internal_band,))})
+    fs = _bandsmod._band_fs(internal_band, sig_ids, req)
+    centre_hz = _bandsmod.full_band_registry()[internal_band].centre_hz
+    return fs, centre_hz
+
+
+def _internal_bands_for(systems: list[str], bands_req: list[str] | None) -> set[str]:
+    """Distinct native RF bands (backend.synth.bands.BAND_REGISTRY ids) this
+    systems x bands selection would populate -- mirrors engine.py's own
+    sig_for branch exactly (KNOWN_ISSUES-adjacent: the two paths resolve
+    signals very differently and both matter here):
+
+    * ``bands_req`` unset (the UI's implicit legacy default, no "bands" key
+      sent): each system gets its OWN native band via signals.signal_for
+      -- GPS -> L1, GLONASS -> G1, Galileo -> E1/L1, etc. GPS + GLONASS is
+      already two outputs (gpssim.bin + gpssim_g1.bin) with no bands sent
+      at all.
+    * ``bands_req`` set (an explicit "bands" list): every system is
+      filtered through signals.signals_for(sys, bands_req), which silently
+      contributes NOTHING for a system with no signal on any requested
+      band (e.g. GLONASS has no signal on "L1" -- band="G1" is its only
+      one -- so systems=["G","R"], bands=["L1"] produces GPS L1 alone).
+
+    Used by /api/live/start to reject, before a TX slot is even acquired, a
+    combination that would need more than one physical RF output."""
+    out: set[str] = set()
+    if bands_req:
+        for sysc in systems:
+            for ub in bands_req:
+                for sig in signals.signals_for(sysc, (ub,)):
+                    out.add(sig.band)
+    else:
+        for sysc in systems:
+            out.add(signals.signal_for(sysc).band)
+    return out
+
+
+# TX1/TX2 -- the AD9361/AD9363's two TX ports (KNOWN hardware fact, not an
+# arbitrary cap): one shared TX synthesizer drives both, so they always run
+# at the same LO frequency and the same sample rate (chip-wide settings),
+# with independent gain and independent baseband content per port. See
+# backend/rf/dual_tx.py for the shared-context implementation this implies.
+# Each slot holds {"stop": Event, "session": LiveSession | None} for
+# whatever is currently occupying it, or None.
 _tx_slots: dict[str, dict | None] = {"TX1": None, "TX2": None}
 _tx_slots_lock = threading.Lock()
 
@@ -616,33 +709,7 @@ def generate(body: dict):
     start = dt.datetime.fromisoformat(body["start_utc"])
     # Reject bad engine/fading before any ephemeris resolution so the caller
     # gets an explicit 422, never a silent coerce or an unrelated 503.
-    engine = body.get("engine", "gps-sdr-sim")
-    if engine not in ("gps-sdr-sim", "native"):
-        raise HTTPException(422, f"engine: unknown {engine!r}")
-    if body.get("fading") is not None:
-        from backend.synth.fading import FadingConfig
-        try:
-            FadingConfig.from_dict(body["fading"])
-        except ValueError as e:
-            raise HTTPException(422, f"fading: {e}")
-    if body.get("sample_format") == "int12" and engine != "native":
-        raise HTTPException(422, "sample_format 'int12' requires engine 'native'")
-    systems = body.get("systems", ["G"])
-    if not isinstance(systems, list) or not all(
-            isinstance(s, str) and s in signals.SYSTEMS for s in systems):
-        raise HTTPException(422, f"systems: unknown entry in {systems!r}")
-    if engine != "native" and sorted(set(systems)) != ["G"]:
-        raise HTTPException(422,
-            "gps-sdr-sim is GPS-only; use engine=native for other systems")
-    bands_req = body.get("bands")
-    if bands_req is not None:
-        if (not isinstance(bands_req, list) or not bands_req or not all(
-                isinstance(b, str) and b in _USER_BANDS for b in bands_req)):
-            raise HTTPException(422,
-                f"bands: must be a non-empty list from {_USER_BANDS}, got {bands_req!r}")
-        if engine != "native":
-            raise HTTPException(422,
-                "gps-sdr-sim only emits L1 C/A; use engine=native for other bands")
+    engine, systems, bands_req = _validate_native_request(body)
     nav_override, precise_warnings = _precise_nav_override(body, start)
     # In precise mode the broadcast nav file is never read; only resolve
     # (and possibly download) one when it will actually be used.
@@ -1128,6 +1195,26 @@ def live_start(body: dict, request: Request):
     auth.require_operator(request)
     if not config.ALLOW_TX or not body.get("confirm_isolated"):
         raise HTTPException(403, "transmit disabled: needs ALLOW_TX and confirm_isolated")
+    # Same engine/systems/bands validation as /api/generate, plus a
+    # live-only check: unlike file generation (which happily writes one
+    # file per band), a live stream feeds exactly one physical RF output,
+    # so a systems/bands combination that would need more than one (e.g.
+    # GPS + GLONASS, which always rides its own G1/G2 band) is rejected
+    # here -- before a scarce TX slot is even acquired -- rather than
+    # failing on the first segment.
+    engine, systems, bands_req = _validate_native_request(body)
+    user_bands_desc = bands_req or "(unset, per-system default)"
+    needed = _internal_bands_for(systems, bands_req)
+    if len(needed) > 1:
+        raise HTTPException(422,
+            "live transmit supports exactly one RF output per channel, but "
+            f"systems={systems!r} bands={user_bands_desc!r} would need "
+            f"{sorted(needed)!r} -- pick a single band (or drop an "
+            "overlapping system, e.g. GLONASS alongside GPS) for Start")
+    if not needed:
+        raise HTTPException(422,
+            f"systems={systems!r}: no signals on bands={user_bands_desc!r}")
+    internal_band = next(iter(needed))
     slot = _acquire_tx_slot()
     try:
         start = dt.datetime.fromisoformat(body["start_utc"])
@@ -1139,12 +1226,18 @@ def live_start(body: dict, request: Request):
             start=start, duration_s=int(body.get("duration_s", 300)),
             sample_rate=float(body.get("sample_rate", config.DEFAULT_SAMPLE_RATE)),
             sample_format=body.get("sample_format", "int16"),
-            nav_override=nav_override)
+            nav_override=nav_override,
+            engine=engine, systems=systems, bands=bands_req)
         session = live.LiveSession(req)
         _tx_slots[slot]["session"] = session
+        # The SDR must run at the resolved band's REAL rate/centre, not the
+        # request's nominal (often L1-oriented) sample_rate -- native L2/L5
+        # float to their own floor independent of req.sample_rate (see
+        # _resolved_band_output). lo_hz still honours an explicit override.
+        band_fs, band_centre_hz = _resolved_band_output(internal_band, systems, req)
         params = transmit.TxParams(
-            iq_path="(live)", sample_rate=req.sample_rate, sample_format=req.sample_format,
-            lo_hz=float(body.get("lo_hz", config.L1_HZ)),
+            iq_path="(live)", sample_rate=band_fs, sample_format=req.sample_format,
+            lo_hz=float(body.get("lo_hz", band_centre_hz)),
             tx_gain_db=float(body.get("tx_gain_db", -50.0)),
             uri=body.get("uri", config.DEVICE_URI))
     except Exception:
@@ -1172,7 +1265,7 @@ def live_start(body: dict, request: Request):
                 q.append({"cn0_db": metric_db})
             track_prn = body.get("track_prn")
             chunk_source = _tee_spectrogram(
-                session.segments(), req.sample_rate, on_row,
+                session.segments(), params.sample_rate, on_row,
                 track_prn=int(track_prn) if track_prn else None, on_cn0=on_cn0)
             th = threading.Thread(
                 target=transmit.stream,

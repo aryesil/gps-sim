@@ -1,3 +1,5 @@
+import pathlib
+import tempfile
 import threading
 import time
 
@@ -14,6 +16,73 @@ def _base_req():
         rinex_path="unused", lat=0.0, lon=0.0, alt=0.0,
         start=dt.datetime(2024, 1, 1), duration_s=60,
         sample_rate=2.6e6, sample_format="int16")
+
+
+def test_resolve_band_file_picks_the_one_present(tmp_path):
+    (tmp_path / "gpssim_l2.bin").write_bytes(b"\x00")
+    assert live._resolve_band_file(tmp_path) == "gpssim_l2.bin"
+
+
+def test_resolve_band_file_rejects_no_known_file(tmp_path):
+    with pytest.raises(RuntimeError, match="no known IQ output"):
+        live._resolve_band_file(tmp_path)
+
+
+def test_resolve_band_file_rejects_more_than_one(tmp_path):
+    (tmp_path / "gpssim.bin").write_bytes(b"\x00")
+    (tmp_path / "gpssim_g1.bin").write_bytes(b"\x00")
+    with pytest.raises(RuntimeError, match="exactly one RF output"):
+        live._resolve_band_file(tmp_path)
+
+
+def test_segments_resolves_band_file_once_and_reuses_it(monkeypatch):
+    """The band file is resolved from the first segment's outdir and then
+    reused (not re-resolved) on later segments -- a real live session's
+    engine/systems/bands never change mid-run, only position/time do."""
+    s = live.LiveSession(_base_req())
+    seen_paths = []
+
+    def fake_run_segment(base_req, llh, time_offset_s, duration_s):
+        d = pathlib.Path(tempfile.mkdtemp())
+        (d / "gpssim_l5.bin").write_bytes(b"\x00\x00" * 100)
+        return d
+    monkeypatch.setattr(live.generator, "run_segment", fake_run_segment)
+
+    def fake_read_iq(path, fmt):
+        seen_paths.append(pathlib.Path(path).name)
+        return np.zeros(50, dtype=np.complex64)
+    monkeypatch.setattr(live.inspector, "read_iq", fake_read_iq)
+
+    gen = s.segments()
+    next(gen)
+    next(gen)
+    s.stop()
+    with pytest.raises(StopIteration):
+        next(gen)
+    assert seen_paths == ["gpssim_l5.bin", "gpssim_l5.bin"]
+    assert s._iq_filename == "gpssim_l5.bin"
+
+
+def test_segments_raises_immediately_on_multi_band_conflict_no_retry(monkeypatch):
+    """A systems/bands combo needing >1 RF output can never succeed on
+    retry -- it must stop the session on the first segment, not burn
+    through the transient-error retry budget first."""
+    s = live.LiveSession(_base_req())
+    calls = {"n": 0}
+
+    def fake_run_segment(base_req, llh, time_offset_s, duration_s):
+        calls["n"] += 1
+        d = pathlib.Path(tempfile.mkdtemp())
+        (d / "gpssim.bin").write_bytes(b"\x00\x00" * 100)
+        (d / "gpssim_g1.bin").write_bytes(b"\x00\x00" * 100)
+        return d
+    monkeypatch.setattr(live.generator, "run_segment", fake_run_segment)
+
+    gen = s.segments()
+    with pytest.raises(RuntimeError, match="exactly one RF output"):
+        next(gen)
+    assert calls["n"] == 1
+    assert s.running is False
 
 
 def test_jog_north_increases_latitude():
