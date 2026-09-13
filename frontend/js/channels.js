@@ -17,7 +17,7 @@ window.addChannel = function () {
   card.id = id;
   card.innerHTML = `
     <div class="channel-header">
-      <strong>GPS L1 C/A — Channel ${_channelCount}</strong>
+      <strong id="${id}-title">GPS L1 C/A — Channel ${_channelCount}</strong>
       <span class="badge" id="${id}-badge">STOPPED</span>
       <button id="${id}-start" class="btn-danger">Start</button>
       <button id="${id}-stop">Stop</button>
@@ -379,6 +379,37 @@ function wireChannelActions(id) {
   }
   document.getElementById(`${id}-engine`).addEventListener('change', _updateEngineConstellationState);
   _updateEngineConstellationState();
+
+  // Card header: reflects the engine/system/band boxes actually checked
+  // *right now*, instead of a title frozen at "GPS L1 C/A" from card
+  // creation regardless of what this channel is configured to emit.
+  // gps-sdr-sim is a fixed GPS L1 C/A generator, so its label never varies;
+  // native's label lists every checked constellation and every checked
+  // band, so two channels with different selections read differently.
+  const _SYS_LABEL = { G: 'GPS', R: 'GLONASS', E: 'Galileo', C: 'BeiDou', J: 'QZSS', S: 'SBAS' };
+  const _chanNum = id.slice(2);
+  function _updateChannelTitle() {
+    const titleEl = document.getElementById(`${id}-title`);
+    if (document.getElementById(`${id}-engine`).value !== 'native') {
+      titleEl.textContent = `GPS L1 C/A — Channel ${_chanNum}`;
+      return;
+    }
+    const sys = ['G', 'R', 'E', 'C', 'J', 'S'].filter(
+      s => document.getElementById(`${id}-sys-${s}`).checked);
+    const bands = ['L1', 'L2', 'L5'].filter(
+      b => document.getElementById(`${id}-band-${b}`).checked);
+    const sysLabel = sys.map(s => _SYS_LABEL[s]).join('+') || 'GPS';
+    const bandLabel = bands.join('+') || 'L1';
+    titleEl.textContent = `${sysLabel} ${bandLabel} — Channel ${_chanNum}`;
+  }
+  ['G', 'R', 'E', 'C', 'J', 'S'].forEach(s => {
+    document.getElementById(`${id}-sys-${s}`).addEventListener('change', _updateChannelTitle);
+  });
+  ['L1', 'L2', 'L5'].forEach(b => {
+    document.getElementById(`${id}-band-${b}`).addEventListener('change', _updateChannelTitle);
+  });
+  document.getElementById(`${id}-engine`).addEventListener('change', _updateChannelTitle);
+  _updateChannelTitle();
 
   // Band checkboxes: L1 is always implicitly available (it's the legacy
   // default), so never let a user land on zero bands checked -- fall back
