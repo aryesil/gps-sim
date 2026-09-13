@@ -31,7 +31,14 @@ window.addChannel = function () {
           <button id="${id}-dev-connect" class="btn-secondary">Connect</button>
           <span id="${id}-dev-status" class="dev-status dev-off">not connected</span>
         </div>
-        <label>LO Hz <input id="${id}-lo" value="1575420000"></label>
+        <label>TX slot <select id="${id}-tx-slot">
+          <option value="auto">Auto (either free port)</option>
+          <option value="TX1">TX1</option>
+          <option value="TX2">TX2</option>
+        </select><span class="info" title="TX1/TX2 are the AD9361/AD9363's two physical output ports. They share one LO and one sample rate -- Start rejects a port already running at a different band/rate rather than silently retuning it. 'Auto' takes whichever port is free.">i</span></label>
+        <label>LO Hz <input id="${id}-lo" value="1575420000" disabled>
+          <select id="${id}-lo-mode"><option value="auto">Auto</option><option value="custom">Custom</option></select>
+        </label>
         <label>TX gain dB <input id="${id}-gain" type="number" value="-50"></label>
         <label><input type="checkbox" id="${id}-tx-dryrun"> Dry run (no RF)</label>
         <label>Auto-stop after (s) <input type="number" id="${id}-max-duration" placeholder="none" min="1"><span class="info" title="Fail-safe: leave blank to run until stopped manually. The isolated-setup confirmation is done by typing TRANSMIT at Start.">i</span></label>
@@ -402,14 +409,68 @@ function wireChannelActions(id) {
     const bandLabel = bands.join('+') || 'L1';
     titleEl.textContent = `${sysLabel} ${bandLabel} — Channel ${_chanNum}`;
   }
+  // LO Hz: auto-follows band/system selection instead of sitting frozen at
+  // whatever the panel started with. "Auto" (default) asks the backend to
+  // resolve this exact systems x bands selection to its native RF band(s)
+  // -- /api/native/band_centre runs the identical resolution
+  // /api/live/start's own conflict check uses, so a two-letter-looking
+  // choice like GLONASS's G1 (1602 MHz, not L1's 1575.42) still lands on
+  // the real centre frequency instead of a client-side guess. "Custom"
+  // hands the field back to the operator; switching back to "Auto"
+  // recomputes immediately. gps-sdr-sim is a fixed GPS L1 C/A generator,
+  // so it always resolves to L1 without a round trip.
+  const _loInput = document.getElementById(`${id}-lo`);
+  const _loModeSel = document.getElementById(`${id}-lo-mode`);
+  let _loReqToken = 0;
+  function _refreshLoHz() {
+    if (_loModeSel.value !== 'auto') return;
+    if (document.getElementById(`${id}-engine`).value !== 'native') {
+      _loInput.value = 1575420000;
+      return;
+    }
+    const sys = ['G', 'R', 'E', 'C', 'J', 'S'].filter(
+      s => document.getElementById(`${id}-sys-${s}`).checked);
+    const bandBoxes = ['L1', 'L2', 'L5'].filter(
+      b => document.getElementById(`${id}-band-${b}`).checked);
+    const bands = (bandBoxes.length && !(bandBoxes.length === 1 && bandBoxes[0] === 'L1'))
+      ? bandBoxes.join(',') : '';
+    const token = ++_loReqToken;
+    fetch(`/api/native/band_centre?systems=${encodeURIComponent(sys.join(','))}` +
+          `&bands=${encodeURIComponent(bands)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d || token !== _loReqToken) return;   // stale response, or request failed
+        const centres = Object.values(d.bands);
+        // Zero or >1 resolved bands means this selection can't drive a
+        // single live RF output anyway (Start will 422 with the same
+        // detail) -- leave whatever LO Hz is showing rather than guess.
+        if (centres.length === 1) _loInput.value = centres[0];
+      })
+      .catch(() => {});
+  }
+  _loModeSel.onchange = () => {
+    _loInput.disabled = _loModeSel.value === 'auto';
+    _refreshLoHz();
+  };
+  _loInput.addEventListener('input', () => {
+    if (_loModeSel.value !== 'custom') { _loModeSel.value = 'custom'; _loInput.disabled = false; }
+  });
+
   ['G', 'R', 'E', 'C', 'J', 'S'].forEach(s => {
-    document.getElementById(`${id}-sys-${s}`).addEventListener('change', _updateChannelTitle);
+    document.getElementById(`${id}-sys-${s}`).addEventListener('change', () => {
+      _updateChannelTitle(); _refreshLoHz();
+    });
   });
   ['L1', 'L2', 'L5'].forEach(b => {
-    document.getElementById(`${id}-band-${b}`).addEventListener('change', _updateChannelTitle);
+    document.getElementById(`${id}-band-${b}`).addEventListener('change', () => {
+      _updateChannelTitle(); _refreshLoHz();
+    });
   });
-  document.getElementById(`${id}-engine`).addEventListener('change', _updateChannelTitle);
+  document.getElementById(`${id}-engine`).addEventListener('change', () => {
+    _updateChannelTitle(); _refreshLoHz();
+  });
   _updateChannelTitle();
+  _refreshLoHz();
 
   // Band checkboxes: L1 is always implicitly available (it's the legacy
   // default), so never let a user land on zero bands checked -- fall back
@@ -420,6 +481,7 @@ function wireChannelActions(id) {
       const anyChecked = ['L1', 'L2', 'L5'].some(
         x => document.getElementById(`${id}-band-${x}`).checked);
       if (!anyChecked) document.getElementById(`${id}-band-L1`).checked = true;
+      _refreshLoHz();
     });
   });
 
@@ -915,9 +977,15 @@ function wireChannelActions(id) {
       uri: document.getElementById(`${id}-uri`).value,
       lo_hz: Number(document.getElementById(`${id}-lo`).value),
       tx_gain_db: Number(document.getElementById(`${id}-gain`).value),
+      slot: document.getElementById(`${id}-tx-slot`).value,
       confirm_isolated: document.getElementById(`${id}-tx-confirm`).checked,
       dry_run: document.getElementById(`${id}-tx-dryrun`).checked,
     };
+    // The reported bug: engine/systems/bands were never sent to Start at
+    // all (only Generate merged _engineBody() in) -- Start always
+    // transmitted GPS L1 C/A regardless of what the panel showed checked.
+    const _eng = _engineBody();
+    Object.assign(body, _eng || {});
     const prnInput = document.getElementById(`${id}-lnav-prn`);
     if (prnInput && prnInput.value) body.track_prn = Number(prnInput.value);
     const maxDurInput = document.getElementById(`${id}-max-duration`);
@@ -928,7 +996,17 @@ function wireChannelActions(id) {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     if (r.status === 403) { alert('Set ALLOW_TX and tick the isolated-setup confirmation.'); return; }
-    if (r.status === 409) { alert('Both TX1 and TX2 are already transmitting.'); return; }
+    if (r.status === 409) {
+      // Either both ports are occupied (Auto), or this channel's explicit
+      // TX1/TX2 pick is already running something else -- the backend's
+      // detail text tells the two apart, so surface it rather than a
+      // single canned "both occupied" message that would mislead the
+      // explicit-slot case.
+      let detail = 'both TX1 and TX2 are already transmitting';
+      try { const d = await r.json(); detail = d.detail || detail; } catch (e) { /* keep default */ }
+      alert(detail);
+      return;
+    }
     if (!r.ok) {
       // Anything else (validation 400, 503 EphemerisUnavailable, 5xx) never
       // produces an SSE stream, so the badge must NOT go to 'On Air' -- it

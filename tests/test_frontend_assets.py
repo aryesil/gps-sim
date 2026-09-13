@@ -196,6 +196,39 @@ def test_engine_panel_has_systems_multiselect():
     assert "sysSel.length > 1" in js or "sys.length > 1" in js
 
 
+def test_live_start_forwards_engine_body():
+    """The reported bug: Start never merged _engineBody() into its request
+    at all (only Generate did), so a native engine/systems/bands selection
+    was silently dropped and Start always transmitted GPS L1 C/A."""
+    js = _rd("channels.js")
+    assert js.count("const _eng = _engineBody();") == 2   # Generate and Start
+    assert js.count("Object.assign(body, _eng || {});") == 2
+
+
+def test_tx_slot_selector_present_and_wired():
+    """Explicit TX1/TX2 port selection for the AD9361/AD9363's two shared-
+    card outputs, instead of a silent backend auto-pick with no way for
+    the operator to pin a channel to a specific physical port."""
+    js = _rd("channels.js")
+    assert "${id}-tx-slot" in js
+    assert '<option value="TX1">TX1</option>' in js
+    assert '<option value="TX2">TX2</option>' in js
+    assert "slot: document.getElementById(`${id}-tx-slot`).value" in js
+
+
+def test_lo_hz_auto_fill_present_and_wired():
+    """LO Hz follows the band/system selection (via /api/native/band_centre,
+    the same resolution /api/live/start's own conflict check uses) instead
+    of sitting frozen at its initial value; hand-editing the field switches
+    it to Custom, mirroring the imp-preset/mdl-preset UX pattern."""
+    js = _rd("channels.js")
+    assert "${id}-lo-mode" in js
+    assert "/api/native/band_centre" in js
+    assert "function _refreshLoHz()" in js
+    assert "_loModeSel.value = 'custom'" in js   # hand-edit reverts to custom
+    assert "_loInput.disabled = _loModeSel.value === 'auto';" in js
+
+
 def test_skyplot_colours_by_system():
     js = _rd("skyplot.js")
     for s in ("R", "E", "C", "J", "S"):
