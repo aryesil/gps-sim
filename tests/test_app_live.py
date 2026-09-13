@@ -86,6 +86,100 @@ def test_third_channel_rejected_when_both_slots_full(monkeypatch):
         app_module._tx_slots["TX2"] = None
 
 
+def test_requested_tx_slot_normalizes_auto_and_junk_to_none():
+    from backend.app import _requested_tx_slot
+    assert _requested_tx_slot({}) is None
+    assert _requested_tx_slot({"slot": "auto"}) is None
+    assert _requested_tx_slot({"slot": ""}) is None
+    assert _requested_tx_slot({"slot": "TX3"}) is None
+    assert _requested_tx_slot({"slot": "TX1"}) == "TX1"
+    assert _requested_tx_slot({"slot": "TX2"}) == "TX2"
+
+
+def test_acquire_tx_slot_explicit_pick_honoured_and_conflict_rejected():
+    from backend.app import _acquire_tx_slot, _release_tx_slot
+    from fastapi import HTTPException
+    slot = _acquire_tx_slot("TX2")
+    try:
+        assert slot == "TX2"
+        with pytest.raises(HTTPException) as exc:
+            _acquire_tx_slot("TX2")
+        assert exc.value.status_code == 409
+        # TX1 is still free -- an explicit TX2 request must never silently
+        # fall back to it.
+        other = _acquire_tx_slot("TX1")
+        _release_tx_slot(other)
+    finally:
+        _release_tx_slot(slot)
+
+
+def test_acquire_tx_slot_rejects_unknown_name():
+    from backend.app import _acquire_tx_slot
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc:
+        _acquire_tx_slot("TX3")
+    assert exc.value.status_code == 400
+
+
+def test_live_start_honours_explicit_slot_selection(monkeypatch):
+    """The UI's TX1/TX2 selector must actually place the session on the
+    port the operator picked, not whatever _acquire_tx_slot() finds free
+    first."""
+    import pathlib
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    from backend import app as app_module
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    r = client.post("/api/live/start", json={
+        "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
+        "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
+        "slot": "TX2", "dry_run": True, "duration_s": 3600, "max_duration_s": 0.05})
+    assert r.status_code == 200
+    assert '"slot": "TX2"' in r.text
+    assert app_module._tx_slots["TX1"] is None
+    assert app_module._tx_slots["TX2"] is None  # released once finished
+
+
+def test_live_start_explicit_slot_already_occupied_is_409_not_fallback(monkeypatch):
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    from backend import app as app_module
+    app_module._tx_slots["TX1"] = {"stop": __import__("threading").Event(), "session": None}
+    try:
+        r = client.post("/api/live/start", json={
+            "rinex_path": "AUTO", "lat": 0, "lon": 0, "alt": 0,
+            "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
+            "slot": "TX1", "dry_run": True})
+        assert r.status_code == 409
+        assert app_module._tx_slots["TX2"] is None  # never claimed as a fallback
+    finally:
+        app_module._tx_slots["TX1"] = None
+
+
+def test_native_band_centre_defaults_to_gps_l1():
+    r = client.get("/api/native/band_centre")
+    assert r.status_code == 200
+    assert r.json() == {"bands": {"L1": pytest.approx(config.L1_HZ)}}
+
+
+def test_native_band_centre_resolves_per_system_default_when_bands_unset():
+    r = client.get("/api/native/band_centre", params={"systems": "G,R", "bands": ""})
+    assert r.status_code == 200
+    body = r.json()["bands"]
+    assert set(body) == {"L1", "G1"}
+    assert body["L1"] == pytest.approx(config.L1_HZ)
+
+
+def test_native_band_centre_resolves_explicit_band_request():
+    r = client.get("/api/native/band_centre", params={"systems": "G", "bands": "L5"})
+    assert r.status_code == 200
+    assert r.json()["bands"] == {"L5": pytest.approx(config.L5_HZ)}
+
+
+def test_native_band_centre_ignores_unknown_entries_instead_of_422ing():
+    r = client.get("/api/native/band_centre", params={"systems": "G,ZZ", "bands": "L1,bogus"})
+    assert r.status_code == 200
+    assert r.json() == {"bands": {"L1": pytest.approx(config.L1_HZ)}}
+
+
 def test_jog_unknown_slot_404():
     r = client.post("/api/live/jog", json={"slot": "TX1", "direction": "north", "distance_m": 10})
     assert r.status_code == 404

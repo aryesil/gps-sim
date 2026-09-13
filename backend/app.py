@@ -179,6 +179,26 @@ def _internal_bands_for(systems: list[str], bands_req: list[str] | None) -> set[
     return out
 
 
+@app.get("/api/native/band_centre")
+def native_band_centre(systems: str = "G", bands: str = ""):
+    """Centre frequency (Hz) of every distinct native RF band the given
+    systems x bands selection would populate -- lets the UI auto-fill LO Hz
+    from the same engine.py-mirroring resolution /api/live/start itself
+    uses (_internal_bands_for), instead of guessing at a client-side
+    system/band -> frequency table that could drift from it. ``systems``
+    and ``bands`` are comma-separated (e.g. "G,R" / "L1,L2"); an empty
+    ``bands`` means "unset" (each system's own default band), matching the
+    UI's implicit-L1 convention. Unknown entries are ignored rather than
+    422ing -- this endpoint only feeds a convenience auto-fill, never a
+    transmit action."""
+    systems_list = [s for s in systems.split(",") if s in signals.SYSTEMS] or ["G"]
+    bands_req = [b for b in bands.split(",") if b in _USER_BANDS] or None
+    needed = _internal_bands_for(systems_list, bands_req)
+    from backend.synth import bands as _bandsmod
+    reg = _bandsmod.full_band_registry()
+    return {"bands": {b: reg[b].centre_hz for b in sorted(needed) if b in reg}}
+
+
 # TX1/TX2 -- the AD9361/AD9363's two TX ports (KNOWN hardware fact, not an
 # arbitrary cap): one shared TX synthesizer drives both, so they always run
 # at the same LO frequency and the same sample rate (chip-wide settings),
@@ -190,13 +210,29 @@ _tx_slots: dict[str, dict | None] = {"TX1": None, "TX2": None}
 _tx_slots_lock = threading.Lock()
 
 
-def _acquire_tx_slot() -> str:
+def _acquire_tx_slot(requested: str | None = None) -> str:
+    """Auto-pick whichever of TX1/TX2 is free, or -- when the caller (the
+    UI's explicit TX1/TX2 selector) names one -- claim exactly that slot,
+    409ing if it's already occupied rather than silently falling back to
+    the other port."""
     with _tx_slots_lock:
+        if requested is not None:
+            if requested not in _tx_slots:
+                raise HTTPException(400, f"unknown TX slot {requested!r}: must be TX1 or TX2")
+            if _tx_slots[requested] is not None:
+                raise HTTPException(409, f"TX slot {requested} is already transmitting")
+            _tx_slots[requested] = {"stop": threading.Event(), "session": None}
+            return requested
         for slot, occ in _tx_slots.items():
             if occ is None:
                 _tx_slots[slot] = {"stop": threading.Event(), "session": None}
                 return slot
     raise HTTPException(409, "both TX1 and TX2 are already transmitting")
+
+
+def _requested_tx_slot(body: dict) -> str | None:
+    slot = body.get("slot")
+    return slot if slot in ("TX1", "TX2") else None
 
 
 def _release_tx_slot(slot: str) -> None:
@@ -933,7 +969,7 @@ def start_transmit(body: dict, request: Request):
     auth.require_operator(request)
     if not config.ALLOW_TX or not body.get("confirm_isolated"):
         raise HTTPException(403, "transmit disabled: needs ALLOW_TX and confirm_isolated")
-    slot = _acquire_tx_slot()
+    slot = _acquire_tx_slot(_requested_tx_slot(body))
     try:
         params = transmit.TxParams(
             iq_path=str(config.OUT_DIR / body["outdir"] / "gpssim.bin")
@@ -1216,7 +1252,7 @@ def live_start(body: dict, request: Request):
         raise HTTPException(422,
             f"systems={systems!r}: no signals on bands={user_bands_desc!r}")
     internal_band = next(iter(needed))
-    slot = _acquire_tx_slot()
+    slot = _acquire_tx_slot(_requested_tx_slot(body))
     try:
         start = dt.datetime.fromisoformat(body["start_utc"])
         nav_override, _ = _precise_nav_override(body, start)
