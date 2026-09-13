@@ -51,6 +51,14 @@ def nav_stream_for(sysc, signal, eph, header, week, sow, duration_s,
         arr = lnav_encode.nav_stream(eph, header or {}, week, sow, duration_s,
                                      eph_by_prn=eph_by_prn)
         return arr, 50.0
+    if band == "L5" and sysc == "E":
+        # Galileo E5a-I carries F/NAV (Galileo OS SIS ICD Sec. 4.2), not
+        # I/NAV -- word types 1-4 only (see fnav_encode's module docstring).
+        from backend.analysis import fnav_encode
+        p = int(prn if prn is not None else (eph.get("prn", 1) or 1))
+        arr, rate = fnav_encode.nav_stream(eph, p, week, sow, duration_s,
+                                           eph_by_prn=eph_by_prn)
+        return arr, rate
     if sysc == "E":
         arr = inav_encode.nav_stream(eph, week, sow, duration_s,
                                      eph_by_prn=eph_by_prn)

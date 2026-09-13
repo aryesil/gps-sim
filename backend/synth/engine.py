@@ -45,6 +45,10 @@ _E1_IS_PILOT = True     # E1C pilot for acquisition; E1B when nav bits added
 # 3.3.2.4). Chip bit 0 -> +1, 1 -> -1, matching the ranging-code sign
 # convention. One NH chip per 1 ms primary code period (1 kHz).
 _NH10_CHIPS = tuple(1 if b == "0" else -1 for b in "0000110101")
+# Galileo E5a-I CS20 secondary (Galileo OS SIS ICD Annex C), same fixed
+# 20-chip code for every PRN. Same bit->chip convention as NH10 above. One
+# CS20 chip per 1 ms primary code period (1 kHz).
+_CS20_CHIPS = tuple(1 if b == "0" else -1 for b in "10000100001011101001")
 
 # RINEX per-system satellite numbers -> native synth_code PRN domain.
 #   QZSS  Jnn  -> PRN 192+nn  (J01 = 193, native range 193..202)
@@ -235,6 +239,52 @@ def _sv_spec_for(entry, gain, nav=None):
         sbuf = (ctypes.c_int8 * 10)(*nh10)
         spec.sec_code = sbuf
         spec.sec_len = 10
+        spec.sec_rate_hz = 1000.0
+        keep.append(sbuf)
+        return spec, keep
+
+    # Galileo E5a-I: the data component at 10.23 Mcps (10230 chips, 1 ms
+    # primary period, fixed ICD memory code -- not LFSR-generated) with the
+    # CS20 secondary (20 chips, one per primary period -> 1 kHz), F/NAV
+    # riding it as one 50 Hz symbol per 20 primary periods. This check must
+    # come before the generic ``sysc == "E"`` E1 branch below, which would
+    # otherwise also catch E5a entries (both share sysc == "E"). The E5a-Q
+    # dataless pilot is not needed for the data-signal closed-loop fix and
+    # is left out, mirroring Q5 on L5 and CL on L2C.
+    if sysc == "E" and getattr(sig, "band", "L1") == "L5":
+        if getattr(sig, "nav_sym_hz", 0) == 0:
+            return None, (f"{sysc}{entry['prn']}: E5a-Q pilot component "
+                          "not emitted (data-signal fix path), skipped")
+        ei, _eq = _lib.code_e5a(entry["prn"])
+        spec = _lib.SvSpec()
+        pbuf = (ctypes.c_int8 * 10230)(*ei.tolist())
+        spec.code = pbuf
+        keep = [pbuf]
+        spec.code_len = 10230
+        spec.chip_rate_hz = 10.23e6
+        spec.carrier_freq_hz = entry["carrier_doppler_hz"]
+        spec.carrier_phase0_rad = 0.0
+        spec.code_phase0_chips = entry["code_phase_chips"]
+        spec.code_doppler_hz = entry["code_doppler_hz"]
+        spec.nav_mode = 0
+        spec.nav_bits = None
+        spec.nav_nbits = 0
+        spec.nav_sym_rate_hz = 0.0
+        if nav is not None:
+            nbuf, nbits, sym_rate = nav
+            spec.nav_mode = 1
+            spec.nav_bits = nbuf
+            spec.nav_nbits = nbits
+            spec.nav_sym_rate_hz = float(sym_rate)
+            keep.append(nbuf)
+        spec.gain = gain
+        spec.prn = entry["prn"]
+        spec.sys = _SYS_INT[sysc]
+        spec.sub_carrier_hz = 0.0
+        cs20 = _CS20_CHIPS
+        sbuf = (ctypes.c_int8 * 20)(*cs20)
+        spec.sec_code = sbuf
+        spec.sec_len = 20
         spec.sec_rate_hz = 1000.0
         keep.append(sbuf)
         return spec, keep
@@ -519,6 +569,8 @@ def run(req, progress_cb=None) -> pathlib.Path:
     def _nav_prov_name(sysc: str, band: str) -> str:
         if sysc in ("G", "J") and band in ("L2", "L5"):
             return "cnav"          # IS-GPS-200 Sec. 30/40 CNAV
+        if sysc == "E" and band == "L5":
+            return "fnav"          # Galileo OS SIS ICD Sec. 4.2 F/NAV
         return {"G": "lnav", "J": "lnav", "E": "inav",
                 "C": "d1", "R": "strings", "S": "sbas"}.get(sysc, "on")
 
@@ -545,7 +597,11 @@ def run(req, progress_cb=None) -> pathlib.Path:
             arr, sym_rate = res
             nbuf = (ctypes.c_int8 * len(arr))(*arr.tolist())
             band_id = e["signal_id"].band
-            nav_streams[(e["prn"], band_id)] = (
+            # Keyed by (sys, prn, band): native PRN numbering overlaps across
+            # systems (e.g. GPS PRN 5 and Galileo PRN 5 both sit at native
+            # "5"), and L5 now carries more than one system -- (prn, band)
+            # alone would let one system's nav stream clobber another's.
+            nav_streams[(sysc, e["prn"], band_id)] = (
                 nbuf, len(arr), float(sym_rate))
             nav_prov.setdefault(f"{sysc}/{band_id}",
                                 _nav_prov_name(sysc, band_id))
@@ -568,7 +624,7 @@ def run(req, progress_cb=None) -> pathlib.Path:
             static_gain = _el_gain(el_deg)
             spec, keep = _sv_spec_for(
                 e, static_gain,
-                nav=nav_streams.get((e["prn"], e["signal_id"].band)))
+                nav=nav_streams.get((e["sys"], e["prn"], e["signal_id"].band)))
             if spec is None:
                 _log.warning("engine.run: %s", keep)
                 warnings.append(str(keep))

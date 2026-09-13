@@ -45,6 +45,8 @@ def _ecef_to_llh(x, y, z):
 
 _CM_LEN = 10230
 _CM_CHIP_HZ = 0.5115e6
+_L5_LEN = 10230
+_L5_CHIP_HZ = 10.23e6
 
 
 def _fix_from_iq_l2(iq_path, sample_format, sample_rate, eph_by_prn,
@@ -150,6 +152,164 @@ def _fix_from_iq_l2(iq_path, sample_format, sample_rate, eph_by_prn,
     return out
 
 
+def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
+                    approx_time_gps, marker_llh) -> dict:
+    """L5-band closed-loop fix: acquire GPS/QZSS I5 (NH10-blind
+    non-coherent) and Galileo E5a-I (CS20-blind), decode CNAV 10/11/30 off
+    I5 and F/NAV word types 1/2/3(+4) off E5a-I, solve jointly. GPS/QZSS
+    L5 and Galileo E5a-I share this RF band (both centre on 1176.45 MHz),
+    so a capture can carry either family or both; every acquired/decoded
+    satellite is keyed by ``(sys, prn)`` throughout (both number PRNs from
+    1, so a bare PRN key would collide between families -- the same
+    reasoning as the engine's own ``nav_streams`` keying).
+
+    Structurally identical to :func:`_fix_from_iq_l2`; the differences are
+    the 10.23 Mcps I5/E5a-I codes, the L5 band centre for the geometry, and
+    the per-system group delay: GPS/QZSS uses
+    ``-Tgd*(fL1/fL5)^2 + ISC_L5I5``, while Galileo's single-frequency
+    BGD(E1,E5a) is applied directly (no frequency-squared scaling or ISC
+    term -- a different ICD convention, not an omission).
+    """
+    from backend.analysis import band_acquire, cnav_decode, fnav_decode
+    from backend.synth import _lib
+    from backend.synth import signals as _sig
+
+    l5, e5a = _sig.SIGNALS["GPS_L5I"], _sig.SIGNALS["GAL_E5AI"]
+    fl1, fl5 = config.L1_HZ, config.L5_HZ
+    m_per_chip = config.C / _L5_CHIP_HZ
+
+    # One CNAV 10/11 pair spans 24 s; L5 runs at ~25 Msps, so cap the read
+    # near that (a 50 s cap would be ~1.3 G samples) -- read_iq clamps to
+    # the file length anyway.
+    iq = inspector.read_iq(iq_path, sample_format,
+                           max_samples=int(sample_rate * 30.0))
+    approx_rx = (np.array(geometry.llh_to_ecef(*marker_llh))
+                 if marker_llh else np.zeros(3))
+
+    # eph_by_prn (when supplied) is PRN-only keyed with no per-system
+    # scoping; the blind scan below (the tested path, eph_by_prn={}) is
+    # unambiguous since it enumerates each family's own PRN range.
+    gj_scan = eph_by_prn if eph_by_prn else {p: None for p in range(1, 33)}
+    gal_scan = {} if eph_by_prn else {p: None for p in range(1, 37)}
+
+    acq: dict[tuple[str, int], dict] = {}
+    for prn in gj_scan:
+        i5, _q5 = _lib.code_l5(int(prn))
+        # One coherent I5 period (1 ms) at fs >= ~25 Msps: the 10.23 Mcps
+        # main lobe is wide, so a single period already clears ~13 dB, and
+        # non-coherent stacking of more periods loses to squaring at this
+        # SNR. NH10 is real +/-1, so it does not matter for |.|.
+        r = band_acquire.acquire(iq, sample_rate, i5.astype(float),
+                                 chip_hz=_L5_CHIP_HZ, code_len=_L5_LEN,
+                                 dopp_step=100.0, nperiods=1)
+        if r["metric_db"] > 9.0:
+            acq[("G", prn)] = r
+    for prn in gal_scan:
+        ei, _eq = _lib.code_e5a(int(prn))
+        r = band_acquire.acquire(iq, sample_rate, ei.astype(float),
+                                 chip_hz=_L5_CHIP_HZ, code_len=_L5_LEN,
+                                 dopp_step=100.0, nperiods=1)
+        if r["metric_db"] > 9.0:
+            acq[("E", prn)] = r
+
+    decoded, nav_decode = {}, {}
+    for (sysc, prn), r in list(acq.items()):
+        key = f"{sysc}{prn}"
+        try:
+            if sysc == "E":
+                sym = fnav_decode.demod_symbols_e5a(
+                    iq, sample_rate, prn, dopp_hz=r["doppler_hz"],
+                    code_phase_chips=r["code_phase_chips"])
+                msgs = fnav_decode.decode_messages(sym.tolist())
+                own = [m for m in msgs if m["crc_ok"]]
+                # Only F/NAV word type 1 carries an SVID field (types 2-4
+                # do not, per the ICD); cross-check it when present and
+                # otherwise trust the channel's own despreading code.
+                t1 = {m["prn"] for m in own
+                      if m["type"] == 1 and m.get("prn") is not None}
+                if t1 and prn not in t1:
+                    nav_decode[key] = "wrong-PRN word1"
+                    continue
+                if not ({1, 2, 3} <= {m["type"] for m in own}):
+                    nav_decode[key] = "no own-PRN 1/2/3"
+                    continue
+                rec = fnav_decode.reconstruct_ephemeris(own)
+            else:
+                sym = cnav_decode.demod_symbols_l5(
+                    iq, sample_rate, prn, dopp_hz=r["doppler_hz"],
+                    code_phase_chips=r["code_phase_chips"])
+                msgs = cnav_decode.decode_messages(sym.tolist())
+                own = [m for m in msgs if m["crc_ok"] and m["prn"] == prn]
+                if not ({10, 11} <= {m["type"] for m in own}):
+                    nav_decode[key] = "no own-PRN 10/11"
+                    continue
+                rec = cnav_decode.reconstruct_ephemeris(own)
+            rec["prn"] = prn
+            decoded[(sysc, prn)] = rec
+            nav_decode[key] = "ok"
+        except (ValueError, IndexError):
+            nav_decode[key] = "decode fail"
+
+    if len(decoded) < 4:
+        return {"error": f"only {len(decoded)} SVs decoded on L5",
+                "prns_used": sorted(f"{s}{p}" for s, p in decoded),
+                "nav_decode": nav_decode}
+
+    sat_pos, pr, usable = {}, {}, []
+    for sysc, prn in sorted(decoded):
+        rec = decoded[(sysc, prn)]
+        key = f"{sysc}{prn}"
+        if sysc == "E":
+            svb = -rec.get("tgd", 0.0)
+            sig, code = e5a, _lib.code_e5a(int(prn))[0]
+        else:
+            tgd = rec.get("tgd", 0.0)
+            svb = -tgd * (fl1 / fl5) ** 2 + rec.get("isc_l5i5", 0.0)
+            sig, code = l5, _lib.code_l5(int(prn))[0]
+        o = geometry.observables(rec, approx_rx, approx_time_gps,
+                                 signal=sig, sv_clock_bias_s=svb)
+        if o["el_deg"] < 5.0:
+            nav_decode[key] = "low el"
+            continue
+        pos, _, _, clk = geometry.solve_transmit_time(rec, approx_rx,
+                                                      approx_time_gps)
+        cp = band_acquire.fine_code_phase(
+            iq, sample_rate, code.astype(float), chip_hz=_L5_CHIP_HZ,
+            code_len=_L5_LEN, dopp_hz=acq[(sysc, prn)]["doppler_hz"])
+        err_c = ((cp - o["code_phase_chips"] + _L5_LEN / 2) % _L5_LEN
+                 ) - _L5_LEN / 2
+        if abs(err_c) > 0.45 * _L5_LEN:
+            nav_decode[key] = "unaligned"
+            continue
+        sat_pos[(sysc, prn)] = pos
+        pr[(sysc, prn)] = (o["pseudorange_m"] + err_c * m_per_chip
+                           + config.C * (clk + svb))
+        usable.append((sysc, prn))
+
+    if len(usable) < 4:
+        return {"error": f"only {len(usable)} SVs usable on L5",
+                "prns_used": sorted(f"{s}{p}" for s, p in usable),
+                "nav_decode": nav_decode}
+
+    sol = solve_position(pr, sat_pos, x0=[*approx_rx, 0.0])
+    lat, lon, h = _ecef_to_llh(*sol["ecef"])
+    entries = []
+    for k in usable:
+        los = sat_pos[k] - np.array(sol["ecef"])
+        entries.append({"_los": (los / np.linalg.norm(los)).tolist()})
+    out = {
+        "ecef": sol["ecef"], "llh": [lat, lon, h],
+        "clock_bias_s": sol["clock_bias_s"],
+        "prns_used": sorted(f"{s}{p}" for s, p in usable),
+        "pdop": geometry.dop(entries, sol["ecef"])["pdop"],
+        "residual_rms_m": sol["residual_rms_m"], "nav_decode": nav_decode,
+    }
+    if marker_llh:
+        truth = np.array(geometry.llh_to_ecef(*marker_llh))
+        out["error_m"] = float(np.linalg.norm(np.array(sol["ecef"]) - truth))
+    return out
+
+
 def fix_from_iq(iq_path, sample_format, sample_rate, eph_by_prn,
                 approx_time_gps, marker_llh=None, decode_nav=False,
                 *, band: str = "L1") -> dict:
@@ -160,6 +320,9 @@ def fix_from_iq(iq_path, sample_format, sample_rate, eph_by_prn,
     """
     if band == "L2":
         return _fix_from_iq_l2(iq_path, sample_format, sample_rate,
+                               eph_by_prn, approx_time_gps, marker_llh)
+    if band == "L5":
+        return _fix_from_iq_l5(iq_path, sample_format, sample_rate,
                                eph_by_prn, approx_time_gps, marker_llh)
     if band != "L1":
         raise ValueError(f"unsupported band {band!r}")
