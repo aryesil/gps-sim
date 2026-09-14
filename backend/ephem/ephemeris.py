@@ -44,7 +44,7 @@ _VARMAP_STATE = {
     "glo_k": "FreqNum",
 }
 
-_KEPLER_SYS = frozenset("GJEC")
+_KEPLER_SYS = frozenset("GJECI")
 _STATE_SYS = frozenset("RS")
 
 
@@ -176,6 +176,7 @@ _PRN_RANGE = {
     "C": (1, 63),      # BeiDou C01..C63
     "J": (1, 10),      # QZSS short form J01..J07 (georinex), headroom to 10
     "S": (20, 58),     # SBAS short form S20..S58 == PRN 120..158
+    "I": (1, 14),      # NavIC (IRNSS) I01..I14
 }
 
 

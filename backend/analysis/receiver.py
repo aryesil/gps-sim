@@ -47,6 +47,8 @@ _CM_LEN = 10230
 _CM_CHIP_HZ = 0.5115e6
 _L5_LEN = 10230
 _L5_CHIP_HZ = 10.23e6
+_NAVIC_LEN = 1023
+_NAVIC_CHIP_HZ = 1.023e6
 
 
 def _fix_from_iq_l2(iq_path, sample_format, sample_rate, eph_by_prn,
@@ -155,28 +157,33 @@ def _fix_from_iq_l2(iq_path, sample_format, sample_rate, eph_by_prn,
 def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
                     approx_time_gps, marker_llh) -> dict:
     """L5-band closed-loop fix: acquire GPS/QZSS I5 (NH10-blind
-    non-coherent) and Galileo E5a-I (CS20-blind), decode CNAV 10/11/30 off
-    I5 and F/NAV word types 1/2/3(+4) off E5a-I, solve jointly. GPS/QZSS
-    L5 and Galileo E5a-I share this RF band (both centre on 1176.45 MHz),
-    so a capture can carry either family or both; every acquired/decoded
-    satellite is keyed by ``(sys, prn)`` throughout (both number PRNs from
-    1, so a bare PRN key would collide between families -- the same
-    reasoning as the engine's own ``nav_streams`` keying).
+    non-coherent), Galileo E5a-I (CS20-blind) and NavIC L5-SPS, decode
+    CNAV 10/11/30 off I5, F/NAV word types 1/2/3(+4) off E5a-I, and NavIC
+    subframes 1/2 off the L5-SPS component, solve jointly. GPS/QZSS L5,
+    Galileo E5a-I and NavIC L5-SPS all share this RF band (all three
+    centre on 1176.45 MHz), so a capture can carry any subset of the
+    three; every acquired/decoded satellite is keyed by ``(sys, prn)``
+    throughout (all three number PRNs from 1, so a bare PRN key would
+    collide across families -- the same reasoning as the engine's own
+    ``nav_streams`` keying).
 
     Structurally identical to :func:`_fix_from_iq_l2`; the differences are
-    the 10.23 Mcps I5/E5a-I codes, the L5 band centre for the geometry, and
-    the per-system group delay: GPS/QZSS uses
-    ``-Tgd*(fL1/fL5)^2 + ISC_L5I5``, while Galileo's single-frequency
-    BGD(E1,E5a) is applied directly (no frequency-squared scaling or ISC
-    term -- a different ICD convention, not an omission).
+    the per-system code (10.23 Mcps I5/E5a-I vs. NavIC's 1.023 Mcps
+    L5-SPS), the L5 band centre for the geometry, and the per-system
+    group delay: GPS/QZSS uses ``-Tgd*(fL1/fL5)^2 + ISC_L5I5``, while
+    Galileo's single-frequency BGD(E1,E5a) and NavIC's single-frequency
+    TGD are both applied directly (no frequency-squared scaling or ISC
+    term -- NavIC L5-SPS carries no second civil frequency and no ISC
+    field in subframes 1/2, matching Galileo's own single-frequency
+    convention here, not an omission).
     """
-    from backend.analysis import band_acquire, cnav_decode, fnav_decode
+    from backend.analysis import band_acquire, cnav_decode, fnav_decode, navic_decode
     from backend.synth import _lib
     from backend.synth import signals as _sig
 
     l5, e5a = _sig.SIGNALS["GPS_L5I"], _sig.SIGNALS["GAL_E5AI"]
+    navic = _sig.SIGNALS["IRNSS_L5"]
     fl1, fl5 = config.L1_HZ, config.L5_HZ
-    m_per_chip = config.C / _L5_CHIP_HZ
 
     # One CNAV 10/11 pair spans 24 s; L5 runs at ~25 Msps, so cap the read
     # near that (a 50 s cap would be ~1.3 G samples) -- read_iq clamps to
@@ -191,6 +198,21 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
     # unambiguous since it enumerates each family's own PRN range.
     gj_scan = eph_by_prn if eph_by_prn else {p: None for p in range(1, 33)}
     gal_scan = {} if eph_by_prn else {p: None for p in range(1, 37)}
+    navic_scan = {} if eph_by_prn else {p: None for p in range(1, 15)}
+
+    # GPS/QZSS I5 and Galileo E5a-I both run at 10.23 Mcps; a capture
+    # whose fs cannot represent that (fs below 2x the chip rate -- e.g.
+    # a NavIC-only scenario deliberately captured at NavIC's own much
+    # lower ~2.1 Msps floor) aliases every PRN's correlator into a
+    # meaningless peak above the acquisition threshold instead of
+    # correctly reporting "no signal", so each of the 68 false hits then
+    # pays for a full (slow) CNAV/F-NAV demod attempt. Skip both
+    # families outright when fs cannot resolve their chip rate; same
+    # guard for NavIC's own (much lower) chip rate for symmetry.
+    if sample_rate < 2.0 * _L5_CHIP_HZ:
+        gj_scan, gal_scan = {}, {}
+    if sample_rate < 2.0 * _NAVIC_CHIP_HZ:
+        navic_scan = {}
 
     acq: dict[tuple[str, int], dict] = {}
     for prn in gj_scan:
@@ -211,6 +233,16 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
                                  dopp_step=100.0, nperiods=1)
         if r["metric_db"] > 9.0:
             acq[("E", prn)] = r
+    for prn in navic_scan:
+        ni = _lib.code_navic(int(prn))
+        # NavIC L5-SPS: 1023 chips @ 1.023 Mcps, one order of magnitude
+        # narrower than I5/E5a-I -- its own chip_hz/code_len, same 1 ms
+        # coherent / single-period acquisition otherwise.
+        r = band_acquire.acquire(iq, sample_rate, ni.astype(float),
+                                 chip_hz=_NAVIC_CHIP_HZ, code_len=_NAVIC_LEN,
+                                 dopp_step=100.0, nperiods=1)
+        if r["metric_db"] > 9.0:
+            acq[("I", prn)] = r
 
     decoded, nav_decode = {}, {}
     for (sysc, prn), r in list(acq.items()):
@@ -234,6 +266,19 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
                     nav_decode[key] = "no own-PRN 1/2/3"
                     continue
                 rec = fnav_decode.reconstruct_ephemeris(own)
+            elif sysc == "I":
+                sym = navic_decode.demod_symbols(
+                    iq, sample_rate, prn, dopp_hz=r["doppler_hz"],
+                    code_phase_chips=r["code_phase_chips"])
+                hits = navic_decode.find_subframes(sym.tolist())
+                # Subframes 1/2 carry no PRN field of their own (NavIC's
+                # PRN ID lives only in subframe 3/4 messages, out of
+                # scope here); trust the channel's own despreading code,
+                # the same fallback E5a-I uses when word 1 is absent.
+                if not ({1, 2} <= {h["subframe_id"] for h in hits}):
+                    nav_decode[key] = "no subframe 1/2"
+                    continue
+                rec = navic_decode.reconstruct_ephemeris(hits)
             else:
                 sym = cnav_decode.demod_symbols_l5(
                     iq, sample_rate, prn, dopp_hz=r["doppler_hz"],
@@ -262,10 +307,19 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
         if sysc == "E":
             svb = -rec.get("tgd", 0.0)
             sig, code = e5a, _lib.code_e5a(int(prn))[0]
+            chip_hz, code_len = _L5_CHIP_HZ, _L5_LEN
+        elif sysc == "I":
+            # Single-frequency SPS: TGD applied directly, no ISC term (no
+            # second civil frequency broadcast in subframes 1/2), matching
+            # Galileo's own single-frequency convention above.
+            svb = -rec.get("tgd", 0.0)
+            sig, code = navic, _lib.code_navic(int(prn))
+            chip_hz, code_len = _NAVIC_CHIP_HZ, _NAVIC_LEN
         else:
             tgd = rec.get("tgd", 0.0)
             svb = -tgd * (fl1 / fl5) ** 2 + rec.get("isc_l5i5", 0.0)
             sig, code = l5, _lib.code_l5(int(prn))[0]
+            chip_hz, code_len = _L5_CHIP_HZ, _L5_LEN
         o = geometry.observables(rec, approx_rx, approx_time_gps,
                                  signal=sig, sv_clock_bias_s=svb)
         if o["el_deg"] < 5.0:
@@ -273,16 +327,17 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
             continue
         pos, _, _, clk = geometry.solve_transmit_time(rec, approx_rx,
                                                       approx_time_gps)
+        mpc = config.C / chip_hz
         cp = band_acquire.fine_code_phase(
-            iq, sample_rate, code.astype(float), chip_hz=_L5_CHIP_HZ,
-            code_len=_L5_LEN, dopp_hz=acq[(sysc, prn)]["doppler_hz"])
-        err_c = ((cp - o["code_phase_chips"] + _L5_LEN / 2) % _L5_LEN
-                 ) - _L5_LEN / 2
-        if abs(err_c) > 0.45 * _L5_LEN:
+            iq, sample_rate, code.astype(float), chip_hz=chip_hz,
+            code_len=code_len, dopp_hz=acq[(sysc, prn)]["doppler_hz"])
+        err_c = ((cp - o["code_phase_chips"] + code_len / 2) % code_len
+                 ) - code_len / 2
+        if abs(err_c) > 0.45 * code_len:
             nav_decode[key] = "unaligned"
             continue
         sat_pos[(sysc, prn)] = pos
-        pr[(sysc, prn)] = (o["pseudorange_m"] + err_c * m_per_chip
+        pr[(sysc, prn)] = (o["pseudorange_m"] + err_c * mpc
                            + config.C * (clk + svb))
         usable.append((sysc, prn))
 

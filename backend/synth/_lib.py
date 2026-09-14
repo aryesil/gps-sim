@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-ABI_VERSION = 22
+ABI_VERSION = 23
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
@@ -315,9 +315,10 @@ def code(sys: int, prn: int, prim_len: int, sec_len: int = 0):
     """L1-group code generator over the native ``synth_code`` symbol.
 
     ``sys`` is the CODE-GEN enum (0 GPS, 1 QZSS, 2 SBAS, 3 BeiDou B1I,
-    6 Galileo E1C) -- SEPARATE from the propagation sys int. There is no
-    native GLONASS branch (any other value returns rc -1); GLONASS G1 is
-    generated in Python by ``engine._glo_g1_code``. Returns
+    5 Galileo E1B, 6 Galileo E1C, 7 NavIC L5-SPS) -- SEPARATE from the
+    propagation sys int. There is no native GLONASS branch (any other value
+    returns rc -1); GLONASS G1 is generated in Python by
+    ``engine._glo_g1_code``. Returns
     ``(primary, secondary)`` as ``np.int8`` arrays of ``{-1, +1}`` chips;
     ``secondary`` is ``None`` when ``sec_len <= 0``.
     """
@@ -379,6 +380,13 @@ def code_e5a(prn: int):
     if rc != 0:
         raise ValueError(f"synth_code_e5a rejected prn {prn}")
     return ei, eq
+
+
+def code_navic(prn: int) -> np.ndarray:
+    """1023-chip {-1,+1} int8 array for NavIC (IRNSS) L5-SPS PRN `prn`
+    (1..14). Single ranging component -- no pilot, no secondary code."""
+    primary, _ = code(7, int(prn), 1023, 0)
+    return primary
 
 
 def debug_boc(sub_hz: float, fs: float, n: int) -> np.ndarray:

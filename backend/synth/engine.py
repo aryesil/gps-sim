@@ -39,7 +39,7 @@ _BLOCK_SAMPLES = 65536
 # key the mixer/fading use; it is NOT the same as the code_sys passed to
 # _lib.code (which selects a code VARIANT). For Galileo they intentionally
 # differ: spec.sys == 5 (Galileo) while code_sys == 6 (E1C pilot).
-_SYS_INT = {"G": 0, "J": 1, "S": 2, "C": 3, "R": 4, "E": 5}
+_SYS_INT = {"G": 0, "J": 1, "S": 2, "C": 3, "R": 4, "E": 5, "I": 7}
 _E1_IS_PILOT = True     # E1C pilot for acquisition; E1B when nav bits added
 # GPS L5 I5 Neuman-Hoffman secondary NH10 = 0b0000110101 (IS-GPS-200
 # 3.3.2.4). Chip bit 0 -> +1, 1 -> -1, matching the ranging-code sign
@@ -577,8 +577,8 @@ def run(req, progress_cb=None) -> pathlib.Path:
             return "cnav"          # IS-GPS-200 Sec. 30/40 CNAV
         if sysc == "E" and band == "L5":
             return "fnav"          # Galileo OS SIS ICD Sec. 4.2 F/NAV
-        return {"G": "lnav", "J": "lnav", "E": "inav",
-                "C": "d1", "R": "strings", "S": "sbas"}.get(sysc, "on")
+        return {"G": "lnav", "J": "lnav", "E": "inav", "C": "d1",
+                "R": "strings", "S": "sbas", "I": "navic"}.get(sysc, "on")
 
     if getattr(req, "nav_message", True) and not precise_multi:
         try:

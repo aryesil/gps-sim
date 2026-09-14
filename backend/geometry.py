@@ -17,6 +17,10 @@ SYS_PARAMS = {
     "J": {"mu": config.MU,      "omega_e_dot": config.OMEGA_E_DOT, "f_rel": config.F_REL},
     "E": {"mu": 3.986004418e14, "omega_e_dot": 7.2921151467e-5,    "f_rel": -4.442807309e-10},
     "C": {"mu": 3.986004418e14, "omega_e_dot": 7.2921150e-5,       "f_rel": -4.442807309e-10},
+    # NavIC broadcasts a GPS-like Kepler element set on the GPS WGS84 datum
+    # (IRNSS ICD sec 6.2.1) -- same constants as "G"/"J", own key so a
+    # broadcast dict tagged system="I" resolves without falling back to G.
+    "I": {"mu": config.MU,      "omega_e_dot": config.OMEGA_E_DOT, "f_rel": config.F_REL},
 }
 
 # BeiDou GEO/IGSO PRNs use the GEO reference-frame rotation (BDS-SIS-ICD-B1I).
@@ -250,11 +254,11 @@ def constellation(eph_by_prn: dict, rx_ecef, t_rx: float,
 
 def state_fn_for(record: dict):
     """Dispatch a broadcast ``record`` to its state function by
-    ``record["system"]``. ``G J E C`` use the Kepler model; ``R``
+    ``record["system"]``. ``G J E C I`` use the Kepler model; ``R``
     (GLONASS) uses the PZ-90 RK4 integrator in ``backend.synth.glonass``;
     ``S`` (SBAS) uses the ICAO Annex-10 propagator in ``backend.synth.sbas``."""
     s = record.get("system", "G")
-    if s in ("G", "J", "E", "C"):
+    if s in ("G", "J", "E", "C", "I"):
         return keplerian_state(record)
     if s == "S":
         # SBAS has its own ICAO Annex-10 constant-acceleration ECEF

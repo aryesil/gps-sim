@@ -203,11 +203,12 @@ int synth_run_bands(const BandSpec *bands, int nband,
                     void (*progress)(double, void *), void *user);
 // L1-group code generator. CODE-GEN sys int (SEPARATE from the propagation sys
 // int of synth_sat_state_sys): 0 GPS, 1 QZSS, 2 SBAS, 3 BeiDou B1I, 4 GLONASS
-// G1. Fills primary[0..prim_len-1] with {-1,+1} chips (prim_len must be >= the
-// code length for that system). secondary is filled with {-1,+1} only when
-// sec_len > 0; GPS/QZSS/SBAS L1 have no secondary code. Returns 0 on success,
-// -1 on bad args / unsupported system. synth_ca_code(prn,out,n) ==
-// synth_code(0, prn, out, n, nullptr, 0).
+// G1, 5 Galileo E1B, 6 Galileo E1C, 7 NavIC (IRNSS) L5-SPS. Fills
+// primary[0..prim_len-1] with {-1,+1} chips (prim_len must be >= the code
+// length for that system). secondary is filled with {-1,+1} only when
+// sec_len > 0; GPS/QZSS/SBAS L1 and NavIC L5-SPS have no secondary code.
+// Returns 0 on success, -1 on bad args / unsupported system.
+// synth_ca_code(prn,out,n) == synth_code(0, prn, out, n, nullptr, 0).
 int synth_code(int sys, int prn, int8_t *primary, int prim_len,
                int8_t *secondary, int sec_len);
 // GPS L2C civil codes (IS-GPS-200 3.2.1.4). Fills cm[0..cm_len-1]

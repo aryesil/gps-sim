@@ -87,11 +87,42 @@ void b1i_ranging(int t1, int t2, int t3, int8_t *out) {
         r1[10] = f1; r2[10] = f2;
     }
 }
+// NavIC (IRNSS) L5-SPS G2 register initial conditions, PRN 1..14, as 10-bit
+// strings straight out of Table 7 (ISRO-IRNSS-ICD-SPS-1.1, Aug 2017). G1 and
+// G2 polynomials are identical to GPS C/A's own ("Polynomial G1 and G2 are
+// similar to the ones used by GPS C/A signal", sec 4.1.1); G1 is seeded
+// all-ones exactly like GPS. The ICD does not state how this 10-bit string
+// maps onto the register stages, so the mapping below was reverse-engineered
+// by brute force against Table 7's own "First 10 Chips" ground truth (14/14
+// exact match, see navic_gold()).
+constexpr std::array<const char *, 14> kNavicG2Init = {{
+    "1110100111", "0000100110", "1000110100", "0101110010", "1110110000",
+    "0001101011", "0000010100", "0100110000", "0010011000", "1101100100",
+    "0001001100", "1101111100", "1011010010", "0111101010",
+}};
+
+// NavIC (IRNSS) L5-SPS ranging code. Reuses step_g1g2 unchanged; G2 is seeded
+// from the ICD's 10-bit string in REVERSE bit order -- g2[k] = string[10-k]
+// for k=1..10, so stage 1 gets the string's LAST character and stage 10 its
+// FIRST -- then the output chip is g1[10] ^ g2[10] read before stepping,
+// exactly the existing GPS gold_taps convention above.
+void navic_gold(const char *g2init, int8_t *out) {
+    int g1[11], g2[11];
+    for (int i = 1; i <= 10; ++i) {
+        g1[i] = 1;
+        g2[i] = g2init[10 - i] - '0';
+    }
+    for (int k = 0; k < 1023; ++k) {
+        int chip = g1[10] ^ g2[10];
+        out[k] = chip ? -1 : 1;
+        step_g1g2(g1, g2);
+    }
+}
 }  // namespace
 
 // CODE-GEN sys int (distinct from the propagation sys int in synth_sat_state_sys):
 //   0 GPS, 1 QZSS, 2 SBAS, 3 BeiDou B1I (Task 7), 4 GLONASS G1 (Task 12),
-//   5 Galileo E1B (data), 6 Galileo E1C (pilot).
+//   5 Galileo E1B (data), 6 Galileo E1C (pilot), 7 NavIC L5-SPS.
 // Fills `primary` with {-1,+1} chips; `prim_len` must be >= the code length.
 // `secondary` is filled only when `sec_len > 0` -- GPS/QZSS/SBAS L1 have no
 // secondary code, so it is left untouched. Returns 0 ok, -1 bad args/unsupported.
@@ -137,6 +168,10 @@ extern "C" int synth_code(int sys, int prn, int8_t *primary, int prim_len,
         }
         return 0;
     }
+    case 7:  // NavIC (IRNSS) L5-SPS
+        if (prn < 1 || prn > 14) return -1;
+        navic_gold(kNavicG2Init[prn - 1], primary);
+        return 0;
     case 4:  // GLONASS G1  -- Task 12
     default:
         return -1;

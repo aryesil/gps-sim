@@ -52,7 +52,15 @@ def e5a_run(tmp_path_factory):
             rinex_path=_MIXED, lat=_RX[0], lon=_RX[1], alt=_RX[2],
             start=_START, duration_s=_DUR, sample_rate=_FS,
             sample_format="int8", engine="native", systems=("G", "E"),
-            bands=["L5"], nav_message=True)
+            bands=["L5"], nav_message=True,
+            # req.sample_rate only governs the L1 band; the L5 band's own
+            # fs is req.l5_sample_rate (else fs_policy.band_floor, which
+            # for GPS L5I + Galileo E5a-I alone floors to 20.5 Msps, not
+            # this module's stated/intended 25 Msps). Pin it explicitly so
+            # generation and the receiver's decode call below agree on the
+            # actual fs -- bug found while wiring up the NavIC L5-SPS test
+            # (this same mismatch would silently zero out every SV here).
+            l5_sample_rate=_FS)
         outdir = engine.run(req)
     finally:
         config.OUT_DIR = _orig

@@ -42,7 +42,13 @@ def l5_run(tmp_path_factory):
         req = ScenarioRequest(
             rinex_path=_RINEX, lat=_RX[0], lon=_RX[1], alt=_RX[2], start=start,
             duration_s=_DUR, sample_rate=_FS, sample_format="int8",
-            engine="native", systems=("G",), bands=["L5"], nav_message=True)
+            engine="native", systems=("G",), bands=["L5"], nav_message=True,
+            # req.sample_rate only governs the L1 band; the L5 band's own
+            # fs is req.l5_sample_rate (else fs_policy.band_floor, which
+            # for GPS L5I alone floors to 20.5 Msps, not this module's
+            # intended 25 Msps). Pin it explicitly so generation and the
+            # receiver's decode call below agree on the actual fs.
+            l5_sample_rate=_FS)
         outdir = engine.run(req)
     finally:
         config.OUT_DIR = _orig

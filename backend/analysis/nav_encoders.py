@@ -25,6 +25,7 @@ SYM_RATE_HZ = {
     "C": 50.0,     # B1I D1 (D2 GEO is 500, handled in that tier)
     "R": 100.0,    # L1OF, 50 bps with 100 Hz meander
     "S": 500.0,    # SBAS L1, 250 bps after r=1/2 FEC
+    "I": 50.0,     # NavIC L5-SPS subframes 1/2
 }
 
 
@@ -58,6 +59,15 @@ def nav_stream_for(sysc, signal, eph, header, week, sow, duration_s,
         p = int(prn if prn is not None else (eph.get("prn", 1) or 1))
         arr, rate = fnav_encode.nav_stream(eph, p, week, sow, duration_s,
                                            eph_by_prn=eph_by_prn)
+        return arr, rate
+    if sysc == "I":
+        # NavIC (IRNSS) L5-SPS subframes 1/2 (ISRO-IRNSS-ICD-SPS-1.1) --
+        # its own framing/FEC/interleave, not CNAV or LNAV.
+        from backend.analysis import navic_encode
+        p = int(prn if prn is not None else (eph.get("prn", 1) or 1))
+        arr, rate = navic_encode.nav_stream(eph, header or {}, week, sow,
+                                            duration_s, prn=p,
+                                            eph_by_prn=eph_by_prn)
         return arr, rate
     if sysc == "E":
         arr = inav_encode.nav_stream(eph, week, sow, duration_s,

@@ -21,7 +21,11 @@ def _req(dur=6, nav_message=True):
         rinex_path=_RINEX, lat=41.0, lon=29.0, alt=100.0,
         start=dt.datetime(2021, 12, 11, 11, 59, 42), duration_s=dur,
         sample_rate=_FS, sample_format="int8", engine="native",
-        systems=("G",), bands=["L5"], nav_message=nav_message)
+        systems=("G",), bands=["L5"], nav_message=nav_message,
+        # req.sample_rate only governs the L1 band; pin the L5 band's own
+        # fs explicitly (else fs_policy.band_floor gives 20.5 Msps here,
+        # not this module's intended 25 Msps floor).
+        l5_sample_rate=_FS)
 
 
 def test_meta_records_cnav_on_l5(tmp_path, monkeypatch):
