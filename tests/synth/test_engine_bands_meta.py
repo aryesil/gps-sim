@@ -187,3 +187,92 @@ def test_precise_multi_covers_every_requested_constellation(tmp_path, monkeypatc
     l1 = next(b for b in meta["bands"] if b["id"] == "L1")
     assert set(l1["systems"]) == {"G", "E", "C"}
     assert {s["sys"] for s in meta["provenance"]["svs"]} == {"G", "E", "C"}
+
+
+def test_precise_multi_generates_real_nav_not_a_stub(tmp_path, monkeypatch):
+    """Regression for the SP3-fit generalisation in
+    backend/ephem/ephemeris_fit.py: before it, engine.run's precise_multi
+    branch built bare position/velocity stubs for every system and
+    unconditionally skipped nav_message generation, so meta["provenance"]
+    ["nav"] came back "none" even for a plain GPS+Galileo precise run --
+    the exact "hep sp3 sikinti cikariyor" complaint about the native
+    engine. G/E now get a real Gauss-Newton Kepler fit (geometry.SYS_PARAMS
+    -parametrised) against their own precise state_fn; R (GLONASS, not
+    Keplerian) reuses the broadcast RINEX record already read for glo_k.
+    """
+    import math
+
+    from backend import geometry
+    from backend.ephem import precise
+    from backend.gpstime import GPSTime
+
+    monkeypatch.setattr(config, "OUT_DIR", tmp_path)
+
+    week, tow_base, interval, n_epochs = 2434, 259200.0, 900.0, 33
+    mid_secs = (n_epochs // 2) * interval           # 14400 s past tow_base
+    toe = tow_base + mid_secs
+    # A physically plausible Kepler element set (same shape/magnitudes as
+    # tests/test_ephemeris_fit.py's _kepler_eph -- GPS-radius orbit) shared
+    # by both G and E rows; at tk=0 (t == toe) mu/omega_e_dot drop out of
+    # geometry._orbit entirely, so both systems land at the identical ECEF
+    # point there regardless of which datum eventually fits them.
+    truth = {
+        "m0": 0.3, "e": 0.006, "sqrtA": 5153.7, "delta_n": 4.9e-9,
+        "i0": 0.97, "idot": -2.5e-10, "omega0": -0.55, "omega_dot": -8.1e-9,
+        "omega": 0.72, "cuc": 1.2e-6, "cus": 7.5e-6, "crc": 240.0, "crs": 18.0,
+        "cic": -1.0e-7, "cis": 8.0e-8, "toe": toe, "toc": toe,
+        "gps_week": week, "af0": 0.0, "af1": 0.0, "af2": 0.0, "tgd": 0.0,
+    }
+    p0 = np.asarray(geometry.sat_state({**truth, "system": "G"}, toe)[0])
+    r = float(np.linalg.norm(p0))
+    lat = math.degrees(math.asin(p0[2] / r))
+    lon = math.degrees(math.atan2(p0[1], p0[0]))
+    alt = 100.0
+    rx = np.asarray(geometry.llh_to_ecef(lat, lon, alt), float)
+    u = rx / np.linalg.norm(rx)
+    north = np.cross(u, np.cross([0.0, 0.0, 1.0], u))
+
+    lines = [
+        f"#dP2026  9  1  0  0  0.00000000     {n_epochs:2d} ORBIT IGb14 HLM  SYNTH",
+        f"## {week} {tow_base:.8f}   {interval:.8f} 60849 0.0000000000000",
+    ]
+    for i in range(n_epochs):
+        secs = i * interval
+        hh, mm = int(secs // 3600), int(secs // 60) % 60
+        lines.append(f"*  2026  9  1 {hh:2d} {mm:2d}  0.00000000")
+        for sysc, prn in (("G", 1), ("E", 11), ("R", 1)):
+            if sysc == "R":
+                # Not Keplerian -- frozen near zenith is enough (its nav
+                # comes from the broadcast RINEX record, not a fit).
+                xyz = u * 2.55e7 - north * 0.9e6
+            else:
+                xyz = np.asarray(geometry.sat_state(
+                    {**truth, "system": sysc}, tow_base + secs)[0])
+            x, y, z = (c / 1e3 for c in xyz)
+            lines.append(f"P{sysc}{prn:02d}{x:14.6f}{y:14.6f}{z:14.6f}"
+                         f"{0.0:14.6f}")
+    lines.append("EOF")
+
+    provider = precise.PreciseEphemerisProvider()
+    provider.load_text("\n".join(lines) + "\n", source="synth-kepler")
+    lo, hi = provider.product.coverage_seconds
+    mid = GPSTime.from_seconds((lo + hi) / 2.0)
+
+    payload = {"precise_provider": provider, "week": mid.week,
+              "sow": mid.sow, "systems": ("G", "E", "R")}
+    req = ScenarioRequest(rinex_path=_MIXED, lat=lat, lon=lon, alt=alt,
+                          start=dt.datetime(2026, 9, 1, 4, 0, 0), duration_s=2,
+                          sample_rate=6_000_000.0, sample_format="int16",
+                          engine="native", systems=["G", "E", "R"],
+                          nav_override=payload)
+    outdir = engine.run(req)
+    meta = json.loads((outdir / "meta.json").read_text())
+
+    assert meta["provenance"]["ephemeris"] == "precise"
+    nav = meta["provenance"]["nav"]
+    assert isinstance(nav, dict), (
+        "nav generation skipped outright for a precise_multi run", nav,
+        meta["provenance"]["warnings"])
+    assert nav.get("G/L1") == "lnav", nav
+    assert nav.get("E/L1") == "inav", nav
+    assert nav.get("R/G1") == "strings", nav

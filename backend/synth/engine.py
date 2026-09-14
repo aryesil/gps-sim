@@ -9,7 +9,8 @@ import pathlib
 
 from backend import config, geometry
 from backend.analysis import nav_encoders
-from backend.ephem import ephemeris, ephemeris_source
+from backend.ephem import ephemeris, ephemeris_fit, ephemeris_source
+from backend.gpstime import GPSTime
 from backend.synth import _lib, bands, signals
 from backend.synth.fading import FadingConfig
 
@@ -483,12 +484,13 @@ def run(req, progress_cb=None) -> pathlib.Path:
         # broadcast RINEX. A missing/unusable RINEX drops GLONASS with a
         # warning rather than failing the run.
         glo_k_by_key: dict = {}
+        r_eph: dict = {}
         r_keys = [k for k in state_fns if k[0] == "R"]
         if r_keys:
-            r_eph: dict = {}
             try:
                 r_eph = ephemeris.parse_rinex_multi(req.rinex_path, ("R",),
                                                     require=())
+                r_eph = ephemeris.align_epochs(r_eph, week, sow)
             except Exception as exc:            # noqa: BLE001 - degrade, warn
                 warnings.append("precise run: GLONASS needs broadcast FDMA "
                                 f"channel numbers but {req.rinex_path!r} is "
@@ -502,6 +504,45 @@ def run(req, progress_cb=None) -> pathlib.Path:
                     state_fns.pop(k, None)
                 else:
                     glo_k_by_key[k] = int(gk)
+
+        # Broadcast-compatible nav-message records built from the precise
+        # state, one per Keplerian satellite (G/J/E/C/I): a real Gauss-Newton
+        # fit (ephemeris_fit, generalised to every system's own
+        # geometry.SYS_PARAMS datum) against that satellite's own state_fn,
+        # not a bare stub -- so nav_message generation below is not limited
+        # to GPS-only the way the older broadcast-precise path is. GLONASS
+        # is not Keplerian and reuses the broadcast RINEX record already
+        # read above for glo_k. SBAS has neither path; skipped with one
+        # warning -- the ranging IQ itself is unaffected either way, only
+        # the data-bit stream.
+        nav_eph_by_key: dict = {}
+        if getattr(req, "nav_message", True):
+            fit_epoch = GPSTime(p_week, p_sow)
+            fit_source = getattr(provider.product, "source", "precise")
+            for k, sfn in state_fns.items():
+                sc, pn = k
+                if sc in ("G", "J", "E", "C", "I"):
+                    try:
+                        nav_eph_by_key[k] = ephemeris_fit.fit_satellite(
+                            sfn, fit_epoch, sys=sc, prn=pn, source=fit_source)
+                    except Exception as exc:        # noqa: BLE001 - degrade
+                        # Both a rejected fit (EphemerisFitError) and the
+                        # +/-2h fit window falling outside this satellite's
+                        # own SP3 coverage span (precise.PreciseProductError)
+                        # land here -- the ranging IQ (state_fns, already
+                        # built) is unaffected either way, only this SV's
+                        # nav-message data symbol.
+                        warnings.append(
+                            f"{sc}{pn:02d}: precise->broadcast nav fit "
+                            f"failed ({exc}); data symbol left constant")
+                elif sc == "R":
+                    rec = r_eph.get(k)
+                    if rec:
+                        nav_eph_by_key[k] = rec
+            if any(k[0] == "S" for k in state_fns):
+                warnings.append(
+                    "precise run: SBAS nav message not generated (not "
+                    "Keplerian, own broadcast format); ranging IQ unaffected")
 
         stubs: dict = {}
         for k in state_fns:
@@ -518,6 +559,7 @@ def run(req, progress_cb=None) -> pathlib.Path:
         entries.sort(key=lambda e: (e["sys"], e["prn"], e["signal_id"].band))
         for e in entries:
             e["_state"] = state_fns.get((e["sys"], e["prn"]))
+            e["_nav_eph"] = nav_eph_by_key.get((e["sys"], e["prn"]))
             e["prn"] = _native_prn(e["sys"], e["prn"])
         systems = tuple(sorted({e["sys"] for e in entries}))
     else:
@@ -580,14 +622,17 @@ def run(req, progress_cb=None) -> pathlib.Path:
         return {"G": "lnav", "J": "lnav", "E": "inav", "C": "d1",
                 "R": "strings", "S": "sbas", "I": "navic"}.get(sysc, "on")
 
-    if getattr(req, "nav_message", True) and not precise_multi:
+    if getattr(req, "nav_message", True):
         try:
             hdr = ephemeris.rinex_header_iono_utc(req.rinex_path)
         except Exception:                       # noqa: BLE001 - degrade
             hdr = {}
         for e in entries:
             sysc = e["sys"]
-            rec = e.get("_state")
+            # precise_multi: `_state` is a callable state_fn (SP-B trajectory
+            # re-propagation), not a broadcast dict -- the fitted/RINEX
+            # record built above (`_nav_eph`) is the nav-message source.
+            rec = e.get("_nav_eph") if precise_multi else e.get("_state")
             if not isinstance(rec, dict):
                 continue
             try:

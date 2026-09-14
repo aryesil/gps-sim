@@ -44,6 +44,33 @@ def test_fit_recovers_a_pure_kepler_track_to_millimetres():
         assert np.linalg.norm(np.asarray(want) - np.asarray(got)) < 1e-2
 
 
+def test_fit_recovers_a_pure_kepler_track_for_non_gps_systems():
+    """The SP3-fit generalisation (multi-GNSS precise-nav fix): fit_satellite
+    must fit exactly as tightly for a non-GPS system, using that system's own
+    mu/omega_e_dot/F_rel from geometry.SYS_PARAMS instead of GPS's -- not a
+    GPS-only capability. Galileo and BeiDou both use their own (identical to
+    each other, distinct from GPS) datum constants; this is the direct,
+    IQ-free regression test for that."""
+    for sys in ("E", "C", "J", "I"):
+        truth = _kepler_eph()
+        truth["system"] = sys
+
+        def state_fn(sow, truth=truth):
+            return geometry.sat_state(truth, float(sow))
+
+        fitted = ephemeris_fit.fit_satellite(
+            state_fn, GPSTime(WEEK, TOE), prn=3, source="synthetic",
+            sys=sys, window_s=14400.0)
+
+        assert fitted["system"] == sys
+        assert fitted["_fit"]["max_pos_resid_m"] < 1e-3, sys
+
+        for off in (-3000.0, -137.0, 512.0, 2800.0):
+            want, _, _ = geometry.sat_state(truth, TOE + off)
+            got, _, _ = geometry.sat_state(fitted, TOE + off)
+            assert np.linalg.norm(np.asarray(want) - np.asarray(got)) < 1e-2, sys
+
+
 def test_fit_clock_matches_quadratic_baseline():
     truth = _kepler_eph()
 

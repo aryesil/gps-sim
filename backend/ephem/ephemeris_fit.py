@@ -60,26 +60,33 @@ class EphemerisFitError(RuntimeError):
     tolerance (or a satellite had no usable precise samples)."""
 
 
-def _eph_from_theta(theta: np.ndarray, toe: float, gps_week: int) -> dict:
+def _eph_from_theta(theta: np.ndarray, toe: float, gps_week: int,
+                    sys: str = "G") -> dict:
     e = dict(zip(_PARAMS, (float(x) for x in theta)))
     e["toe"] = toe
     e["toc"] = toe
     e["gps_week"] = int(gps_week)
+    e["system"] = sys
     return e
 
 
 def _model_positions(theta: np.ndarray, tks: np.ndarray, toe: float,
-                     gps_week: int) -> np.ndarray:
+                     gps_week: int, mu: float = config.MU,
+                     omega_e_dot: float = config.OMEGA_E_DOT) -> np.ndarray:
     """Vectorised copy of ``geometry._orbit`` + ``_ecef_from_orbit`` over an
     array of ``tk``. The scalar versions in ``backend/geometry`` remain the
     reference; this exists only so the fit's grid search and Jacobian run
     over ~100 epochs without a Python-level loop. The pure-Kepler test
     checks the two stay in agreement.
+
+    ``mu``/``omega_e_dot`` default to GPS's own constants (back-compat for
+    GPS-only callers); a non-GPS system's fit passes its own values from
+    ``geometry.SYS_PARAMS`` so the forward model matches its datum.
     """
     (m0, e, sqrtA, delta_n, i0, idot, omega0, omega_dot, omega,
      cuc, cus, crc, crs, cic, cis) = (float(v) for v in theta)
     A = sqrtA ** 2
-    n = np.sqrt(config.MU / A ** 3) + delta_n
+    n = np.sqrt(mu / A ** 3) + delta_n
     M = m0 + n * tks
     E = M.copy()
     for _ in range(15):
@@ -92,7 +99,7 @@ def _model_positions(theta: np.ndarray, tks: np.ndarray, toe: float,
     r = A * (1.0 - e * cosE) + crs * s2 + crc * c2
     inc = i0 + idot * tks + cis * s2 + cic * c2
     xp, yp = r * np.cos(u), r * np.sin(u)
-    Omega = omega0 + (omega_dot - config.OMEGA_E_DOT) * tks - config.OMEGA_E_DOT * toe
+    Omega = omega0 + (omega_dot - omega_e_dot) * tks - omega_e_dot * toe
     cO, sO, ci, si = np.cos(Omega), np.sin(Omega), np.cos(inc), np.sin(inc)
     return np.column_stack([
         xp * cO - yp * ci * sO,
@@ -101,7 +108,9 @@ def _model_positions(theta: np.ndarray, tks: np.ndarray, toe: float,
     ])
 
 
-def _seed(pos: np.ndarray, vel_ecef: np.ndarray, toe: float) -> np.ndarray:
+def _seed(pos: np.ndarray, vel_ecef: np.ndarray, toe: float,
+         mu: float = config.MU,
+         omega_e_dot: float = config.OMEGA_E_DOT) -> np.ndarray:
     """Osculating-element seed for Gauss-Newton.
 
     ``a``/``e``/``i`` come from the inertial state (ECEF velocity plus
@@ -109,16 +118,16 @@ def _seed(pos: np.ndarray, vel_ecef: np.ndarray, toe: float) -> np.ndarray:
     onto the broadcast ``omega0`` without an absolute sidereal angle.
     Perturbations seed to zero, ``omega_dot`` to a nominal GPS value.
     """
-    we = np.array([0.0, 0.0, config.OMEGA_E_DOT])
+    we = np.array([0.0, 0.0, omega_e_dot])
     vel_in = vel_ecef + np.cross(we, pos)
     r = float(np.linalg.norm(pos))
     v = float(np.linalg.norm(vel_in))
-    a = 1.0 / (2.0 / r - v * v / config.MU)
+    a = 1.0 / (2.0 / r - v * v / mu)
     sqrtA = math.sqrt(max(a, 1.0))
 
     h_in = np.cross(pos, vel_in)
     i0 = math.acos(max(-1.0, min(1.0, h_in[2] / np.linalg.norm(h_in))))
-    evec = np.cross(vel_in, h_in) / config.MU - pos / r
+    evec = np.cross(vel_in, h_in) / mu - pos / r
     e = float(np.linalg.norm(evec))
     e = min(max(e, 1e-4), 0.05)
 
@@ -133,7 +142,7 @@ def _seed(pos: np.ndarray, vel_ecef: np.ndarray, toe: float) -> np.ndarray:
     m_hat = np.cross(h_hat, n_hat)
     u = math.atan2(float(pos @ m_hat), float(pos @ n_hat))
     lon_node = math.atan2(node[1], node[0])
-    omega0 = lon_node + config.OMEGA_E_DOT * toe
+    omega0 = lon_node + omega_e_dot * toe
 
     theta = np.zeros(len(_PARAMS))
     theta[_PARAMS.index("m0")] = u
@@ -221,7 +230,8 @@ def evaluate_fit(eph: dict, state_fn, epoch: GPSTime, *,
     }
 
 
-def fit_satellite(state_fn, epoch: GPSTime, *, prn: int, source: str,
+def fit_satellite(state_fn, epoch: GPSTime, *, prn, source: str,
+                  sys: str = "G",
                   window_s: float = DEFAULT_WINDOW_S,
                   n_samples: int = DEFAULT_SAMPLES,
                   pos_tol_m: float = DEFAULT_POS_TOL_M,
@@ -229,12 +239,19 @@ def fit_satellite(state_fn, epoch: GPSTime, *, prn: int, source: str,
     """Fit one broadcast record to ``state_fn`` (a precise
     ``f(sow_seconds) -> (pos, vel, clk)``) centred on ``epoch``.
 
+    ``sys`` selects the orbital datum (``geometry.SYS_PARAMS``) the forward
+    model fits against -- GPS by default, so existing GPS-only callers are
+    unaffected. Every Keplerian system (G/J/E/C/I) uses the same broadcast
+    field set; only mu/omega_e_dot/the relativistic F term differ per system.
+
     Returns a parsed-ephemeris dict in the exact shape
     ``ephemeris.parse_rinex`` produces (so ``to_rinex2_nav`` consumes it),
     with an extra ``_fit`` sub-dict carrying the residual summary. Raises
     ``EphemerisFitError`` if the position fit stays above ``pos_tol_m``
     and ``strict`` is set.
     """
+    sysp = geometry.SYS_PARAMS.get(sys, geometry.SYS_PARAMS["G"])
+    mu, wdot, frel = sysp["mu"], sysp["omega_e_dot"], sysp["f_rel"]
     toe = float(epoch.sow)
     half = window_s / 2.0
     sow = toe + np.linspace(-half, half, n_samples)
@@ -249,10 +266,10 @@ def fit_satellite(state_fn, epoch: GPSTime, *, prn: int, source: str,
         vel[k] = v
         clk[k] = c
     if not np.isfinite(pos).all():
-        raise EphemerisFitError(f"PRN {prn}: precise track has non-finite samples")
+        raise EphemerisFitError(f"{sys}{prn}: precise track has non-finite samples")
 
     mid = n_samples // 2
-    theta = _seed(pos[mid], vel[mid], toe)
+    theta = _seed(pos[mid], vel[mid], toe, mu, wdot)
 
     # The osculating seed can be ~0.5 rad off in mean anomaly and node
     # longitude -- outside Gauss-Newton's linearisation range. A coarse
@@ -265,7 +282,7 @@ def fit_satellite(state_fn, epoch: GPSTime, *, prn: int, source: str,
             t2 = theta.copy()
             t2[im] += dm
             t2[io] += do
-            rr = (_model_positions(t2, tks, toe, epoch.week) - pos).reshape(-1)
+            rr = (_model_positions(t2, tks, toe, epoch.week, mu, wdot) - pos).reshape(-1)
             c = float(rr @ rr)
             if best is None or c < best[0]:
                 best = (c, dm, do)
@@ -274,7 +291,7 @@ def fit_satellite(state_fn, epoch: GPSTime, *, prn: int, source: str,
 
     # Solve in normalised coordinates x = theta / _SCALE.
     def residual(x: np.ndarray) -> np.ndarray:
-        return (_model_positions(x * _SCALE, tks, toe, epoch.week) - pos).reshape(-1)
+        return (_model_positions(x * _SCALE, tks, toe, epoch.week, mu, wdot) - pos).reshape(-1)
 
     x = theta / _SCALE
     r = residual(x)
@@ -324,12 +341,13 @@ def fit_satellite(state_fn, epoch: GPSTime, *, prn: int, source: str,
     e_fit = theta[_PARAMS.index("e")]
     sqrta_fit = theta[_PARAMS.index("sqrtA")]
     rel = np.array([
-        config.F_REL * e_fit * sqrta_fit
-        * math.sin(geometry._orbit(_eph_from_theta(theta, toe, epoch.week), float(tk))[4])
+        frel * e_fit * sqrta_fit
+        * math.sin(geometry._orbit(_eph_from_theta(theta, toe, epoch.week, sys),
+                                   float(tk), mu, wdot)[4])
         for tk in tks])
     af0, af1, af2, clk_resid = _fit_clock(sow, clk - rel, toe)
 
-    eph = _eph_from_theta(theta, toe, epoch.week)
+    eph = _eph_from_theta(theta, toe, epoch.week, sys)
     eph.update({
         "af0": af0, "af1": af1, "af2": af2,
         "tgd": 0.0, "iode": 0.0, "iodc": 0.0, "health": 0.0,
@@ -345,13 +363,13 @@ def fit_satellite(state_fn, epoch: GPSTime, *, prn: int, source: str,
     # where the optimiser looked is not trustworthy.
     if strict and dense_max > pos_tol_m:
         raise EphemerisFitError(
-            f"PRN {prn}: precise->broadcast fit rejected -- dense post-fit "
+            f"{sys}{prn}: precise->broadcast fit rejected -- dense post-fit "
             f"3D residual max = {dense_max:.2f} m (optimiser grid max "
             f"{max_pos:.2f} m), configured threshold = {pos_tol_m:.2f} m, "
             f"fit interval = +/-{window_s / 2:.0f} s, source = {source}")
 
     eph["_fit"] = {
-        "source": source, "prn": prn,
+        "source": source, "prn": prn, "sys": sys,
         "window_s": float(window_s), "n_samples": int(n_samples),
         "pos_tol_m": float(pos_tol_m),
         "optimiser_grid_max_pos_resid_m": max_pos,
@@ -366,33 +384,54 @@ def fit_satellite(state_fn, epoch: GPSTime, *, prn: int, source: str,
 
 
 def build_precise_broadcast(provider, prns, epoch: GPSTime, *,
+                            sys: str = "G",
                             window_s: float = DEFAULT_WINDOW_S,
                             n_samples: int = DEFAULT_SAMPLES,
                             pos_tol_m: float = DEFAULT_POS_TOL_M,
                             strict: bool = True,
                             allow_boundary: bool = False) -> tuple[dict, list]:
-    """Fit every requested PRN present in the loaded precise product.
+    """Fit every requested PRN of system ``sys`` present in the loaded
+    precise product (GPS by default, back-compat with existing callers).
 
     PRNs absent from the product are skipped and named in the returned
-    warning list -- never substituted with a broadcast record. Raises
-    ``EphemerisFitError`` if not one PRN could be fitted.
+    warning list -- never substituted with a broadcast record. A PRN that
+    is present but whose fit does not converge under ``pos_tol_m`` (with
+    ``strict`` set) is likewise skipped and named, rather than aborting the
+    whole batch -- one bad satellite (e.g. a BeiDou GEO, whose ICD frame
+    this module's forward model does not special-case) must not cost the
+    rest. Raises ``EphemerisFitError`` if not one PRN could be fitted --
+    with the last fit's own diagnostic message when at least one PRN was
+    present but failed to converge, or a generic "none present" message
+    when every requested PRN was simply absent from the product.
     """
-    have = {p for (s, p) in provider.satellites() if s == "G"}
+    have = {p for (s, p) in provider.satellites() if s == sys}
     out: dict[int, dict] = {}
     warnings: list[str] = []
     fits: list[dict] = []
+    fit_errors: list[EphemerisFitError] = []
     for prn in sorted(prns):
         if prn not in have:
             warnings.append(f"PRN {prn} absent from precise product; omitted")
             continue
-        state_fn = provider.state_fn(prn, week=epoch.week,
+        state_fn = provider.state_fn((sys, prn), week=epoch.week,
                                      allow_boundary=allow_boundary)
-        eph = fit_satellite(state_fn, epoch, prn=prn, source=provider.product.source,
-                            window_s=window_s, n_samples=n_samples,
-                            pos_tol_m=pos_tol_m, strict=strict)
+        try:
+            eph = fit_satellite(state_fn, epoch, sys=sys, prn=prn,
+                                source=provider.product.source,
+                                window_s=window_s, n_samples=n_samples,
+                                pos_tol_m=pos_tol_m, strict=strict)
+        except EphemerisFitError as exc:
+            warnings.append(f"PRN {prn} fit failed ({exc}); omitted")
+            fit_errors.append(exc)
+            continue
         out[prn] = eph
         fits.append(eph["_fit"])
     if not out:
+        # A PRN that was present but never converged is a more specific
+        # failure than "absent" -- surface its own diagnostic message
+        # (dense residual, threshold, source) rather than a generic one.
+        if fit_errors:
+            raise fit_errors[0]
         raise EphemerisFitError("no requested PRN is in the precise product")
     worst = max(f["max_pos_resid_m"] for f in fits)
     warnings.append(
