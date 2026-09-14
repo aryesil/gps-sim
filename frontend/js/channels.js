@@ -147,11 +147,12 @@ window.addChannel = function () {
             <label><input type="checkbox" id="${id}-sys-C"> BeiDou</label>
             <label><input type="checkbox" id="${id}-sys-J"> QZSS</label>
             <label><input type="checkbox" id="${id}-sys-S"> SBAS</label>
+            <label><input type="checkbox" id="${id}-sys-I"> NavIC</label>
           </fieldset>
           <fieldset class="band-set"><legend>RF bands (native)</legend>
             <label><input type="checkbox" id="${id}-band-L1" checked disabled> L1 <span class="hint">1575.42 MHz</span></label>
             <label><input type="checkbox" id="${id}-band-L2" title="GPS L2C, GLONASS L2OF"> L2 <span class="hint">1227.60 MHz</span></label>
-            <label><input type="checkbox" id="${id}-band-L5" title="GPS/QZSS L5, Galileo E5a, BeiDou B2a"> L5 <span class="hint">1176.45 MHz</span></label>
+            <label><input type="checkbox" id="${id}-band-L5" title="GPS/QZSS L5, Galileo E5a, BeiDou B2a, NavIC L5-SPS"> L5 <span class="hint">1176.45 MHz</span></label>
           </fieldset>
           <label>Sample rate Hz <input id="${id}-fs" type="number" step="100000" placeholder="auto from signals"></label>
           <label>Quantization <select id="${id}-quant">
@@ -370,7 +371,7 @@ function wireChannelActions(id) {
   // engine is selected -- gps-sdr-sim only ever emits GPS L1 C/A).
   function _updateEngineConstellationState() {
     const isNative = document.getElementById(`${id}-engine`).value === 'native';
-    ['R', 'E', 'C', 'J', 'S'].forEach(s => {
+    ['R', 'E', 'C', 'J', 'S', 'I'].forEach(s => {
       const box = document.getElementById(`${id}-sys-${s}`);
       box.disabled = !isNative;
       // gps-sdr-sim is GPS-only: also clear the boxes so _engineBody() stops
@@ -393,7 +394,7 @@ function wireChannelActions(id) {
   // gps-sdr-sim is a fixed GPS L1 C/A generator, so its label never varies;
   // native's label lists every checked constellation and every checked
   // band, so two channels with different selections read differently.
-  const _SYS_LABEL = { G: 'GPS', R: 'GLONASS', E: 'Galileo', C: 'BeiDou', J: 'QZSS', S: 'SBAS' };
+  const _SYS_LABEL = { G: 'GPS', R: 'GLONASS', E: 'Galileo', C: 'BeiDou', J: 'QZSS', S: 'SBAS', I: 'NavIC' };
   const _chanNum = id.slice(2);
   function _updateChannelTitle() {
     const titleEl = document.getElementById(`${id}-title`);
@@ -401,7 +402,7 @@ function wireChannelActions(id) {
       titleEl.textContent = `GPS L1 C/A — Channel ${_chanNum}`;
       return;
     }
-    const sys = ['G', 'R', 'E', 'C', 'J', 'S'].filter(
+    const sys = ['G', 'R', 'E', 'C', 'J', 'S', 'I'].filter(
       s => document.getElementById(`${id}-sys-${s}`).checked);
     const bands = ['L1', 'L2', 'L5'].filter(
       b => document.getElementById(`${id}-band-${b}`).checked);
@@ -428,7 +429,7 @@ function wireChannelActions(id) {
       _loInput.value = 1575420000;
       return;
     }
-    const sys = ['G', 'R', 'E', 'C', 'J', 'S'].filter(
+    const sys = ['G', 'R', 'E', 'C', 'J', 'S', 'I'].filter(
       s => document.getElementById(`${id}-sys-${s}`).checked);
     const bandBoxes = ['L1', 'L2', 'L5'].filter(
       b => document.getElementById(`${id}-band-${b}`).checked);
@@ -456,7 +457,7 @@ function wireChannelActions(id) {
     if (_loModeSel.value !== 'custom') { _loModeSel.value = 'custom'; _loInput.disabled = false; }
   });
 
-  ['G', 'R', 'E', 'C', 'J', 'S'].forEach(s => {
+  ['G', 'R', 'E', 'C', 'J', 'S', 'I'].forEach(s => {
     document.getElementById(`${id}-sys-${s}`).addEventListener('change', () => {
       _updateChannelTitle(); _refreshLoHz();
     });
@@ -617,7 +618,7 @@ function wireChannelActions(id) {
         alt: 100, start_utc: su + ':00',
         rinex_path: document.getElementById(`${id}-rinex-path`).value.trim(),
         ephemeris_mode: document.getElementById(`${id}-eph-mode`).value,
-        systems: ["G", "R", "E", "C", "J", "S"].filter(
+        systems: ["G", "R", "E", "C", "J", "S", "I"].filter(
           s => (document.getElementById(`${id}-sys-${s}`) || {}).checked),
         ...(_channelModelsBody() || {}),
       }),
@@ -851,7 +852,7 @@ function wireChannelActions(id) {
         seed: Number(document.getElementById(`${id}-fade-seed`).value),
       };
     }
-    const sys = ["G", "R", "E", "C", "J", "S"].filter(
+    const sys = ["G", "R", "E", "C", "J", "S", "I"].filter(
       s => document.getElementById(`${id}-sys-${s}`).checked);
     if (sys.length > 1) out.systems = sys;
     const bandBoxes = ["L1", "L2", "L5"].filter(
