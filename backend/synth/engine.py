@@ -66,11 +66,13 @@ _GLO_G1_CODE = None
 
 
 def _glo_g1_code():
-    """GLONASS G1 C/A ranging code: a single 511-chip m-sequence (common to
-    every slot -- GLONASS is FDMA, not CDMA). 9-stage LFSR, polynomial
-    1 + x^5 + x^9, all-ones seed, output tapped at stage 7. Returned as an
-    int8 {-1,+1} array. Cached. (Generated in Python: native ``synth_code``
-    has no GLONASS branch and rejects prim_len < 1023.)"""
+    """GLONASS C/A ranging code: a single 511-chip m-sequence (common to
+    every slot -- GLONASS is FDMA, not CDMA) shared verbatim between G1
+    (L1OF) and G2 (L2OF, GLONASS ICD L1/L2 -- same code, different band and
+    FDMA step). 9-stage LFSR, polynomial 1 + x^5 + x^9, all-ones seed,
+    output tapped at stage 7. Returned as an int8 {-1,+1} array. Cached.
+    (Generated in Python: native ``synth_code`` has no GLONASS branch and
+    rejects prim_len < 1023.)"""
     global _GLO_G1_CODE
     if _GLO_G1_CODE is None:
         import numpy as np
@@ -326,9 +328,13 @@ def _sv_spec_for(entry, gain, nav=None):
     spec.chip_rate_hz = sig.chip_rate_hz
     spec.carrier_freq_hz = entry["carrier_doppler_hz"]
     if sysc == "R":
-        # FDMA: the G1 recorder LO sits at 1602.0 MHz; this SV's carrier is
-        # offset by k * 562.5 kHz plus its geometric Doppler.
-        spec.carrier_freq_hz += signals.glo_channel_offset_hz(int(entry["glo_k"]))
+        # FDMA: the G1 recorder LO sits at 1602.0 MHz (step 562.5 kHz); G2
+        # (L2OF) sits at 1246.0 MHz (step 437.5 kHz) -- a different band,
+        # same FDMA idea. This SV's carrier is offset by k * step plus its
+        # geometric Doppler.
+        step_hz = 437_500.0 if sig.band == "G2" else 562_500.0
+        spec.carrier_freq_hz += signals.glo_channel_offset_hz(
+            int(entry["glo_k"]), step_hz=step_hz)
     spec.carrier_phase0_rad = 0.0
     spec.code_phase0_chips = entry["code_phase_chips"]
     spec.code_doppler_hz = entry["code_doppler_hz"]

@@ -53,12 +53,15 @@ def _band_fs(band_id: str, sig_ids: list[str], req) -> float:
 
 def full_band_registry() -> dict[str, "Band"]:
     """BAND_REGISTRY plus GLONASS's G2 (its own FDMA band id for L2OF,
-    never a user-facing band choice -- it rides alongside G1 whenever
-    GLONASS is in ``systems``). Single source of truth for anything that
-    needs a band id's centre frequency / out_file, in or out of
-    plan_bands."""
+    reached via signals.signals_for's L2->G2 alias rather than a
+    user-facing band choice of its own). Single source of truth for
+    anything that needs a band id's centre frequency / out_file, in or out
+    of plan_bands. 1246.00 MHz is GLONASS's own L2 FDMA plan (k=0 channel,
+    ICD L1/L2) -- an entirely different physical carrier from GPS L2C's
+    1227.60 MHz, the same relationship G1's 1602.00 MHz has to GPS L1's
+    1575.42 MHz."""
     reg = dict(BAND_REGISTRY)
-    reg.setdefault("G2", Band("G2", 1_227_600_000.0, "gpssim_g2.bin"))
+    reg.setdefault("G2", Band("G2", 1_246_000_000.0, "gpssim_g2.bin"))
     return reg
 
 

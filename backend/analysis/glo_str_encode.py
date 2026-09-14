@@ -119,6 +119,9 @@ def _string_data(field84: list[int]) -> list[int]:
 # ephemeris strings
 # --------------------------------------------------------------------------
 def _data_string(sidx: int, eph: dict, tk_s: int) -> list[int]:
+    """72 bits of payload for one ephemeris string (sidx in 1..4), positioned
+    as if right after the 4-bit string number ``build_string`` prepends --
+    these never collide with it."""
     b: list[int] = []
     if sidx == 1:
         b += bits_of(tk_s // 60 % (1 << 12), 12)                 # t_k (coarse)
@@ -139,7 +142,7 @@ def _data_string(sidx: int, eph: dict, tk_s: int) -> list[int]:
         b += sign_mag(eph.get("tau"), _TAU, 22)
         b += bits_of(0, 5)                                        # E_n
         b += bits_of(int(_f(eph.get("glo_k", 0))) & 0x1F, 5)     # slot / spare
-    b = (b + [0] * 76)[:76]
+    b = (b + [0] * 72)[:72]
     return b
 
 
@@ -147,9 +150,13 @@ _EPH_STRINGS = (1, 2, 3, 4)
 
 
 def build_string(sidx: int, eph: dict, tk_s: int) -> list[int]:
-    data = _data_string(sidx, eph, tk_s) if sidx in _EPH_STRINGS else [0] * 76
-    # string number rides the top 4 data bits so the decoder can index frames
-    data = bits_of(sidx, 4) + data[4:]
+    payload = _data_string(sidx, eph, tk_s) if sidx in _EPH_STRINGS else [0] * 72
+    # String number "m" is a real ICD field occupying the first 4 bits of
+    # every string's data field, ephemeris or not. Prepending it here (rather
+    # than the old destructive post-hoc overwrite of data[:4]) is what stops
+    # it from clobbering health/vy/gamma/tau, whose sign bits used to sit
+    # right at position 0.
+    data = bits_of(sidx, 4) + payload
     return hamming_string(data)
 
 
@@ -196,4 +203,55 @@ def decode_frame(stream: np.ndarray) -> dict[int, list[int]]:
         data = _string_data(field84)
         sidx = int("".join(map(str, data[:4])), 2)
         out.setdefault(sidx, data)
+    return out
+
+
+def reconstruct_ephemeris(decoded: dict[int, list[int]], toe_ref: float,
+                           glo_k: int | None = None) -> dict:
+    """Invert ``_data_string``'s field layout: turn ``decode_frame``'s output
+    (string index -> 76-bit data, ``data[:4]`` the string number, ``data[4:]``
+    the 72-bit payload laid out in :func:`_data_string`) into a record shaped
+    like :func:`backend.synth.glonass.glonass_state` expects (``x_m,y_m,z_m,
+    vx,vy,vz,ax,ay,az,tau,gamma,toe_ref``, plus ``glo_k``/``health``).
+
+    Only the strings present in ``decoded`` populate their fields, so a
+    caller that only has strings 1-3 (say) still gets a usable partial
+    record. ``toe_ref`` is supplied by the caller -- the acquisition-relative
+    epoch of string 1 (sample-offset derived; see receiver.py) -- rather than
+    decoded from ``t_k``, whose 12-bit field only carries whole-minute
+    precision and isn't needed once the receiver already knows its own
+    epoch. ``glo_k`` (the FDMA channel/slot number) is likewise usually
+    already known from acquisition, but falls back to string 4's own field
+    when not supplied.
+    """
+    out: dict = {"system": "R", "toe_ref": float(toe_ref)}
+    if glo_k is not None:
+        out["glo_k"] = int(glo_k)
+
+    if 1 in decoded:
+        p = decoded[1][4:]
+        out["vx"] = _from_sign_mag(p[12:36], _VEL)
+        out["ax"] = _from_sign_mag(p[36:41], _ACC)
+        out["x_m"] = _from_sign_mag(p[41:68], _POS)
+
+    if 2 in decoded:
+        p = decoded[2][4:]
+        out["health"] = p[0]
+        out["vy"] = _from_sign_mag(p[1:25], _VEL)
+        out["ay"] = _from_sign_mag(p[25:30], _ACC)
+        out["y_m"] = _from_sign_mag(p[30:57], _POS)
+
+    if 3 in decoded:
+        p = decoded[3][4:]
+        out["gamma"] = _from_sign_mag(p[0:11], _GAM)
+        out["vz"] = _from_sign_mag(p[11:35], _VEL)
+        out["az"] = _from_sign_mag(p[35:40], _ACC)
+        out["z_m"] = _from_sign_mag(p[40:67], _POS)
+
+    if 4 in decoded:
+        p = decoded[4][4:]
+        out["tau"] = _from_sign_mag(p[0:22], _TAU)
+        if glo_k is None:
+            out["glo_k"] = int("".join(map(str, p[27:32])), 2)
+
     return out

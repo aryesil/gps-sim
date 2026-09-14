@@ -28,7 +28,12 @@ SIGNALS = {
     "GLO_G1": Signal(1_602_000_000.0, 0.511e6, 511, None, 100.0, "G1", sys="R"),
     # --- L2 band (1227.60 MHz) ---------------------------------------------
     "GPS_L2C": Signal(config.L2_HZ, 0.5115e6, 10230, None, 50.0, "L2"),
-    "GLO_L2OF": Signal(config.L2_HZ, 0.511e6, 511, None, 100.0, "G2", sys="R"),
+    # GLONASS's own FDMA plan puts L2OF's k=0 channel at 1246.00 MHz (ICD
+    # L1/L2, k*437.5 kHz per channel) -- an entirely different physical
+    # carrier from GPS L2C's 1227.60 MHz (~18.75 MHz away), same relationship
+    # as G1 (1602.00 MHz) is to GPS L1 (1575.42 MHz). Literal constant, not
+    # config.L2_HZ, matching GLO_G1's own-literal convention above.
+    "GLO_L2OF": Signal(1_246_000_000.0, 0.511e6, 511, None, 100.0, "G2", sys="R"),
     # --- L5 band (1176.45 MHz) -------------------------------------------
     "GPS_L5I": Signal(config.L5_HZ, 10.23e6, 10230, None, 50.0, "L5"),
     "GPS_L5Q": Signal(config.L5_HZ, 10.23e6, 10230, None, 0.0, "L5"),
@@ -51,28 +56,45 @@ def signal_for(sys: str) -> Signal:
     return SIGNALS[_SIGNAL_FOR[sys]]
 
 
+
+# GLONASS's own FDMA bands never share a user-facing "bands" string with
+# their band tag ("G1"/"G2", not "L1"/"L2" -- they need their own centre
+# frequency/output file, physically distant from GPS's L1/L2). L1<->G1 stays
+# unaliased here (an existing, already-tested contract: an explicit
+# bands=["L1"] request contributes nothing for GLONASS, only the
+# bands-unset per-system default does -- see app._internal_bands_for).
+# L2<->G2 gets the alias below so GLONASS L2OF becomes reachable at all: it
+# has no bands-unset default (that slot is G1's), so without this an
+# explicit bands=["L2"] request would never resolve any GLONASS signal.
+_GLO_FDMA_ALIAS = {"L2": "G2"}
+
+
 def signals_for(sys: str, bands=None) -> list[Signal]:
     """Every registered Signal for ``sys`` whose band is in ``bands``
     (all bands when ``bands is None``), ordered by (band, key)."""
     want = None if bands is None else set(bands)
+    if want is not None and sys == "R":
+        want = want | {_GLO_FDMA_ALIAS[b] for b in want if b in _GLO_FDMA_ALIAS}
     out = [(key, sig) for key, sig in SIGNALS.items()
            if sig.sys == sys and (want is None or sig.band in want)]
     out.sort(key=lambda kv: (kv[1].band, kv[0]))
     return [sig for _key, sig in out]
 
 
-def glo_channel_offset_hz(k: int) -> float:
+def glo_channel_offset_hz(k: int, step_hz: float = 562_500.0) -> float:
     """GLONASS FDMA channel offset for channel index k.
 
     Args:
         k: Channel index in range [-7, 6]
+        step_hz: per-channel spacing -- 562.5 kHz on G1 (L1OF, the default,
+            every existing caller's value), 437.5 kHz on G2 (L2OF).
 
     Returns:
-        Channel offset in Hz: k * 562_500.0
+        Channel offset in Hz: k * step_hz
 
     Raises:
         ValueError: If k is not in [-7, 6]
     """
     if k not in range(-7, 7):
         raise ValueError(f"k must be in range [-7, 6], got {k}")
-    return k * 562_500.0
+    return k * step_hz

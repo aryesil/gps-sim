@@ -65,3 +65,38 @@ def test_fs_min_default_unchanged():
     result = fs_policy.fs_min(["GPS_L1CA"])
     result_with_zero = fs_policy.fs_min(["GPS_L1CA"], channel_span_hz=0.0)
     assert result == pytest.approx(result_with_zero)
+
+
+def test_g2_centre_is_glonass_own_l2_fdma_plan_not_gps_l2c():
+    """1246.00 MHz (GLONASS ICD L1/L2, k=0), ~18.75 MHz from GPS L2C's
+    1227.60 MHz -- same separate-carrier relationship G1 (1602.00) has to
+    GPS L1 (1575.42), not a shared centre."""
+    reg = bands.full_band_registry()
+    assert reg["G2"].centre_hz == 1_246_000_000.0
+    assert reg["G2"].out_file == "gpssim_g2.bin"
+    assert signals.SIGNALS["GLO_L2OF"].carrier_hz == 1_246_000_000.0
+
+
+def test_glo_channel_offset_step_hz_defaults_to_g1_step():
+    assert signals.glo_channel_offset_hz(1) == 562_500.0
+
+
+def test_glo_channel_offset_step_hz_overridable_for_g2():
+    assert signals.glo_channel_offset_hz(1, step_hz=437_500.0) == 437_500.0
+    assert signals.glo_channel_offset_hz(-7, step_hz=437_500.0) == -7 * 437_500.0
+
+
+def test_signals_for_l2_pulls_in_glonass_l2of_via_alias():
+    """L2OF has no bands-unset default (that's G1's slot -- signal_for("R")
+    is unchanged, still GLO_G1), so an explicit bands=["L2"] request is the
+    only way to reach it; without the alias it would resolve nothing for R
+    at all."""
+    assert signals.signals_for("R", ("L2",)) == [signals.SIGNALS["GLO_L2OF"]]
+    assert signals.signal_for("R") == signals.SIGNALS["GLO_G1"]
+
+
+def test_signals_for_l1_still_drops_glonass_no_alias_regression():
+    """Existing, tested contract (app._internal_bands_for): explicit
+    bands=["L1"] contributes nothing for GLONASS -- only G1's own-default
+    path does. The new L2->G2 alias must not also alias L1->G1."""
+    assert signals.signals_for("R", ("L1",)) == []

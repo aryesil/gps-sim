@@ -310,6 +310,140 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
     return out
 
 
+_GLO_CODE_LEN = 511
+_GLO_CHIP_HZ = 511_000.0
+_GLO_G2_NOMINAL_HZ = 1_246_000_000.0
+_GLO_G2_STEP_HZ = 437_500.0
+
+
+def _fix_from_iq_glo_l2of(iq_path, sample_format, sample_rate, eph_by_prn,
+                          approx_time_gps, marker_llh) -> dict:
+    """GLONASS L2OF closed-loop fix: acquire the shared 511-chip m-sequence
+    at each of the 14 FDMA channel offsets, demodulate the 100 sym/s
+    meander stream, decode strings via Hamming-sync (GLONASS has no fixed
+    preamble), reconstruct each slot's broadcast state vector and solve.
+
+    GLONASS is FDMA, not CDMA: there is no PRN to scan, only a channel
+    number k in [-7, 6] -- each acquired channel is one satellite (or
+    none), so results are keyed by k throughout (reported as ``f"R{k}"``).
+    ``eph_by_prn`` is accepted for interface symmetry with the other bands
+    but unused: there is no broadcast almanac to seed a channel scan from,
+    so it is always blind.
+
+    Because ``glo_str_encode.nav_stream`` re-broadcasts the *same* state
+    vector every 15-string cycle (never re-propagated per string), and the
+    engine always aligns a GLONASS record's ``toe_ref`` to the scenario's
+    own GPS start-of-week before encoding it, the recovered fields describe
+    the state at exactly ``toe_ref == approx_time_gps`` -- passed straight
+    through to ``reconstruct_ephemeris``, no epoch decoded out of ``t_k``.
+    """
+    from backend.analysis import band_acquire
+    from backend.analysis import glo_str_decode as gsd
+    from backend.synth import glonass
+    from backend.synth import signals as _sig
+    from backend.synth.engine import _glo_g1_code
+
+    l2of = _sig.SIGNALS["GLO_L2OF"]
+    code = _glo_g1_code().astype(np.float64)
+    m_per_chip = config.C / _GLO_CHIP_HZ
+
+    # glo_str_encode.nav_stream always starts its string cycle at i=0 ->
+    # sidx=1 (see build_string), so every capture that starts at t=0 sees
+    # strings 1-4 back to back in [0, 6.8) s (85 bits / 100 sym/s = 0.85 s
+    # x2 meander symbols per bit = 1.7 s/string). 16 s gives a full extra
+    # cycle of margin for the Hamming-sync (parity, offset) search, which
+    # is more reliable with more complete strings to vote across.
+    iq = inspector.read_iq(iq_path, sample_format,
+                           max_samples=int(sample_rate * 16.0))
+    approx_rx = (np.array(geometry.llh_to_ecef(*marker_llh))
+                if marker_llh else np.zeros(3))
+
+    acq = {}
+    for k in range(-7, 7):
+        off_hz = _sig.glo_channel_offset_hz(k, step_hz=_GLO_G2_STEP_HZ)
+        r = band_acquire.acquire(iq, sample_rate, code, chip_hz=_GLO_CHIP_HZ,
+                                 code_len=_GLO_CODE_LEN, center_hz=off_hz,
+                                 dopp_step=50.0, nperiods=10)
+        if r["metric_db"] > 11.0:
+            acq[k] = r
+
+    decoded, nav_decode = {}, {}
+    for k, r in list(acq.items()):
+        off_hz = _sig.glo_channel_offset_hz(k, step_hz=_GLO_G2_STEP_HZ)
+        try:
+            sym = gsd.demod_symbols(iq, sample_rate,
+                                    nominal_ctr_hz=_GLO_G2_NOMINAL_HZ,
+                                    offset_hz=off_hz, dopp_hz=r["doppler_hz"],
+                                    code_phase_chips=r["code_phase_chips"])
+            frame = gsd.sync_and_decode(sym.tolist())
+            if not ({1, 2, 3} <= set(frame)):
+                nav_decode[k] = "no strings 1-3"
+                continue
+            rec = gsd.G.reconstruct_ephemeris(frame, toe_ref=approx_time_gps,
+                                              glo_k=k)
+            decoded[k] = rec
+            nav_decode[k] = "ok"
+        except (ValueError, IndexError):
+            nav_decode[k] = "decode fail"
+
+    def _key(k):
+        return f"R{k}"
+
+    if len(decoded) < 4:
+        return {"error": f"only {len(decoded)} GLONASS channels decoded on L2OF",
+                "prns_used": sorted(_key(k) for k in decoded),
+                "nav_decode": {_key(k): v for k, v in nav_decode.items()}}
+
+    sat_pos, pr, usable = {}, {}, []
+    for k in sorted(decoded):
+        rec = decoded[k]
+        state_fn = glonass.glonass_state(rec)
+        o = geometry.observables(state_fn, approx_rx, approx_time_gps,
+                                 signal=l2of, sv_clock_bias_s=0.0)
+        if o["el_deg"] < 5.0:
+            nav_decode[k] = "low el"
+            continue
+        pos, _, _, clk = geometry.solve_transmit_time(state_fn, approx_rx,
+                                                       approx_time_gps)
+        off_hz = _sig.glo_channel_offset_hz(k, step_hz=_GLO_G2_STEP_HZ)
+        cp = band_acquire.fine_code_phase(
+            iq, sample_rate, code, chip_hz=_GLO_CHIP_HZ,
+            code_len=_GLO_CODE_LEN, dopp_hz=acq[k]["doppler_hz"],
+            center_hz=off_hz)
+        err_c = ((cp - o["code_phase_chips"] + _GLO_CODE_LEN / 2)
+                 % _GLO_CODE_LEN) - _GLO_CODE_LEN / 2
+        if abs(err_c) > 0.45 * _GLO_CODE_LEN:
+            nav_decode[k] = "unaligned"
+            continue
+        sat_pos[k] = pos
+        pr[k] = o["pseudorange_m"] + err_c * m_per_chip + config.C * clk
+        usable.append(k)
+
+    if len(usable) < 4:
+        return {"error": f"only {len(usable)} GLONASS channels usable on L2OF",
+                "prns_used": sorted(_key(k) for k in usable),
+                "nav_decode": {_key(k): v for k, v in nav_decode.items()}}
+
+    sol = solve_position(pr, sat_pos, x0=[*approx_rx, 0.0])
+    lat, lon, h = _ecef_to_llh(*sol["ecef"])
+    entries = []
+    for k in usable:
+        los = sat_pos[k] - np.array(sol["ecef"])
+        entries.append({"_los": (los / np.linalg.norm(los)).tolist()})
+    out = {
+        "ecef": sol["ecef"], "llh": [lat, lon, h],
+        "clock_bias_s": sol["clock_bias_s"],
+        "prns_used": sorted(_key(k) for k in usable),
+        "pdop": geometry.dop(entries, sol["ecef"])["pdop"],
+        "residual_rms_m": sol["residual_rms_m"],
+        "nav_decode": {_key(k): v for k, v in nav_decode.items()},
+    }
+    if marker_llh:
+        truth = np.array(geometry.llh_to_ecef(*marker_llh))
+        out["error_m"] = float(np.linalg.norm(np.array(sol["ecef"]) - truth))
+    return out
+
+
 def fix_from_iq(iq_path, sample_format, sample_rate, eph_by_prn,
                 approx_time_gps, marker_llh=None, decode_nav=False,
                 *, band: str = "L1") -> dict:
@@ -317,6 +451,7 @@ def fix_from_iq(iq_path, sample_format, sample_rate, eph_by_prn,
     (all params as before). ``"L2"`` runs the GPS L2C path: CM acquisition
     via :mod:`backend.analysis.band_acquire`, CNAV ephemeris decode via
     :mod:`backend.analysis.cnav_decode`, then the same WLS position solve.
+    ``"G2"`` runs the GLONASS L2OF path (see ``_fix_from_iq_glo_l2of``).
     """
     if band == "L2":
         return _fix_from_iq_l2(iq_path, sample_format, sample_rate,
@@ -324,6 +459,9 @@ def fix_from_iq(iq_path, sample_format, sample_rate, eph_by_prn,
     if band == "L5":
         return _fix_from_iq_l5(iq_path, sample_format, sample_rate,
                                eph_by_prn, approx_time_gps, marker_llh)
+    if band == "G2":
+        return _fix_from_iq_glo_l2of(iq_path, sample_format, sample_rate,
+                                     eph_by_prn, approx_time_gps, marker_llh)
     if band != "L1":
         raise ValueError(f"unsupported band {band!r}")
     # A LNAV decode needs at least one full set of subframes 1-3 (18 s of

@@ -100,6 +100,27 @@ def test_glonass_adds_a_second_band_file(tmp_path, monkeypatch):
     assert any(s["sys"] == "R" for s in meta["provenance"]["svs"])
 
 
+def test_glonass_l2of_rides_its_own_g2_band_not_gps_l2c(tmp_path, monkeypatch):
+    """SP-5: bands=["L2"] with GLONASS in systems must reach GLO_L2OF via
+    the signals_for L2->G2 alias, landing in its OWN band (1246.00 MHz,
+    gpssim_g2.bin) -- not GPS L2C's (1227.60 MHz, gpssim_l2.bin)."""
+    monkeypatch.setattr(config, "OUT_DIR", tmp_path)
+    req = ScenarioRequest(rinex_path=_MIXED, lat=41.0, lon=29.0, alt=100.0,
+                          start=dt.datetime(2026, 9, 1, 12), duration_s=2,
+                          sample_rate=6_000_000.0, sample_format="int16",
+                          engine="native", systems=["G", "R"], bands=["L2"])
+    outdir = engine.run(req)
+    meta = json.loads((outdir / "meta.json").read_text())
+    ids = {b["id"] for b in meta["bands"]}
+    assert ids == {"L2", "G2"}
+    l2 = next(b for b in meta["bands"] if b["id"] == "L2")
+    g2 = next(b for b in meta["bands"] if b["id"] == "G2")
+    assert l2["systems"] == ["G"] and l2["centre_hz"] == 1_227_600_000.0
+    assert g2["systems"] == ["R"] and g2["centre_hz"] == 1_246_000_000.0
+    assert (outdir / "gpssim_l2.bin").exists()
+    assert (outdir / "gpssim_g2.bin").exists()
+
+
 # --- part 3: native engine precise ephemeris for every constellation -------
 
 def _mgex_multi_epoch_sp3(rx_ecef, n_epochs=13, interval_s=900.0):
