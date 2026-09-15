@@ -194,6 +194,27 @@ def test_last_slot_close_tears_down_card_and_resets_singleton():
         s2.close()
 
 
+def test_shut_down_mutes_gain_and_flushes_silence_before_destroying_buffer():
+    # Real AD9361 hardware can keep repeating the last transmitted buffer
+    # after tx_destroy_buffer() alone (non-cyclic TX DMA underrun behavior
+    # -- see dual_tx.py's shut_down() comment). close() must force real
+    # silence: mute both channels to the hardware's minimum gain AND push
+    # one explicit all-zero block, before tearing the buffer down.
+    s1 = dual_tx.acquire("TX1", "ip:1.2.3.4", 1575420000.0, 2_600_000.0, -30.0)
+    block = np.ones(dual_tx._BLOCK_SAMPLES, dtype=np.complex64) * (1.0 + 1.0j)
+    s1.push(block)
+    time.sleep(0.2)
+    dev = _FakeAD9361.instances[0]
+    s1.close()
+    assert dev.tx_hardwaregain_chan0 == -89.75
+    assert dev.tx_hardwaregain_chan1 == -89.75
+    assert dev.tx_calls, "no tx() calls recorded"
+    last_tx1, last_tx2 = dev.tx_calls[-1]
+    assert np.all(last_tx1 == 0), "last tx() call before buffer teardown must be silence"
+    assert np.all(last_tx2 == 0)
+    assert dev.destroyed is True
+
+
 def test_underflow_counts_when_a_slot_has_nothing_queued():
     s1 = dual_tx.acquire("TX1", "ip:1.2.3.4", 1575420000.0, 2_600_000.0, -30.0)
     try:

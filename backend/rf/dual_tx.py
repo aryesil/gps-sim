@@ -42,6 +42,7 @@ _GET_TIMEOUT_S = 0.5     # how long the pump waits for a slot before feeding sil
 _PUT_TIMEOUT_S = 10.0    # how long push() waits for pump to drain before giving up
 _QUEUE_DEPTH = 8         # ~8 blocks of smoothing headroom per slot
 _SLOT_CHAN = {"TX1": 0, "TX2": 1}
+_MUTE_GAIN_DB = -89.75   # AD9361 tx_hardwaregain_chanN minimum (max attenuation)
 
 
 def _open_ad9361(uri: str):
@@ -115,6 +116,27 @@ class _Card:
     def shut_down(self) -> None:
         self.stop.set()
         self.pump_thread.join(timeout=5.0)
+        # KNOWN real-hardware gotcha: with tx_cyclic_buffer=False, the
+        # AD9361's TX DMA does not reliably go silent once the app stops
+        # feeding it -- it can keep repeating the last transferred buffer
+        # indefinitely until the whole libiio context is torn down, which
+        # tx_destroy_buffer() alone does not guarantee (this is a
+        # documented pyadi-iio/AD9361 community-reported behavior, not
+        # specific to this app). Force real, deterministic silence before
+        # destroying the buffer: mute both channels to the hardware's
+        # minimum gain (0 to -89.75 dB, 0.25 dB steps -- AD9361 spec), then
+        # push one explicit all-zero block, so if the DMA does repeat its
+        # last buffer, it repeats silence, not signal.
+        try:
+            self.sdr.tx_hardwaregain_chan0 = _MUTE_GAIN_DB
+            self.sdr.tx_hardwaregain_chan1 = _MUTE_GAIN_DB
+        except Exception:
+            pass
+        try:
+            zero = np.zeros(_BLOCK_SAMPLES, dtype=np.complex64)
+            self.sdr.tx([zero, zero])
+        except Exception:
+            pass
         try:
             self.sdr.tx_destroy_buffer()
         except Exception:
