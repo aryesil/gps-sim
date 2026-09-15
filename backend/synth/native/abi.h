@@ -227,6 +227,12 @@ int synth_code_l5(int prn, int8_t *i5, int i5_len, int8_t *q5, int q5_len);
 // eq with the E5a-Q (pilot) code. Returns 0 on success, -1 on bad prn
 // (outside 1..50) / short buffer / NULL ei.
 int synth_code_e5a(int prn, int8_t *ei, int ei_len, int8_t *eq, int eq_len);
+// BeiDou B2a data/pilot codes (BDS-SIS-ICD-B2a-1.0 sec 5, real 13-bit
+// dual-LFSR + per-PRN G2-init tables). Fills bd[0..bd_len-1] (bd_len >=
+// 10230) with the B2a data-component code chips in {-1,+1}; when bp != NULL
+// and bp_len >= 10230, fills bp with the B2a pilot-component code. Returns
+// 0 on success, -1 on bad prn (outside 1..63) / short buffer / NULL bd.
+int synth_code_b2a(int prn, int8_t *bd, int bd_len, int8_t *bp, int bp_len);
 #ifdef __cplusplus
 }
 #endif

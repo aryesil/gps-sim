@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-ABI_VERSION = 23
+ABI_VERSION = 24
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 _EXT = "dylib" if sys.platform == "darwin" else "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
@@ -215,6 +215,10 @@ def _bind_run(lib: ctypes.CDLL) -> None:
     lib.synth_code_e5a.argtypes = [
         ctypes.c_int, ctypes.POINTER(ctypes.c_int8), ctypes.c_int,
         ctypes.POINTER(ctypes.c_int8), ctypes.c_int]
+    lib.synth_code_b2a.restype = ctypes.c_int
+    lib.synth_code_b2a.argtypes = [
+        ctypes.c_int, ctypes.POINTER(ctypes.c_int8), ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int8), ctypes.c_int]
 
 
 def _bind_sat_state(lib: ctypes.CDLL) -> None:
@@ -380,6 +384,23 @@ def code_e5a(prn: int):
     if rc != 0:
         raise ValueError(f"synth_code_e5a rejected prn {prn}")
     return ei, eq
+
+
+def code_b2a(prn: int):
+    """(bd[10230], bp[10230]) int8 {-1,+1} arrays for BeiDou B2a PRN `prn`
+    (1..63). Real 13-bit dual-LFSR ranging codes (BDS-SIS-ICD-B2a-1.0). B2a
+    data carries B-CNAV2 plus the 5-chip secondary "00010" (applied by the
+    mixer via SvSpec.sec_code, not here); B2a pilot is the dataless
+    100-chip-secondary component, not emitted by the engine."""
+    lib = load_lib()
+    _p = ctypes.POINTER(ctypes.c_int8)
+    bd = np.zeros(10230, np.int8)
+    bp = np.zeros(10230, np.int8)
+    rc = lib.synth_code_b2a(int(prn), bd.ctypes.data_as(_p), 10230,
+                            bp.ctypes.data_as(_p), 10230)
+    if rc != 0:
+        raise ValueError(f"synth_code_b2a rejected prn {prn}")
+    return bd, bp
 
 
 def code_navic(prn: int) -> np.ndarray:

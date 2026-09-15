@@ -4,8 +4,8 @@ from backend.synth import _lib
 
 
 def test_abi_version_is_20():
-    assert _lib.ABI_VERSION == 23
-    assert _lib.load_lib().synth_abi_version() == 23
+    assert _lib.ABI_VERSION == 24
+    assert _lib.load_lib().synth_abi_version() == 24
 
 
 def test_l2c_cm_period_and_alphabet():

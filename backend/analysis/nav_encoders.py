@@ -60,6 +60,15 @@ def nav_stream_for(sysc, signal, eph, header, week, sow, duration_s,
         arr, rate = fnav_encode.nav_stream(eph, p, week, sow, duration_s,
                                            eph_by_prn=eph_by_prn)
         return arr, rate
+    if band == "L5" and sysc == "C":
+        # BeiDou B2a-data carries B-CNAV2 (BDS-SIS-ICD-B2a-1.0 Sec. 6), not
+        # D1/D2 -- message types 10/11/30 only (see bcnav2_encode's module
+        # docstring).
+        from backend.analysis import bcnav2_encode
+        p = int(prn if prn is not None else (eph.get("prn", 1) or 1))
+        arr, rate = bcnav2_encode.nav_stream(eph, p, week, sow, duration_s,
+                                             eph_by_prn=eph_by_prn)
+        return arr, rate
     if sysc == "I":
         # NavIC (IRNSS) L5-SPS subframes 1/2 (ISRO-IRNSS-ICD-SPS-1.1) --
         # its own framing/FEC/interleave, not CNAV or LNAV.

@@ -22,6 +22,9 @@
 // Galileo E5a-I (data) and E5a-Q (pilot) -- fixed 10230-chip memory codes
 // from the same ICD family, Annex C. See galileo_e5a_codes.cpp / .hpp.
 #include "galileo_e5a_codes.hpp"
+// BeiDou B2a data/pilot (Phase 4) -- 13-bit dual-LFSR, real per-PRN G2-init
+// tables (BDS-SIS-ICD-B2a-1.0). See beidou_b2a_codes.cpp.
+#include "beidou_b2a_codes.hpp"
 
 namespace {
 // G2 phase-select tap pairs (1-indexed register stages) for PRN 1..32,
@@ -206,5 +209,14 @@ extern "C" int synth_code_e5a(int prn, int8_t *ei, int ei_len,
     if (prn < 1 || prn > 50) return -1;
     gs::e5a_i(prn, ei, ei_len);
     if (eq != nullptr && eq_len >= 10230) gs::e5a_q(prn, eq, eq_len);
+    return 0;
+}
+
+extern "C" int synth_code_b2a(int prn, int8_t *bd, int bd_len,
+                              int8_t *bp, int bp_len) {
+    if (bd == nullptr || bd_len < 10230) return -1;
+    if (prn < 1 || prn > 63) return -1;
+    gs::b2a_d(prn, bd, bd_len);
+    if (bp != nullptr && bp_len >= 10230) gs::b2a_p(prn, bp, bp_len);
     return 0;
 }

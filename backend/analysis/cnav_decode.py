@@ -161,17 +161,18 @@ def _concentration(corr):
 
 
 def _demod(iq, fs, code, *, chip_hz, code_len, carrier_ctr_hz, dopp_hz,
-           code_phase_chips, sec=None, sec_rate_hz=0.0):
-    """Shared CNAV symbol tracker for L2C (CM) and L5 (I5).
+           code_phase_chips, sec=None, sec_rate_hz=0.0, sym_s=_SYM_S):
+    """Shared CNAV-style symbol tracker for L2C (CM), L5 (I5), E5a-I and
+    B2a-data.
 
-    ``code`` is the {-1,+1} primary code; one CNAV symbol spans
-    ``_SYM_S`` s (20 ms), i.e. one CM period on L2C or 20 I5 periods on L5.
-    ``sec`` / ``sec_rate_hz`` apply a secondary code (L5 NH10 at 1 kHz);
-    its unknown phase is searched jointly with the 20-period symbol
-    boundary before the carrier is locked. The carrier is modelled as a
-    linear-frequency chirp and the code rate is tied to it through
-    ``chip_hz / carrier_ctr_hz`` so code Doppler and its drift are tracked
-    across a 40 s capture.
+    ``code`` is the {-1,+1} primary code; one symbol spans ``sym_s`` s
+    (default 20 ms / 50 sym/s -- L2C/L5/E5a; B-CNAV2 on B2a-data passes
+    5 ms / 200 sym/s). ``sec`` / ``sec_rate_hz`` apply a secondary code
+    (L5 NH10 at 1 kHz, B2a-data's 5-chip "00010" at 1 kHz); its unknown
+    phase is searched jointly with the symbol boundary before the carrier
+    is locked. The carrier is modelled as a linear-frequency chirp and the
+    code rate is tied to it through ``chip_hz / carrier_ctr_hz`` so code
+    Doppler and its drift are tracked across a 40 s capture.
     """
     # Keep the (large) capture in whatever complex precision the caller
     # gave -- an L5 fix reads hundreds of millions of samples, so forcing
@@ -182,7 +183,7 @@ def _demod(iq, fs, code, *, chip_hz, code_len, carrier_ctr_hz, dopp_hz,
         iq = iq.astype(np.complex64)
     code = np.asarray(code, dtype=np.float64)
 
-    npp = int(round(fs * _SYM_S))
+    npp = int(round(fs * sym_s))
     spp = int(round(fs * (code_len / chip_hz)))       # one primary period
     if npp <= 0 or iq.size // npp < 4:
         return np.zeros(0, dtype=np.int8)
@@ -248,12 +249,12 @@ def _demod(iq, fs, code, *, chip_hz, code_len, carrier_ctr_hz, dopp_hz,
     # --- 1. lock Doppler on a prefix. A per-symbol concentration metric is
     # ambiguous at multiples of 25 Hz, so the coarse pull-in runs on the
     # sub-symbol partials: squaring cancels the +/-1 symbol and leaves a
-    # tone at twice the residual carrier, alias-free out to +/- m/(2*_SYM_S)
+    # tone at twice the residual carrier, alias-free out to +/- m/(2*sym_s)
     # Hz. A linear data-wiped-phase fit then trims the rest.
     pn = min(nsym, 200)
     for _ in range(3):
         sq = (_subcorr(d)[:pn].reshape(-1)) ** 2
-        fr = np.fft.fftfreq(sq.size, d=_SYM_S / m)
+        fr = np.fft.fftfreq(sq.size, d=sym_s / m)
         step = float(fr[np.argmax(np.abs(np.fft.fft(sq)))]) / 2.0
         d += step
         if abs(step) < 1.0:
@@ -262,7 +263,7 @@ def _demod(iq, fs, code, *, chip_hz, code_len, carrier_ctr_hz, dopp_hz,
         corr = _subcorr(d)[:pn].sum(axis=1)
         slope = np.polyfit(np.arange(pn, dtype=np.float64),
                            np.unwrap(np.angle(corr ** 2)), 1)[0] / 2.0
-        dfr = slope / (2.0 * np.pi * _SYM_S)
+        dfr = slope / (2.0 * np.pi * sym_s)
         d += dfr
         if abs(dfr) < 0.02:
             break
@@ -276,14 +277,14 @@ def _demod(iq, fs, code, *, chip_hz, code_len, carrier_ctr_hz, dopp_hz,
         out = np.zeros(nbk)
         for k in range(nbk):
             sq = (p[k * B:(k + 1) * B].reshape(-1)) ** 2
-            fr = np.fft.fftfreq(sq.size, d=_SYM_S / m)
+            fr = np.fft.fftfreq(sq.size, d=sym_s / m)
             out[k] = float(fr[np.argmax(np.abs(np.fft.fft(sq)))]) / 2.0
         return out, nbk
 
     p_full = _subcorr(d)
     fblk, nb = _block_freqs(p_full)
     if nb > 3:
-        bt_s = (np.arange(nb) + 0.5) * B * _SYM_S
+        bt_s = (np.arange(nb) + 0.5) * B * sym_s
         c1, c0 = np.polyfit(bt_s, fblk, 1)
         d += float(c0)
         p_full = _subcorr(d, float(c1))

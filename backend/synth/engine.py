@@ -50,6 +50,10 @@ _NH10_CHIPS = tuple(1 if b == "0" else -1 for b in "0000110101")
 # 20-chip code for every PRN. Same bit->chip convention as NH10 above. One
 # CS20 chip per 1 ms primary code period (1 kHz).
 _CS20_CHIPS = tuple(1 if b == "0" else -1 for b in "10000100001011101001")
+# BeiDou B2a-data 5-chip secondary "00010" (BDS-SIS-ICD-B2a-1.0), same
+# fixed code for every PRN. Same bit->chip convention as NH10/CS20 above.
+# One chip per 1 ms primary code period (1 kHz) -> 200 Hz symbol rate.
+_B2A_SEC5_CHIPS = tuple(1 if b == "0" else -1 for b in "00010")
 
 # RINEX per-system satellite numbers -> native synth_code PRN domain.
 #   QZSS  Jnn  -> PRN 192+nn  (J01 = 193, native range 193..202)
@@ -288,6 +292,53 @@ def _sv_spec_for(entry, gain, nav=None):
         sbuf = (ctypes.c_int8 * 20)(*cs20)
         spec.sec_code = sbuf
         spec.sec_len = 20
+        spec.sec_rate_hz = 1000.0
+        keep.append(sbuf)
+        return spec, keep
+
+    # BeiDou B2a-data: the data component at 10.23 Mcps (10230 chips, 1 ms
+    # primary period, real 13-bit dual-LFSR ranging code -- see
+    # beidou_b2a_codes.cpp) with the 5-chip "00010" secondary (one chip per
+    # primary period -> 1 kHz -> 200 Hz symbol rate), B-CNAV2 riding it as
+    # one 200 Hz symbol per 5 primary periods. Must come before the generic
+    # ``sysc == "C"`` B1I branch below, which would otherwise also catch B2a
+    # entries (both share sysc == "C"). The B2a pilot component is not
+    # needed for the data-signal closed-loop fix and is left out, mirroring
+    # Q5/E5a-Q/CL.
+    if sysc == "C" and getattr(sig, "band", "L1") == "L5":
+        if getattr(sig, "nav_sym_hz", 0) == 0:
+            return None, (f"{sysc}{entry['prn']}: B2a pilot component "
+                          "not emitted (data-signal fix path), skipped")
+        bd, _bp = _lib.code_b2a(entry["prn"])
+        spec = _lib.SvSpec()
+        pbuf = (ctypes.c_int8 * 10230)(*bd.tolist())
+        spec.code = pbuf
+        keep = [pbuf]
+        spec.code_len = 10230
+        spec.chip_rate_hz = 10.23e6
+        spec.carrier_freq_hz = entry["carrier_doppler_hz"]
+        spec.carrier_phase0_rad = 0.0
+        spec.code_phase0_chips = entry["code_phase_chips"]
+        spec.code_doppler_hz = entry["code_doppler_hz"]
+        spec.nav_mode = 0
+        spec.nav_bits = None
+        spec.nav_nbits = 0
+        spec.nav_sym_rate_hz = 0.0
+        if nav is not None:
+            nbuf, nbits, sym_rate = nav
+            spec.nav_mode = 1
+            spec.nav_bits = nbuf
+            spec.nav_nbits = nbits
+            spec.nav_sym_rate_hz = float(sym_rate)
+            keep.append(nbuf)
+        spec.gain = gain
+        spec.prn = entry["prn"]
+        spec.sys = _SYS_INT[sysc]
+        spec.sub_carrier_hz = 0.0
+        sec5 = _B2A_SEC5_CHIPS
+        sbuf = (ctypes.c_int8 * 5)(*sec5)
+        spec.sec_code = sbuf
+        spec.sec_len = 5
         spec.sec_rate_hz = 1000.0
         keep.append(sbuf)
         return spec, keep
@@ -619,6 +670,8 @@ def run(req, progress_cb=None) -> pathlib.Path:
             return "cnav"          # IS-GPS-200 Sec. 30/40 CNAV
         if sysc == "E" and band == "L5":
             return "fnav"          # Galileo OS SIS ICD Sec. 4.2 F/NAV
+        if sysc == "C" and band == "L5":
+            return "bcnav2"        # BDS-SIS-ICD-B2a-1.0 Sec. 6 B-CNAV2
         return {"G": "lnav", "J": "lnav", "E": "inav", "C": "d1",
                 "R": "strings", "S": "sbas", "I": "navic"}.get(sysc, "on")
 

@@ -157,32 +157,36 @@ def _fix_from_iq_l2(iq_path, sample_format, sample_rate, eph_by_prn,
 def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
                     approx_time_gps, marker_llh) -> dict:
     """L5-band closed-loop fix: acquire GPS/QZSS I5 (NH10-blind
-    non-coherent), Galileo E5a-I (CS20-blind) and NavIC L5-SPS, decode
-    CNAV 10/11/30 off I5, F/NAV word types 1/2/3(+4) off E5a-I, and NavIC
-    subframes 1/2 off the L5-SPS component, solve jointly. GPS/QZSS L5,
-    Galileo E5a-I and NavIC L5-SPS all share this RF band (all three
-    centre on 1176.45 MHz), so a capture can carry any subset of the
-    three; every acquired/decoded satellite is keyed by ``(sys, prn)``
-    throughout (all three number PRNs from 1, so a bare PRN key would
-    collide across families -- the same reasoning as the engine's own
-    ``nav_streams`` keying).
+    non-coherent), Galileo E5a-I (CS20-blind), NavIC L5-SPS and BeiDou
+    B2a-data (5-chip-secondary-blind), decode CNAV 10/11/30 off I5, F/NAV
+    word types 1/2/3(+4) off E5a-I, NavIC subframes 1/2 off the L5-SPS
+    component, and B-CNAV2 10/11(+30) off B2a-data, solve jointly.
+    GPS/QZSS L5, Galileo E5a-I, NavIC L5-SPS and BeiDou B2a-data all share
+    this RF band (all four centre on 1176.45 MHz), so a capture can carry
+    any subset of the four; every acquired/decoded satellite is keyed by
+    ``(sys, prn)`` throughout (all four number PRNs from 1, so a bare PRN
+    key would collide across families -- the same reasoning as the
+    engine's own ``nav_streams`` keying).
 
     Structurally identical to :func:`_fix_from_iq_l2`; the differences are
-    the per-system code (10.23 Mcps I5/E5a-I vs. NavIC's 1.023 Mcps
-    L5-SPS), the L5 band centre for the geometry, and the per-system
-    group delay: GPS/QZSS uses ``-Tgd*(fL1/fL5)^2 + ISC_L5I5``, while
+    the per-system code (10.23 Mcps I5/E5a-I/B2a-data vs. NavIC's
+    1.023 Mcps L5-SPS), the L5 band centre for the geometry, and the
+    per-system group delay: GPS/QZSS uses ``-Tgd*(fL1/fL5)^2 + ISC_L5I5``,
     Galileo's single-frequency BGD(E1,E5a) and NavIC's single-frequency
     TGD are both applied directly (no frequency-squared scaling or ISC
     term -- NavIC L5-SPS carries no second civil frequency and no ISC
     field in subframes 1/2, matching Galileo's own single-frequency
-    convention here, not an omission).
+    convention here, not an omission), and BeiDou B2a uses
+    ``-TGD_B2ap + ISC_B2ad`` (same -Tgd+ISC shape as GPS).
     """
-    from backend.analysis import band_acquire, cnav_decode, fnav_decode, navic_decode
+    from backend.analysis import (band_acquire, bcnav2_decode, cnav_decode,
+                                  fnav_decode, navic_decode)
     from backend.synth import _lib
     from backend.synth import signals as _sig
 
     l5, e5a = _sig.SIGNALS["GPS_L5I"], _sig.SIGNALS["GAL_E5AI"]
     navic = _sig.SIGNALS["IRNSS_L5"]
+    b2a = _sig.SIGNALS["BDS_B2AD"]
     fl1, fl5 = config.L1_HZ, config.L5_HZ
 
     # One CNAV 10/11 pair spans 24 s; L5 runs at ~25 Msps, so cap the read
@@ -199,6 +203,7 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
     gj_scan = eph_by_prn if eph_by_prn else {p: None for p in range(1, 33)}
     gal_scan = {} if eph_by_prn else {p: None for p in range(1, 37)}
     navic_scan = {} if eph_by_prn else {p: None for p in range(1, 15)}
+    bds_scan = {} if eph_by_prn else {p: None for p in range(1, 64)}
 
     # GPS/QZSS I5 and Galileo E5a-I both run at 10.23 Mcps; a capture
     # whose fs cannot represent that (fs below 2x the chip rate -- e.g.
@@ -210,7 +215,7 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
     # families outright when fs cannot resolve their chip rate; same
     # guard for NavIC's own (much lower) chip rate for symmetry.
     if sample_rate < 2.0 * _L5_CHIP_HZ:
-        gj_scan, gal_scan = {}, {}
+        gj_scan, gal_scan, bds_scan = {}, {}, {}
     if sample_rate < 2.0 * _NAVIC_CHIP_HZ:
         navic_scan = {}
 
@@ -243,6 +248,13 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
                                  dopp_step=100.0, nperiods=1)
         if r["metric_db"] > 9.0:
             acq[("I", prn)] = r
+    for prn in bds_scan:
+        bd, _bp = _lib.code_b2a(int(prn))
+        r = band_acquire.acquire(iq, sample_rate, bd.astype(float),
+                                 chip_hz=_L5_CHIP_HZ, code_len=_L5_LEN,
+                                 dopp_step=100.0, nperiods=1)
+        if r["metric_db"] > 9.0:
+            acq[("C", prn)] = r
 
     decoded, nav_decode = {}, {}
     for (sysc, prn), r in list(acq.items()):
@@ -279,6 +291,16 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
                     nav_decode[key] = "no subframe 1/2"
                     continue
                 rec = navic_decode.reconstruct_ephemeris(hits)
+            elif sysc == "C":
+                sym = bcnav2_decode.demod_symbols_b2a(
+                    iq, sample_rate, prn, dopp_hz=r["doppler_hz"],
+                    code_phase_chips=r["code_phase_chips"])
+                msgs = bcnav2_decode.decode_messages(sym.tolist())
+                own = [m for m in msgs if m["crc_ok"] and m["prn"] == prn]
+                if not ({10, 11} <= {m["type"] for m in own}):
+                    nav_decode[key] = "no own-PRN 10/11"
+                    continue
+                rec = bcnav2_decode.reconstruct_ephemeris(own)
             else:
                 sym = cnav_decode.demod_symbols_l5(
                     iq, sample_rate, prn, dopp_hz=r["doppler_hz"],
@@ -315,6 +337,15 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
             svb = -rec.get("tgd", 0.0)
             sig, code = navic, _lib.code_navic(int(prn))
             chip_hz, code_len = _NAVIC_CHIP_HZ, _NAVIC_LEN
+        elif sysc == "C":
+            # BDS-SIS-ICD-B2a-1.0 group delay: B2a's own TGD plus the
+            # data/pilot inter-signal correction, same sign convention as
+            # GPS's -Tgd+ISC above (documented choice -- the real ICD's
+            # sign rule for TGD_B2ap/ISC_B2ad was not independently
+            # confirmed, see bcnav2_decode.py).
+            svb = -rec.get("tgd_b2ap", 0.0) + rec.get("isc_b2ad", 0.0)
+            sig, code = b2a, _lib.code_b2a(int(prn))[0]
+            chip_hz, code_len = _L5_CHIP_HZ, _L5_LEN
         else:
             tgd = rec.get("tgd", 0.0)
             svb = -tgd * (fl1 / fl5) ** 2 + rec.get("isc_l5i5", 0.0)
