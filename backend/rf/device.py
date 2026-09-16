@@ -17,45 +17,14 @@ from __future__ import annotations
 import datetime as dt
 import threading
 
+from backend.rf.backends import ad9361
+
 _lock = threading.Lock()
 _devices: dict[str, dict] = {}  # uri -> {"handle", "info", "since"}
 
 
 class DeviceError(Exception):
     pass
-
-
-def _probe_info(sdr) -> dict:
-    """Best-effort hardware identity + temperature. Every field is
-    optional: pyadi/driver versions differ, and a missing attr must
-    downgrade the readout, never fail the connect."""
-    info: dict = {}
-    ctrl = getattr(sdr, "_ctrl", None)
-    try:
-        ctx = ctrl.ctx if ctrl is not None else None
-        if ctx is not None:
-            info["context"] = getattr(ctx, "name", None)
-            attrs = dict(getattr(ctx, "attrs", {}) or {})
-            for k in ("hw_model", "hw_serial", "fw_version",
-                      "usb,idVendor", "usb,idProduct"):
-                if k in attrs:
-                    info[k.replace(",", "_")] = attrs[k]
-    except Exception:
-        pass
-    try:
-        from backend.rf._iio_probe import probe_temp_channel
-        temp_ch = probe_temp_channel(ctrl)
-        if temp_ch is not None:
-            raw = float(temp_ch.attrs["input"].value)
-            info["temp_c"] = round(raw / 1000.0, 1)
-    except Exception:
-        pass
-    try:
-        info["sample_rate"] = int(sdr.sample_rate)
-        info["tx_hardwaregain_db"] = float(sdr.tx_hardwaregain_chan0)
-    except Exception:
-        pass
-    return info
 
 
 def connect(uri: str) -> dict:
@@ -69,14 +38,10 @@ def connect(uri: str) -> dict:
             existing["info"] = _safe_reprobe(existing["handle"])
             return _entry(uri, existing)
         try:
-            import adi  # pyadi-iio; needs libiio on the loader path
-        except Exception as ex:
-            raise DeviceError(f"pyadi-iio / libiio not available: {ex}") from ex
-        try:
-            sdr = adi.Pluto(uri=uri)
+            handle = ad9361.probe_open(uri)
         except Exception as ex:
             raise DeviceError(f"cannot reach SDR at {uri!r}: {ex}") from ex
-        entry = {"handle": sdr, "info": _probe_info(sdr),
+        entry = {"handle": handle, "info": _safe_reprobe(handle),
                  "since": dt.datetime.utcnow().isoformat() + "Z"}
         _devices[uri] = entry
         return _entry(uri, entry)
@@ -84,7 +49,7 @@ def connect(uri: str) -> dict:
 
 def _safe_reprobe(handle) -> dict:
     try:
-        return _probe_info(handle)
+        return ad9361.probe_info(handle)
     except Exception:
         return {}
 

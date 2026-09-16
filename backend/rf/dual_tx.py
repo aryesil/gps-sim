@@ -35,6 +35,7 @@ import threading
 
 import numpy as np
 
+from backend.rf.backends import ad9361
 from backend.rf.transmit import TransmitError
 
 _BLOCK_SAMPLES = 65536
@@ -42,20 +43,14 @@ _GET_TIMEOUT_S = 0.5     # how long the pump waits for a slot before feeding sil
 _PUT_TIMEOUT_S = 10.0    # how long push() waits for pump to drain before giving up
 _QUEUE_DEPTH = 8         # ~8 blocks of smoothing headroom per slot
 _SLOT_CHAN = {"TX1": 0, "TX2": 1}
-_MUTE_GAIN_DB = -89.75   # AD9361 tx_hardwaregain_chanN minimum (max attenuation)
-
-
-def _open_ad9361(uri: str):
-    import adi  # pyadi-iio
-    return adi.ad9361(uri=uri)
 
 
 class _Card:
     """The one shared context, live for as long as at least one slot is
     acquired. Not constructed directly -- see acquire()/_release()."""
 
-    def __init__(self, sdr, uri: float, lo_hz: float, sample_rate: float):
-        self.sdr = sdr
+    def __init__(self, handle, uri: float, lo_hz: float, sample_rate: float):
+        self.handle = handle
         self.uri = uri
         self.lo_hz = lo_hz
         self.sample_rate = sample_rate
@@ -84,7 +79,7 @@ class _Card:
                     with self.lock:
                         self.underflow[slot] = self.underflow.get(slot, 0) + 1
                     blocks.append(zero)
-            self.sdr.tx(blocks)
+            ad9361.write(self.handle, blocks)
 
     def register(self, slot: str) -> None:
         with self.lock:
@@ -116,31 +111,7 @@ class _Card:
     def shut_down(self) -> None:
         self.stop.set()
         self.pump_thread.join(timeout=5.0)
-        # KNOWN real-hardware gotcha: with tx_cyclic_buffer=False, the
-        # AD9361's TX DMA does not reliably go silent once the app stops
-        # feeding it -- it can keep repeating the last transferred buffer
-        # indefinitely until the whole libiio context is torn down, which
-        # tx_destroy_buffer() alone does not guarantee (this is a
-        # documented pyadi-iio/AD9361 community-reported behavior, not
-        # specific to this app). Force real, deterministic silence before
-        # destroying the buffer: mute both channels to the hardware's
-        # minimum gain (0 to -89.75 dB, 0.25 dB steps -- AD9361 spec), then
-        # push one explicit all-zero block, so if the DMA does repeat its
-        # last buffer, it repeats silence, not signal.
-        try:
-            self.sdr.tx_hardwaregain_chan0 = _MUTE_GAIN_DB
-            self.sdr.tx_hardwaregain_chan1 = _MUTE_GAIN_DB
-        except Exception:
-            pass
-        try:
-            zero = np.zeros(_BLOCK_SAMPLES, dtype=np.complex64)
-            self.sdr.tx([zero, zero])
-        except Exception:
-            pass
-        try:
-            self.sdr.tx_destroy_buffer()
-        except Exception:
-            pass
+        ad9361.close(self.handle)
 
 
 class _SlotSink:
@@ -154,11 +125,12 @@ class _SlotSink:
 
     @property
     def sdr(self):
-        """The shared card's real pyadi-iio handle -- lets a caller (see
-        transmit.py's TX quadrature calibration trigger) reach the actual
-        hardware object without depending on dual_tx's internal _Card
-        layout."""
-        return self._card.sdr
+        """The shared card's real hardware handle -- lets a caller (see
+        transmit.py's TX quadrature calibration trigger, an AD9361-only
+        capability) reach it without depending on dual_tx's internal _Card
+        layout. Named `sdr` for that caller's benefit; the card's own
+        attribute is the backend-agnostic `handle`."""
+        return self._card.handle
 
     @property
     def underflow(self) -> int:
@@ -197,16 +169,8 @@ def acquire(slot: str, uri: str, lo_hz: float, sample_rate: float,
         raise TransmitError(f"unknown TX slot {slot!r}")
     with _lock:
         if _card is None:
-            sdr = _open_ad9361(uri)
-            sdr.tx_enabled_channels = [0, 1]
-            sdr.sample_rate = int(sample_rate)
-            sdr.tx_lo = int(lo_hz)
-            sdr.tx_cyclic_buffer = False
-            if abs(sdr.tx_lo - lo_hz) > 1000:
-                raise TransmitError(f"device clamped LO to {sdr.tx_lo}")
-            if abs(sdr.sample_rate - sample_rate) > 1.0:
-                raise TransmitError(f"device clamped rate to {sdr.sample_rate}")
-            _card = _Card(sdr, uri, lo_hz, sample_rate)
+            handle = ad9361.open_tx(uri, lo_hz, sample_rate)
+            _card = _Card(handle, uri, lo_hz, sample_rate)
         else:
             if _card.uri != uri:
                 raise TransmitError(
@@ -224,7 +188,7 @@ def acquire(slot: str, uri: str, lo_hz: float, sample_rate: float,
                     f"{sample_rate:.0f} Hz -- match the running slot's rate "
                     "or stop it first")
         chan = _SLOT_CHAN[slot]
-        setattr(_card.sdr, f"tx_hardwaregain_chan{chan}", float(tx_gain_db))
+        ad9361.set_gain(_card.handle, chan, tx_gain_db)
         _card.register(slot)
         return _SlotSink(_card, slot)
 
