@@ -8,7 +8,12 @@ import numpy as np
 
 ABI_VERSION = 24
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
-_EXT = "dylib" if sys.platform == "darwin" else "so"
+if sys.platform == "darwin":
+    _EXT = "dylib"
+elif sys.platform == "win32":
+    _EXT = "dll"
+else:
+    _EXT = "so"
 LIB_PATH = _NATIVE_DIR / f"libgnsssynth.{_EXT}"
 _BUILD_HINT = f"make -C backend/synth/native   # produces {LIB_PATH.name}"
 

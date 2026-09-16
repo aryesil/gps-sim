@@ -3,6 +3,7 @@ import datetime as dt
 import json
 import pathlib
 import stat
+import sys
 import textwrap
 
 import numpy as np
@@ -26,6 +27,10 @@ def _fake_binary(tmp_path):
         iq[1::2] = (3000 * np.sin(2 * np.pi * 1000 * t / 2.6e6)).astype(np.int16)
         iq.tofile(out)
     '''))
+    if sys.platform == "win32":
+        sh = tmp_path / "fake_sim.bat"
+        sh.write_text(f'@"{sys.executable}" "{p}" %*\r\n')
+        return str(sh)
     sh = tmp_path / "fake_sim"
     sh.write_text(f'#!/usr/bin/env bash\nexec python "{p}" "$@"\n')
     sh.chmod(sh.stat().st_mode | stat.S_IEXEC)

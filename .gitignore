@@ -1,0 +1,17 @@
+# Python
+.venv/
+__pycache__/
+*.egg-info/
+
+# Native build artifacts (built locally per-platform, not shipped)
+backend/synth/native/*.so
+backend/synth/native/*.dylib
+backend/synth/native/*.dll
+backend/synth/native/*.o
+
+# External binary clone, built locally
+gps-sdr-sim/
+
+# Local run output
+logs/
+out/

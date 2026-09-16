@@ -5,7 +5,10 @@
 
 namespace gs {
 
-#if defined(__x86_64__) && defined(__GNUC__) && !defined(__APPLE__)
+#if defined(__x86_64__) && defined(__GNUC__) && !defined(__APPLE__) && !defined(_WIN32)
+// target_clones needs ifunc (ELF/Mach-O symbol resolvers); MinGW's PE-COFF
+// target does not support it -- the plain function below still compiles
+// with whatever -march the build uses, just without runtime CPU dispatch.
 __attribute__((target_clones("default", "sse4.2", "avx2", "avx2,fma")))
 #endif
 void mix_block(const SvChannel *__restrict svs, int nsv, double fs,

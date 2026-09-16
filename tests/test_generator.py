@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import stat
+import sys
 import textwrap
 
 import pytest
@@ -27,6 +28,13 @@ def _fake_binary(tmp_path):
             print(f"Time into run = {t}", flush=True)
         open(out, "wb").write(b"\\x00\\x01" * 1000)
     '''))
+    if sys.platform == "win32":
+        # Windows' CreateProcess (what subprocess.run([binary, ...]) uses
+        # without shell=True) can launch a .bat/.cmd directly, but not a
+        # POSIX shebang script -- give it a batch-file launcher instead.
+        sh = tmp_path / "fake_sim.bat"
+        sh.write_text(f'@"{sys.executable}" "{p}" %*\r\n')
+        return str(sh)
     sh = tmp_path / "fake_sim"
     sh.write_text(f'#!/usr/bin/env bash\nexec python "{p}" "$@"\n')
     sh.chmod(sh.stat().st_mode | stat.S_IEXEC)
@@ -50,9 +58,13 @@ def test_run_creates_output_and_meta(tmp_path, monkeypatch):
 
 def test_run_raises_on_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(generator.config, "OUT_DIR", tmp_path)
-    bad = tmp_path / "bad"
-    bad.write_text('#!/usr/bin/env bash\necho boom >&2\nexit 3\n')
-    bad.chmod(0o755)
+    if sys.platform == "win32":
+        bad = tmp_path / "bad.bat"
+        bad.write_text('@echo boom 1>&2\r\n@exit /b 3\r\n')
+    else:
+        bad = tmp_path / "bad"
+        bad.write_text('#!/usr/bin/env bash\necho boom >&2\nexit 3\n')
+        bad.chmod(0o755)
     req = scenario.ScenarioRequest(
         rinex_path=str(_FIX), lat=1, lon=2, alt=3,
         start=dt.datetime(2026, 1, 1), duration_s=1)

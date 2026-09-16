@@ -4,6 +4,7 @@ import importlib.util
 import json
 import pathlib
 import stat
+import sys
 import textwrap
 
 import pytest
@@ -63,9 +64,13 @@ def test_full_chain_with_a_fake_binary(tmp_path, monkeypatch):
         iq[1::2] = (2000 * np.sin(2*np.pi*1000*t/2.6e6)).astype(np.int16)
         iq.tofile(out)
     '''))
-    sh = tmp_path / "fake_sim"
-    sh.write_text(f'#!/usr/bin/env bash\nexec python "{p}" "$@"\n')
-    sh.chmod(sh.stat().st_mode | stat.S_IEXEC)
+    if sys.platform == "win32":
+        sh = tmp_path / "fake_sim.bat"
+        sh.write_text(f'@"{sys.executable}" "{p}" %*\r\n')
+    else:
+        sh = tmp_path / "fake_sim"
+        sh.write_text(f'#!/usr/bin/env bash\nexec python "{p}" "$@"\n')
+        sh.chmod(sh.stat().st_mode | stat.S_IEXEC)
 
     from backend import generator
     monkeypatch.setattr(generator.config, "OUT_DIR", tmp_path)
