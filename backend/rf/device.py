@@ -17,62 +17,67 @@ from __future__ import annotations
 import datetime as dt
 import threading
 
-from backend.rf.backends import ad9361
+from backend.rf.backends import BACKENDS
 
 _lock = threading.Lock()
-_devices: dict[str, dict] = {}  # uri -> {"handle", "info", "since"}
+_devices: dict[tuple[str, str], dict] = {}  # (kind, uri) -> {"handle", "info", "since"}
 
 
 class DeviceError(Exception):
     pass
 
 
-def connect(uri: str) -> dict:
+def connect(uri: str, kind: str = "pluto") -> dict:
     """Open (or refresh) a standby control link to `uri`. Returns the
     device-status entry."""
     if not uri:
         raise DeviceError("empty device URI")
+    if kind not in BACKENDS:
+        raise DeviceError(f"unknown SDR kind {kind!r}: must be one of {sorted(BACKENDS)}")
+    key = (kind, uri)
+    backend = BACKENDS[kind]
     with _lock:
-        existing = _devices.get(uri)
+        existing = _devices.get(key)
         if existing is not None:
-            existing["info"] = _safe_reprobe(existing["handle"])
-            return _entry(uri, existing)
+            existing["info"] = _safe_reprobe(backend, existing["handle"])
+            return _entry(uri, kind, existing)
         try:
-            handle = ad9361.probe_open(uri)
+            handle = backend.probe_open(uri)
         except Exception as ex:
-            raise DeviceError(f"cannot reach SDR at {uri!r}: {ex}") from ex
-        entry = {"handle": handle, "info": _safe_reprobe(handle),
+            raise DeviceError(f"cannot reach {kind} SDR at {uri!r}: {ex}") from ex
+        entry = {"handle": handle, "info": _safe_reprobe(backend, handle),
                  "since": dt.datetime.utcnow().isoformat() + "Z"}
-        _devices[uri] = entry
-        return _entry(uri, entry)
+        _devices[key] = entry
+        return _entry(uri, kind, entry)
 
 
-def _safe_reprobe(handle) -> dict:
+def _safe_reprobe(backend, handle) -> dict:
     try:
-        return ad9361.probe_info(handle)
+        return backend.probe_info(handle)
     except Exception:
         return {}
 
 
-def disconnect(uri: str) -> None:
+def disconnect(uri: str, kind: str = "pluto") -> None:
     with _lock:
-        entry = _devices.pop(uri, None)
-    # Dropping the last reference closes the libiio context.
+        entry = _devices.pop((kind, uri), None)
+    # Dropping the last reference closes the underlying context (libiio for
+    # pluto, libbladeRF for bladerf) -- see module docstring.
     if entry is not None:
         entry["handle"] = None
 
 
-def _entry(uri: str, entry: dict) -> dict:
-    return {"uri": uri, "connected": True,
+def _entry(uri: str, kind: str, entry: dict) -> dict:
+    return {"uri": uri, "kind": kind, "connected": True,
             "since": entry["since"], "info": entry.get("info", {}),
             "state": "standby"}
 
 
 def status() -> list[dict]:
     with _lock:
-        return [_entry(uri, e) for uri, e in _devices.items()]
+        return [_entry(uri, kind, e) for (kind, uri), e in _devices.items()]
 
 
-def is_connected(uri: str) -> bool:
+def is_connected(uri: str, kind: str = "pluto") -> bool:
     with _lock:
-        return uri in _devices
+        return (kind, uri) in _devices

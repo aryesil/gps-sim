@@ -62,6 +62,57 @@ def test_connect_holds_standby_link(monkeypatch):
     assert not device.is_connected("ip:10.0.0.9")
 
 
+def test_connect_defaults_kind_to_pluto_and_keys_independently_of_bladerf(monkeypatch):
+    fake = types.ModuleType("adi")
+
+    class _FakePluto:
+        def __init__(self, uri=None):
+            self.uri = uri
+            self.sample_rate = 2600000
+            self.tx_hardwaregain_chan0 = -50.0
+            self._ctrl = None
+
+    fake.Pluto = _FakePluto
+    monkeypatch.setitem(sys.modules, "adi", fake)
+
+    entry = device.connect("ip:10.0.0.9")
+    try:
+        assert entry["kind"] == "pluto"
+        assert device.is_connected("ip:10.0.0.9")
+        assert not device.is_connected("ip:10.0.0.9", kind="bladerf")
+    finally:
+        device.disconnect("ip:10.0.0.9")
+
+
+def test_connect_rejects_unknown_kind():
+    with pytest.raises(device.DeviceError, match="unknown SDR kind"):
+        device.connect("ip:1.2.3.4", kind="hackrf")
+
+
+def test_connect_with_bladerf_kind_uses_bladerf_backend(monkeypatch):
+    fake_bladerf_mod = types.ModuleType("_bladerf")
+
+    class _FakeBladeRFDev:
+        def __init__(self, device_identifier=None):
+            self.device_identifier = device_identifier
+            self.serial = "SN123"
+            self.fpga_version = "0.15.0"
+            self.rfic_temperature = 40.0
+
+    fake_bladerf_mod.BladeRF = _FakeBladeRFDev
+    fake_pkg = types.ModuleType("bladerf")
+    fake_pkg._bladerf = fake_bladerf_mod
+    monkeypatch.setitem(sys.modules, "bladerf", fake_pkg)
+    monkeypatch.setitem(sys.modules, "bladerf._bladerf", fake_bladerf_mod)
+
+    entry = device.connect("*:serial=abc", kind="bladerf")
+    try:
+        assert entry["kind"] == "bladerf"
+        assert entry["info"]["hw_serial"] == "SN123"
+    finally:
+        device.disconnect("*:serial=abc", kind="bladerf")
+
+
 def test_api_device_endpoints(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "LOG_DIR", tmp_path)
     monkeypatch.setattr(device, "connect",

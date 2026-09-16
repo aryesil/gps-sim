@@ -35,7 +35,7 @@ import threading
 
 import numpy as np
 
-from backend.rf.backends import ad9361
+from backend.rf.backends import BACKENDS
 from backend.rf.transmit import TransmitError
 
 _BLOCK_SAMPLES = 65536
@@ -49,8 +49,11 @@ class _Card:
     """The one shared context, live for as long as at least one slot is
     acquired. Not constructed directly -- see acquire()/_release()."""
 
-    def __init__(self, handle, uri: float, lo_hz: float, sample_rate: float):
+    def __init__(self, handle, uri: float, lo_hz: float, sample_rate: float,
+                 kind: str):
         self.handle = handle
+        self.backend = BACKENDS[kind]
+        self.kind = kind
         self.uri = uri
         self.lo_hz = lo_hz
         self.sample_rate = sample_rate
@@ -79,7 +82,7 @@ class _Card:
                     with self.lock:
                         self.underflow[slot] = self.underflow.get(slot, 0) + 1
                     blocks.append(zero)
-            ad9361.write(self.handle, blocks)
+            self.backend.write(self.handle, blocks)
 
     def register(self, slot: str) -> None:
         with self.lock:
@@ -111,7 +114,7 @@ class _Card:
     def shut_down(self) -> None:
         self.stop.set()
         self.pump_thread.join(timeout=5.0)
-        ad9361.close(self.handle)
+        self.backend.close(self.handle)
 
 
 class _SlotSink:
@@ -160,18 +163,24 @@ _card: _Card | None = None
 
 
 def acquire(slot: str, uri: str, lo_hz: float, sample_rate: float,
-            tx_gain_db: float) -> _SlotSink:
+            tx_gain_db: float, kind: str = "pluto") -> _SlotSink:
     """Join (or open) the shared card for ``slot`` ("TX1"/"TX2"). Raises
-    TransmitError if the card is already open for a different uri/LO/rate
-    -- TX1 and TX2 physically cannot disagree on those."""
+    TransmitError if the card is already open for a different
+    uri/LO/rate/kind -- TX1 and TX2 physically cannot disagree on those."""
     global _card
     if slot not in _SLOT_CHAN:
         raise TransmitError(f"unknown TX slot {slot!r}")
+    if kind not in BACKENDS:
+        raise TransmitError(f"unknown SDR kind {kind!r}: must be one of {sorted(BACKENDS)}")
     with _lock:
         if _card is None:
-            handle = ad9361.open_tx(uri, lo_hz, sample_rate)
-            _card = _Card(handle, uri, lo_hz, sample_rate)
+            handle = BACKENDS[kind].open_tx(uri, lo_hz, sample_rate)
+            _card = _Card(handle, uri, lo_hz, sample_rate, kind)
         else:
+            if _card.kind != kind:
+                raise TransmitError(
+                    f"TX1/TX2 share one physical card: already open as "
+                    f"{_card.kind!r}, cannot also open as {kind!r}")
             if _card.uri != uri:
                 raise TransmitError(
                     f"TX1/TX2 share one card: already open on {_card.uri!r}, "
@@ -188,7 +197,7 @@ def acquire(slot: str, uri: str, lo_hz: float, sample_rate: float,
                     f"{sample_rate:.0f} Hz -- match the running slot's rate "
                     "or stop it first")
         chan = _SLOT_CHAN[slot]
-        ad9361.set_gain(_card.handle, chan, tx_gain_db)
+        _card.backend.set_gain(_card.handle, chan, tx_gain_db)
         _card.register(slot)
         return _SlotSink(_card, slot)
 

@@ -110,6 +110,30 @@ def test_second_slot_rejects_mismatched_uri():
         s1.close()
 
 
+def test_second_slot_rejects_mismatched_kind():
+    s1 = dual_tx.acquire("TX1", "ip:1.2.3.4", 1575420000.0, 2_600_000.0, -30.0, kind="pluto")
+    try:
+        with pytest.raises(transmit.TransmitError, match="share one physical card"):
+            dual_tx.acquire("TX2", "ip:1.2.3.4", 1575420000.0, 2_600_000.0, -30.0, kind="bladerf")
+    finally:
+        s1.close()
+
+
+def test_acquire_rejects_unknown_kind():
+    with pytest.raises(transmit.TransmitError, match="unknown SDR kind"):
+        dual_tx.acquire("TX1", "ip:1.2.3.4", 1575420000.0, 2_600_000.0, -30.0, kind="hackrf")
+    assert dual_tx._card is None
+
+
+def test_acquire_defaults_kind_to_pluto():
+    sink = dual_tx.acquire("TX1", "ip:1.2.3.4", 1575420000.0, 2_600_000.0, -30.0)
+    try:
+        assert dual_tx._card.kind == "pluto"
+        assert len(_FakeAD9361.instances) == 1
+    finally:
+        sink.close()
+
+
 def test_unknown_slot_rejected():
     with pytest.raises(transmit.TransmitError, match="unknown TX slot"):
         dual_tx.acquire("TX3", "ip:1.2.3.4", 1575420000.0, 2_600_000.0, -30.0)

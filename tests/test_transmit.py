@@ -49,6 +49,12 @@ def _recording_sink(seen_chunks):
     return _RecordingSink
 
 
+def test_tx_params_kind_defaults_to_pluto(tmp_path):
+    p = transmit.TxParams(iq_path=_iq_file(tmp_path), sample_rate=2.6e6,
+                          sample_format="int16")
+    assert p.kind == "pluto"
+
+
 def test_default_tx_scale_is_unity(tmp_path, monkeypatch):
     # KNOWN_ISSUES I2: measured against a real generated file, gps-sdr-sim's
     # -b 16 output peaks around +-1331 out of int16's +-32767 -- comfortably

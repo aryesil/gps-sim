@@ -9,6 +9,8 @@ import numpy as np
 
 from backend import config
 
+# AD9361/AD9363 TX minimum -- shared by both the "pluto" and "bladerf"
+# backends, since bladeRF 2.0 micro uses the same transceiver.
 _TX_RATE_MIN = 2.083e6
 
 
@@ -28,6 +30,11 @@ class TxParams:
     lo_hz: float = config.L1_HZ
     tx_gain_db: float = -50.0
     uri: str = config.DEVICE_URI
+    # Which hardware backend `uri` is reached through -- "pluto" (default,
+    # PlutoSDR/AD936x IIO clones) or "bladerf" (Nuand bladeRF 2.0 micro,
+    # same AD9361/AD9363 transceiver as Pluto, different driver stack --
+    # see backend/rf/backends/).
+    kind: str = "pluto"
     chunk_samples: int = 262144
     # Which of the AD9361/AD9363's two TX ports this session drives. TX1
     # and TX2 share one card (one LO, one sample rate -- see
@@ -78,7 +85,8 @@ def _open_device(params: TxParams):
     # try/except in stream() below).
     from backend.rf import dual_tx
     return dual_tx.acquire(params.slot, params.uri, params.lo_hz,
-                            params.sample_rate, params.tx_gain_db)
+                            params.sample_rate, params.tx_gain_db,
+                            params.kind)
 
 
 def _iter_chunks(path: str, fmt: str, chunk_samples: int):
