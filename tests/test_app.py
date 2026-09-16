@@ -2,6 +2,7 @@
 import datetime as dt
 import pathlib
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend import app as appmod
@@ -9,6 +10,14 @@ from backend import app as appmod
 client = TestClient(appmod.app)
 
 _MIXED = str(pathlib.Path(__file__).parent / "fixtures" / "brdc_mixed.rnx")
+
+
+@pytest.fixture(name="client")
+def _client_fixture():
+    """The module-level TestClient above, exposed as a fixture for tests
+    that request it by parameter (e.g. the RF-frontend tests below) without
+    shadowing the module-global `client` name other tests reference directly."""
+    return client
 
 
 def test_preview_multi_returns_non_gps_systems():
@@ -27,7 +36,8 @@ def test_health_shape():
     r = client.get("/api/health")
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"gps_sdr_sim", "georinex", "libiio", "allow_tx"}
+    assert set(body) == {"gps_sdr_sim", "georinex", "libiio", "allow_tx",
+                         "rf_frontend_enabled"}
 
 
 def test_preview_warns_when_few_satellites(monkeypatch):
@@ -109,3 +119,64 @@ def test_preview_rejects_bad_channel_model(monkeypatch):
         "start_utc": "2026-09-03T06:00:00",
         "multipath": {"model": "bogus"}})
     assert r.status_code == 422
+
+
+def test_health_reports_rf_frontend_enabled_flag(client, monkeypatch):
+    from backend import config
+    monkeypatch.setattr(config, "RF_FRONTEND_ENABLED", False)
+    r = client.get("/api/health")
+    assert r.status_code == 200
+    assert r.json()["rf_frontend_enabled"] is False
+
+
+def test_transmit_ignores_rf_frontend_fields_when_layer_disabled(client, monkeypatch, tmp_path):
+    from backend import config
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    monkeypatch.setattr(config, "RF_FRONTEND_ENABLED", False)
+    p = tmp_path / "g.bin"
+    p.write_bytes(b"\x00\x00" * 2000)
+    body = {
+        "iq_path": str(p), "sample_rate": 2.6e6, "sample_format": "int16",
+        "confirm_isolated": True, "dry_run": True,
+        "target_rf_frequency_hz": 1_575_420_000, "lo_offset_mode": "MANUAL",
+        "lo_offset_hz": -1_000_000,
+    }
+    r = client.post("/api/transmit", json=body)
+    assert r.status_code == 200
+    # Consume the SSE stream to completion so the slot is released for other tests.
+    list(r.iter_lines())
+
+
+def test_transmit_applies_rf_plan_when_layer_enabled(client, monkeypatch, tmp_path):
+    from backend import config
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    monkeypatch.setattr(config, "RF_FRONTEND_ENABLED", True)
+    p = tmp_path / "g.bin"
+    p.write_bytes(b"\x00\x00" * 2000)
+    body = {
+        "iq_path": str(p), "sample_rate": 2.6e6, "sample_format": "int16",
+        "confirm_isolated": True, "dry_run": True,
+        "target_rf_frequency_hz": 1_575_420_000, "lo_offset_mode": "MANUAL",
+        "lo_offset_hz": -1_000_000,
+    }
+    r = client.post("/api/transmit", json=body)
+    assert r.status_code == 200
+    lines = list(r.iter_lines())
+    assert any(b'"tx_lo_hz": 1574420000' in line if isinstance(line, bytes)
+               else '"tx_lo_hz": 1574420000' in line for line in lines)
+
+
+def test_transmit_rejects_invalid_rf_plan_with_400(client, monkeypatch, tmp_path):
+    from backend import config
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    monkeypatch.setattr(config, "RF_FRONTEND_ENABLED", True)
+    p = tmp_path / "g.bin"
+    p.write_bytes(b"\x00\x00" * 2000)
+    body = {
+        "iq_path": str(p), "sample_rate": 2.6e6, "sample_format": "int16",
+        "confirm_isolated": True, "dry_run": True,
+        "target_rf_frequency_hz": 1_575_420_000, "lo_offset_mode": "MANUAL",
+        "lo_offset_hz": -1_400_000,  # exceeds Nyquist at 2.6 Msps
+    }
+    r = client.post("/api/transmit", json=body)
+    assert r.status_code == 400

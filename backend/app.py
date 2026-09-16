@@ -20,6 +20,7 @@ from backend import config, geometry, scenario, generator, inspector, auth
 from backend.ephem import ephemeris, precise, ephemeris_source, ephemeris_fit
 from backend.analysis import receiver, lnav_display
 from backend.rf import transmit, device
+from backend.rf.frontend import rf_frontend
 from backend.session import live
 from backend.store import trajectory, scenario_lib
 from backend.obs import audit, recording, receiver_feed, ws_hub
@@ -289,6 +290,29 @@ def _has_libiio() -> bool:
         return False
 
 
+def _resolve_rf_plan(body: dict, default_target_hz: float,
+                      sample_rate: float) -> tuple[float, float, dict | None]:
+    """RF-frontend LO-offset planning, gated by RF_FRONTEND_ENABLED. Returns
+    (lo_hz, baseband_offset_hz, report). report is None -- and lo_hz/
+    baseband_offset_hz are today's exact pass-through values -- whenever the
+    layer is off or the request didn't ask for it, so an untouched request
+    body produces byte-identical behavior to before this feature existed."""
+    if not config.RF_FRONTEND_ENABLED or "target_rf_frequency_hz" not in body:
+        return float(body.get("lo_hz", default_target_hz)), 0.0, None
+    cfg = rf_frontend.RFFrontendConfig(
+        target_rf_frequency_hz=int(body["target_rf_frequency_hz"]),
+        lo_offset_mode=body.get("lo_offset_mode", "DISABLED"),
+        lo_offset_hz=int(body.get("lo_offset_hz", 0)),
+        tx_rf_bandwidth_hz=(int(body["tx_rf_bandwidth_hz"])
+                             if body.get("tx_rf_bandwidth_hz") else None),
+        tx_sample_rate_hz=int(sample_rate),
+    )
+    result = rf_frontend.plan(cfg)
+    report = {"target_rf_hz": result.target_rf_hz, "tx_lo_hz": result.tx_lo_hz,
+              "baseband_offset_hz": result.baseband_offset_hz}
+    return float(result.tx_lo_hz), float(result.baseband_offset_hz), report
+
+
 @app.get("/api/health")
 def health():
     return {
@@ -296,6 +320,7 @@ def health():
         "georinex": _try_import("georinex"),
         "libiio": _has_libiio(),
         "allow_tx": config.ALLOW_TX,
+        "rf_frontend_enabled": config.RF_FRONTEND_ENABLED,
     }
 
 
@@ -971,11 +996,13 @@ def start_transmit(body: dict, request: Request):
         raise HTTPException(403, "transmit disabled: needs ALLOW_TX and confirm_isolated")
     slot = _acquire_tx_slot(_requested_tx_slot(body))
     try:
+        sample_rate = float(body["sample_rate"])
+        lo_hz, bb_offset_hz, rf_report = _resolve_rf_plan(body, config.L1_HZ, sample_rate)
         params = transmit.TxParams(
             iq_path=str(config.OUT_DIR / body["outdir"] / "gpssim.bin")
             if "outdir" in body else body["iq_path"],
-            sample_rate=float(body["sample_rate"]), sample_format=body["sample_format"],
-            lo_hz=float(body.get("lo_hz", config.L1_HZ)),
+            sample_rate=sample_rate, sample_format=body["sample_format"],
+            lo_hz=lo_hz, baseband_offset_hz=bb_offset_hz,
             tx_gain_db=float(body.get("tx_gain_db", -50.0)),
             uri=body.get("uri", config.DEVICE_URI),
             tx_scale=float(body.get("tx_scale", 1.0)),
@@ -985,6 +1012,9 @@ def start_transmit(body: dict, request: Request):
             total_samples = pathlib.Path(params.iq_path).stat().st_size // (2 * itemsize)
         except OSError:
             total_samples = 0
+    except rf_frontend.RFFrontendError as ex:
+        _release_tx_slot(slot)
+        raise HTTPException(400, str(ex)) from ex
     except Exception:
         _release_tx_slot(slot)
         raise
@@ -992,10 +1022,13 @@ def start_transmit(body: dict, request: Request):
     def events():
         try:
             audit.log_event("transmit_start", slot=slot, iq_path=params.iq_path,
-                             dry_run=body.get("dry_run", False), tx_gain_db=params.tx_gain_db)
+                             dry_run=body.get("dry_run", False), tx_gain_db=params.tx_gain_db,
+                             **({"rf_frontend": rf_report} if rf_report else {}))
             q: list = []
             def cb(d):
                 d["fraction"] = (d["samples"] / total_samples) if total_samples else None
+                if rf_report:
+                    d.update(rf_report)
                 q.append(d)
             th = threading.Thread(target=transmit.stream,
                                   kwargs=dict(params=params, dry_run=body.get("dry_run", False),
@@ -1272,12 +1305,16 @@ def live_start(body: dict, request: Request):
         # float to their own floor independent of req.sample_rate (see
         # _resolved_band_output). lo_hz still honours an explicit override.
         band_fs, band_centre_hz = _resolved_band_output(internal_band, systems, req)
+        lo_hz, bb_offset_hz, rf_report = _resolve_rf_plan(body, band_centre_hz, band_fs)
         params = transmit.TxParams(
             iq_path="(live)", sample_rate=band_fs, sample_format=req.sample_format,
-            lo_hz=float(body.get("lo_hz", band_centre_hz)),
+            lo_hz=lo_hz, baseband_offset_hz=bb_offset_hz,
             tx_gain_db=float(body.get("tx_gain_db", -50.0)),
             uri=body.get("uri", config.DEVICE_URI),
             slot=slot)
+    except rf_frontend.RFFrontendError as ex:
+        _release_tx_slot(slot)
+        raise HTTPException(400, str(ex)) from ex
     except Exception:
         _release_tx_slot(slot)
         raise
@@ -1291,7 +1328,8 @@ def live_start(body: dict, request: Request):
         try:
             started = time.monotonic()
             audit.log_event("live_start", slot=slot, lat=body["lat"], lon=body["lon"],
-                             dry_run=body.get("dry_run", False), max_duration_s=max_duration_s)
+                             dry_run=body.get("dry_run", False), max_duration_s=max_duration_s,
+                             **({"rf_frontend": rf_report} if rf_report else {}))
             q: list = []
             def cb(d):
                 d["fraction"] = None  # unbounded live stream -- no total to divide by
