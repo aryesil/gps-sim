@@ -99,6 +99,7 @@ PRECISE_SP3_MIRRORS = [m.strip() for m in
                        if m.strip()]
 
 ALLOW_TX = _flag("ALLOW_TX", False)
+RF_FRONTEND_ENABLED = _flag("RF_FRONTEND_ENABLED", False)
 DEVICE_URI = _str("DEVICE_URI", "ip:192.168.2.1")
 DEFAULT_SAMPLE_RATE = _float("DEFAULT_SAMPLE_RATE", 2.6e6)
 DEFAULT_FORMAT = _str("DEFAULT_FORMAT", "int16")

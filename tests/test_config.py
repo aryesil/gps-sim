@@ -63,3 +63,11 @@ def test_env_override(monkeypatch):
     assert cfg.ALLOW_TX is True
     assert cfg.DEVICE_URI == "ip:10.0.0.5"
     importlib.reload(cfg)  # restore
+
+
+def test_rf_frontend_enabled_defaults_off(monkeypatch):
+    monkeypatch.delenv("RF_FRONTEND_ENABLED", raising=False)
+    import importlib
+    from backend import config
+    importlib.reload(config)
+    assert config.RF_FRONTEND_ENABLED is False
