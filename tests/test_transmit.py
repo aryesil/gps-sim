@@ -134,3 +134,39 @@ def test_stream_uses_custom_chunk_source(monkeypatch):
     out = transmit.stream(p, dry_run=True, chunk_source=iter(chunks))
     assert out["samples"] == 3
     assert len(seen) == 2
+
+
+def test_default_baseband_offset_is_zero_and_a_no_op(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    p = transmit.TxParams(iq_path=_iq_file(tmp_path, samples=1000),
+                          sample_rate=2.6e6, sample_format="int16",
+                          chunk_samples=1000)
+    assert p.baseband_offset_hz == 0.0
+    seen_chunks = []
+    monkeypatch.setattr(transmit, "_DrySink", _recording_sink(seen_chunks))
+    transmit.stream(p, dry_run=True)
+    raw = next(transmit._iter_chunks(p.iq_path, p.sample_format, p.chunk_samples))
+    assert np.array_equal(seen_chunks[0], raw)
+
+
+def test_nonzero_baseband_offset_shifts_the_spectrum(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    fs = 2_600_000.0
+    n = 8192
+    # A pure baseband tone at 0 Hz, written as raw int16 I/Q so
+    # _iter_chunks reconstructs it as a real-valued-only (DC) complex signal.
+    dtype = np.int16
+    data = np.zeros(n * 2, dtype=dtype)
+    data[0::2] = 10000  # I = constant, Q = 0 -> a DC (0 Hz) baseband tone
+    p_path = tmp_path / "dc.bin"
+    data.tofile(p_path)
+    offset_hz = 100_000.0
+    p = transmit.TxParams(iq_path=str(p_path), sample_rate=fs, sample_format="int16",
+                          chunk_samples=n, baseband_offset_hz=offset_hz)
+    seen_chunks = []
+    monkeypatch.setattr(transmit, "_DrySink", _recording_sink(seen_chunks))
+    transmit.stream(p, dry_run=True)
+    spectrum = np.abs(np.fft.fft(seen_chunks[0]))
+    peak_bin = np.argmax(spectrum)
+    freqs = np.fft.fftfreq(n, d=1.0 / fs)
+    assert abs(freqs[peak_bin] - offset_hz) < (fs / n) * 1.5

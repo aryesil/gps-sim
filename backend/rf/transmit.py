@@ -50,6 +50,11 @@ class TxParams:
     # satellites can push the raw sum toward +-4096) -- lower it only if a
     # real spectrum/power check shows clipping.
     tx_scale: float = 1.0
+    # RF-frontend LO-offset support (backend/rf/frontend/rf_frontend.py):
+    # non-zero only when the caller resolved a lo_offset_mode other than
+    # DISABLED. Mixed into the stream in stream() below via a per-session
+    # NCOMixer -- the on-disk IQ file is never touched.
+    baseband_offset_hz: float = 0.0
 
 
 class _DrySink:
@@ -107,6 +112,11 @@ def stream(params: TxParams, dry_run: bool = False, progress_cb=None,
         except Exception as ex:  # ImportError, AttributeError, iio errors, ...
             raise TransmitError(f"device open failed: {ex}") from ex
 
+    mixer = None
+    if params.baseband_offset_hz:
+        from backend.rf.frontend.nco import NCOMixer
+        mixer = NCOMixer(params.baseband_offset_hz, params.sample_rate)
+
     chunks = chunk_source if chunk_source is not None else _iter_chunks(
         params.iq_path, params.sample_format, params.chunk_samples)
 
@@ -116,6 +126,8 @@ def stream(params: TxParams, dry_run: bool = False, progress_cb=None,
         for chunk in chunks:
             if cancel is not None and cancel.is_set():
                 break
+            if mixer is not None:
+                chunk = mixer.mix(chunk)
             if params.tx_scale != 1.0:
                 chunk = chunk * params.tx_scale
             sink.push(chunk)
