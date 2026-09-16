@@ -13,6 +13,7 @@ dependencies = [
     "georinex>=1.16",
     "python-dateutil>=2.9",
     "pyadi-iio>=0.0.16",
+    "bladerf",
 ]
 
 [project.optional-dependencies]

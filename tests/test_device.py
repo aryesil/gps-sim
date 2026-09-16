@@ -130,6 +130,41 @@ def test_api_device_endpoints(monkeypatch, tmp_path):
     assert r.status_code == 200 and r.json()["connected"] is False
 
 
+def test_api_device_connect_forwards_kind(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "LOG_DIR", tmp_path)
+    seen = {}
+
+    def _fake_connect(uri, **kwargs):
+        seen["uri"] = uri
+        seen["kwargs"] = kwargs
+        return {"uri": uri, "kind": kwargs.get("kind", "pluto"),
+                "connected": True, "since": "t", "info": {}, "state": "standby"}
+
+    monkeypatch.setattr(device, "connect", _fake_connect)
+    r = client.post("/api/device/connect", json={"uri": "ip:1.2.3.4", "kind": "bladerf"})
+    assert r.status_code == 200
+    assert seen["kwargs"] == {"kind": "bladerf"}
+    assert r.json()["kind"] == "bladerf"
+
+
+def test_api_device_connect_omits_kind_when_not_specified(monkeypatch, tmp_path):
+    # Regression guard: a caller that never mentions `kind` (e.g. this exact
+    # monkeypatched single-arg fake, matching what test_api_device_endpoints
+    # above already relies on) must keep working -- the endpoint must not
+    # always inject a kind kwarg.
+    monkeypatch.setattr(config, "LOG_DIR", tmp_path)
+    seen = {}
+
+    def _fake_connect(uri):
+        seen["uri"] = uri
+        return {"uri": uri, "connected": True, "since": "t", "info": {}, "state": "standby"}
+
+    monkeypatch.setattr(device, "connect", _fake_connect)
+    r = client.post("/api/device/connect", json={"uri": "ip:1.2.3.4"})
+    assert r.status_code == 200
+    assert seen["uri"] == "ip:1.2.3.4"
+
+
 def test_api_device_connect_failure_is_502(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "LOG_DIR", tmp_path)
 

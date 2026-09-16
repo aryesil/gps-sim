@@ -46,20 +46,22 @@ window.deviceUI = (function () {
 
     btn.onclick = async () => {
       const uri = document.getElementById(`${id}-uri`).value.trim();
+      const kindEl = document.getElementById(`${id}-kind`);
+      const kind = kindEl ? kindEl.value : 'pluto';
       const connected = btn.dataset.connected === '1';
       btn.disabled = true;
       try {
         if (connected) {
           await fetch('/api/device/disconnect', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ uri }),
+            body: JSON.stringify({ uri, kind }),
           });
           setState(false);
           if (window.logLine) logLine(`Channel ${id}: SDR ${uri} disconnected`, 'info');
         } else {
           const r = await fetch('/api/device/connect', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ uri }),
+            body: JSON.stringify({ uri, kind }),
           });
           const d = await r.json();
           if (!r.ok) {
@@ -75,10 +77,12 @@ window.deviceUI = (function () {
       }
     };
 
-    // Reflect any link the server already holds for this card's URI.
+    // Reflect any link the server already holds for this card's URI+kind.
     const devs = await refreshGlobal();
     const uri = document.getElementById(`${id}-uri`).value.trim();
-    const mine = devs.find((x) => x.uri === uri);
+    const kindEl = document.getElementById(`${id}-kind`);
+    const kind = kindEl ? kindEl.value : 'pluto';
+    const mine = devs.find((x) => x.uri === uri && x.kind === kind);
     setState(!!mine, mine && mine.info);
   }
 

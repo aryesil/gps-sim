@@ -1038,6 +1038,7 @@ def start_transmit(body: dict, request: Request):
             tx_gain_db=float(body.get("tx_gain_db", -50.0)),
             uri=body.get("uri", config.DEVICE_URI),
             tx_scale=float(body.get("tx_scale", 1.0)),
+            kind=body.get("kind", "pluto"),
             slot=slot)
         itemsize = 1 if params.sample_format == "int8" else 2
         try:
@@ -1111,8 +1112,9 @@ def device_connect(body: dict, request: Request):
     actually starts (backend/device.py)."""
     auth.require_operator(request)
     uri = body.get("uri") or config.DEVICE_URI
+    kwargs = {"kind": body["kind"]} if "kind" in body else {}
     try:
-        entry = device.connect(uri)
+        entry = device.connect(uri, **kwargs)
     except device.DeviceError as e:
         raise HTTPException(502, str(e))
     audit.log_event("device_connect", uri=uri, info=entry.get("info", {}))
@@ -1123,7 +1125,8 @@ def device_connect(body: dict, request: Request):
 def device_disconnect(body: dict, request: Request):
     auth.require_operator(request)
     uri = body.get("uri") or config.DEVICE_URI
-    device.disconnect(uri)
+    kwargs = {"kind": body["kind"]} if "kind" in body else {}
+    device.disconnect(uri, **kwargs)
     audit.log_event("device_disconnect", uri=uri)
     return {"uri": uri, "connected": False}
 
@@ -1348,6 +1351,7 @@ def live_start(body: dict, request: Request):
             lo_hz=lo_hz, baseband_offset_hz=bb_offset_hz,
             tx_gain_db=float(body.get("tx_gain_db", -50.0)),
             uri=body.get("uri", config.DEVICE_URI),
+            kind=body.get("kind", "pluto"),
             slot=slot)
     except rf_frontend.RFFrontendError as ex:
         _release_tx_slot(slot)

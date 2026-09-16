@@ -27,6 +27,10 @@ window.addChannel = function () {
       <div class="col-hw">
         <h4>Hardware Config</h4>
         <label>Device URI <input id="${id}-uri" value="ip:192.168.2.1"></label>
+        <label>SDR kind <select id="${id}-kind">
+          <option value="pluto">Pluto / IIO clone</option>
+          <option value="bladerf">bladeRF</option>
+        </select><span class="info" title="Which driver stack talks to the URI above: PlutoSDR/AD936x IIO clones (libiio), or a Nuand bladeRF (libbladeRF). Both TX1/TX2 slots must agree on this -- they're two ports of the same physical card.">i</span></label>
         <div class="device-row">
           <button id="${id}-dev-connect" class="btn-secondary">Connect</button>
           <span id="${id}-dev-status" class="dev-status dev-off">not connected</span>
@@ -976,6 +980,7 @@ function wireChannelActions(id) {
       sample_rate: Number(document.getElementById(`${id}-rate`).value),
       sample_format: document.getElementById(`${id}-fmt`).value,
       uri: document.getElementById(`${id}-uri`).value,
+      kind: document.getElementById(`${id}-kind`).value,
       lo_hz: Number(document.getElementById(`${id}-lo`).value),
       tx_gain_db: Number(document.getElementById(`${id}-gain`).value),
       slot: document.getElementById(`${id}-tx-slot`).value,

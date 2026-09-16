@@ -157,6 +157,88 @@ def test_live_start_sse_carries_rf_plan_when_layer_enabled(monkeypatch):
     assert '"tx_lo_hz": 1574420000' in r.text
 
 
+def test_live_start_forwards_kind_to_tx_params(monkeypatch):
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    import pathlib
+    seen = {}
+    real_stream = transmit.stream
+
+    def spy_stream(params, **kwargs):
+        seen["kind"] = params.kind
+        return real_stream(params, **kwargs)
+
+    monkeypatch.setattr(transmit, "stream", spy_stream)
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    r = client.post("/api/live/start", json={
+        "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
+        "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
+        "engine": "native", "systems": ["G"], "kind": "bladerf",
+        "sample_rate": 2.6e6, "dry_run": True, "duration_s": 3600,
+        "max_duration_s": 0.05})
+    assert r.status_code == 200
+    assert seen["kind"] == "bladerf"
+
+
+def test_live_start_defaults_kind_to_pluto(monkeypatch):
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    import pathlib
+    seen = {}
+    real_stream = transmit.stream
+
+    def spy_stream(params, **kwargs):
+        seen["kind"] = params.kind
+        return real_stream(params, **kwargs)
+
+    monkeypatch.setattr(transmit, "stream", spy_stream)
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    r = client.post("/api/live/start", json={
+        "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
+        "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
+        "engine": "native", "systems": ["G"],
+        "sample_rate": 2.6e6, "dry_run": True, "duration_s": 3600,
+        "max_duration_s": 0.05})
+    assert r.status_code == 200
+    assert seen["kind"] == "pluto"
+
+
+def test_transmit_forwards_kind_to_tx_params(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    seen = {}
+    real_stream = transmit.stream
+
+    def spy_stream(params, **kwargs):
+        seen["kind"] = params.kind
+        return real_stream(params, **kwargs)
+
+    monkeypatch.setattr(transmit, "stream", spy_stream)
+    iq = tmp_path / "gpssim.bin"
+    iq.write_bytes(b"\x00\x00" * 100)
+    r = client.post("/api/transmit", json={
+        "iq_path": str(iq), "sample_rate": 2.6e6, "sample_format": "int16",
+        "confirm_isolated": True, "dry_run": True, "kind": "bladerf"})
+    assert r.status_code == 200
+    assert seen["kind"] == "bladerf"
+
+
+def test_transmit_defaults_kind_to_pluto(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    seen = {}
+    real_stream = transmit.stream
+
+    def spy_stream(params, **kwargs):
+        seen["kind"] = params.kind
+        return real_stream(params, **kwargs)
+
+    monkeypatch.setattr(transmit, "stream", spy_stream)
+    iq = tmp_path / "gpssim.bin"
+    iq.write_bytes(b"\x00\x00" * 100)
+    r = client.post("/api/transmit", json={
+        "iq_path": str(iq), "sample_rate": 2.6e6, "sample_format": "int16",
+        "confirm_isolated": True, "dry_run": True})
+    assert r.status_code == 200
+    assert seen["kind"] == "pluto"
+
+
 def test_live_start_explicit_slot_already_occupied_is_409_not_fallback(monkeypatch):
     monkeypatch.setattr(config, "ALLOW_TX", True)
     from backend import app as app_module
