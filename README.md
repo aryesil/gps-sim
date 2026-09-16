@@ -5,8 +5,8 @@ A controlled, observable, and reproducible GNSS signal testing workbench.
 Pick a place and time on a map, generate a baseband L1 IQ recording, check it
 with a built-in software receiver, decode its navigation message, and —
 optionally, into a cable and never over the air — replay it to a
-PlutoSDR-class SDR. Every RF-relevant action is written to a persistent audit
-log.
+PlutoSDR-class SDR or a Nuand bladeRF. Every RF-relevant action is written to
+a persistent audit log.
 
 Two generation engines:
 
@@ -67,8 +67,13 @@ engine (GPS + GLONASS + Galileo + BeiDou + QZSS from an MGEX SP3 product).
   solves a least-squares fix, and reports the error against the map marker.
 - **Decode** — reconstruct and explain the LNAV navigation message
   (subframes, parity, clock/ephemeris parameters) for a chosen PRN.
-- **Transmit** (opt-in) — push IQ to a PlutoSDR-class device via `pyadi-iio`
-  with underflow tracking, a cancel event, and an optional fail-safe timeout.
+- **Transmit** (opt-in) — push IQ to a PlutoSDR-class device (`pyadi-iio`) or
+  a Nuand bladeRF (`libbladeRF`), picked per channel with a `kind` field
+  (`pluto` default, `bladerf`), with underflow tracking, a cancel event, and
+  an optional fail-safe timeout. An optional RF frontend layer plans an
+  LO-offset (`DISABLED` / `MANUAL` / `AUTO`) between the AD9361 LO and the
+  target RF frequency and, when an offset is in play, auto-triggers TX
+  quadrature calibration before streaming.
 - **Live session** — regenerate one short IQ segment at a time so position
   and GPS time can be jogged *while transmitting*; timeline scripting;
   live spectrogram + C/N0 trend over SSE; record the SSE stream and replay
@@ -114,11 +119,14 @@ is. This workbench wraps generation with the parts a test rig needs:
 ```
 
 `setup.sh` clones and compiles `gps-sdr-sim`, creates `.venv`, and runs
-`pip install -e ".[dev]"`. For the transmit path only it also builds
-`libiio` (v0.25) and `libad9361-iio` (v0.4.0) from source into the venv's
-own prefix — nothing touches a system directory, and `rm -rf .venv` removes
-them cleanly. Prerequisites for that path: `cmake`, a C compiler, and
-`libusb`. Without them everything except hardware transmit still works.
+`pip install -e ".[dev]"`. It then asks which SDR you'll transmit with —
+PlutoSDR/AD936x IIO clone, bladeRF, or both (skip the prompt with
+`SDR_KIND=pluto|bladerf|both ./scripts/setup.sh`, e.g. for CI) — and builds
+only that backend's native library from source into the venv's own prefix:
+`libiio` (v0.25) + `libad9361-iio` (v0.4.0) for Pluto, `libbladeRF`
+(v2024.02) for bladeRF. Nothing touches a system directory, and
+`rm -rf .venv` removes them cleanly. Prerequisites: `cmake`, a C compiler,
+and `libusb`. Without them everything except hardware transmit still works.
 
 `run_server.sh` activates `.venv`, points `DYLD_LIBRARY_PATH` /
 `LD_LIBRARY_PATH` at the venv's `lib/`, and starts uvicorn. Override with
@@ -201,7 +209,12 @@ backend/
                     channel_models.py (glue), impairments.py, error_budget.py, wls.py
   analysis/         receiver.py (LS fix), reference.py + truth.py (independent
                     cross-check refs), iq_integrity.py, lnav_display.py
-  rf/               transmit.py (pyadi-iio streaming, underflow, cancel), device.py (standby control link)
+  rf/               transmit.py (TxParams incl. kind, streaming, underflow, cancel),
+                    device.py (standby control link, kind-keyed), dual_tx.py (shared TX1/TX2 card)
+    backends/       ad9361.py (pyadi-iio) / bladerf.py (libbladeRF) -- duck-typed
+                    open_tx/set_gain/write/close/probe_open/probe_info per `kind`
+    frontend/       rf_frontend.py (LO-offset planning), calibration.py (TX quadrature
+                    cal), capabilities.py, diagnostic.py, nco.py
   obs/              audit.py, ws_hub.py, receiver_feed.py, nmea.py, recording.py, provenance.py
   store/            trajectory.py, trajectory_sim.py, scenario_lib.py  (named-preset storage)
   session/          live.py  (LiveSession: segment regeneration, jog, time-shift)
@@ -223,7 +236,8 @@ frontend/           vanilla JS, no build step; served static by FastAPI at /stat
 Events; the multi-operator feed is a WebSocket; everything else is JSON over
 HTTP. **Concurrency:** at most two transmit slots (`TX1`, `TX2`); audit
 appends are lock-serialized. **Tech stack:** Python ≥ 3.10, FastAPI +
-uvicorn, NumPy, `georinex`, `pyadi-iio` (transmit only), `gps-sdr-sim` (C,
+uvicorn, NumPy, `georinex`, `pyadi-iio` + `bladerf` (transmit only, one
+per `kind`), `gps-sdr-sim` (C,
 built from source), the native engine (C++20, built from source into
 `backend/synth/native/libgnsssynth.dylib`, loaded via `ctypes` — no Python
 extension module); dependency-free vanilla JS plus Leaflet from a CDN.
@@ -298,9 +312,9 @@ Three pages, switched from the left sidebar.
 
 **Channels** — one card per transmit channel (up to two):
 
-- *Hardware config* — Device URI, LO frequency (default 1575.42 MHz),
-  TX gain dB (default −50), *Dry run*, *Auto-stop after (s)*,
-  *Record this session*.
+- *Hardware config* — SDR kind (Pluto / IIO clone or bladeRF), Device URI,
+  LO frequency (default 1575.42 MHz), TX gain dB (default −50), *Dry run*,
+  *Auto-stop after (s)*, *Record this session*.
 - *Simulation config* — map marker, Start UTC, Duration, Sample rate,
   Format (int16 / int8), RINEX (`AUTO` or a path).
 - *Ephemeris* — Broadcast (realigned) / Precise (SP3-fitted) selector,
@@ -394,8 +408,8 @@ key in `X-API-Key`; a transmit *stop* never does.
 | Ephemeris | `POST /api/rinex/upload` |
 | Precise (analysis) | `GET /api/precise/status`, `POST /api/precise/load` *(operator)*, `POST /api/precise/compare` |
 | Generate / inspect | `POST /api/generate` (SSE; accepts `ephemeris_mode`, `fallback_to_broadcast`, `engine` (`gps-sdr-sim`｜`native`), `systems`, `fading`, `sample_format` int16/int12/int8), `POST /api/receiver`, `GET /api/iqplot` (per-RF-band breakdown when multi-band), `GET /api/correlation`, `GET /api/lnav` |
-| Transmit *(needs `ALLOW_TX=1`)* | `POST /api/transmit` (SSE, operator), `POST /api/transmit/stop`, `POST /api/live/start` (SSE, operator), `POST /api/live/jog|time_shift` *(operator)*, `POST /api/live/stop` |
-| Device *(needs `ALLOW_TX=1`)* | `POST /api/device/connect|disconnect` *(operator)*, `GET /api/device/status` |
+| Transmit *(needs `ALLOW_TX=1`)* | `POST /api/transmit` (SSE, operator; accepts `kind` — `pluto`｜`bladerf`), `POST /api/transmit/stop`, `POST /api/live/start` (SSE, operator; accepts `kind`, plus `target_rf_frequency_hz`/`lo_offset_mode`/`lo_offset_hz` when `RF_FRONTEND_ENABLED=1`), `POST /api/live/jog|time_shift` *(operator)*, `POST /api/live/stop` |
+| Device *(needs `ALLOW_TX=1`)* | `POST /api/device/connect|disconnect` *(operator; accepts `kind`)*, `GET /api/device/status` |
 | Recording | `GET /api/recording/list`, `GET /api/recording/replay` (SSE) |
 | Receiver feedback | `POST /api/receiver/listen|stop_listen|inject` *(operator)*, `GET /api/receiver/fix` |
 | Presets | `POST/GET/GET /api/trajectory/save|list|load`, `POST/GET/GET /api/scenario/save|list|load` (saves are *operator*) |
@@ -413,7 +427,8 @@ All via environment variables (see `backend/config.py`).
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `ALLOW_TX` | `0` | Master switch for every transmit endpoint. Off ⇒ HTTP 403. |
-| `DEVICE_URI` | `ip:192.168.2.1` | Default SDR URI for `pyadi-iio`. |
+| `DEVICE_URI` | `ip:192.168.2.1` | Default SDR URI (`pyadi-iio` for `kind=pluto`, a bladeRF device identifier for `kind=bladerf`, e.g. `*:serial=...`). |
+| `RF_FRONTEND_ENABLED` | `0` | Enables the LO-offset planner + auto TX quadrature calibration (`target_rf_frequency_hz`/`lo_offset_mode`/`lo_offset_hz` on transmit/live-start). |
 | `DEFAULT_SAMPLE_RATE` | `2600000` | Default IQ sample rate (Hz). |
 | `DEFAULT_FORMAT` | `int16` | Default sample format (`int16` / `int8`). |
 | `DATA_DIR` | `./data` | RINEX cache, saved trajectories & scenarios. |
@@ -473,7 +488,8 @@ operator; the authors accept no liability for misuse.
 .venv/bin/pytest -q
 ```
 
-**567 passed, 4 xfailed** as of this writing. Coverage spans ephemeris
+**860+ tests** as of this writing (a few `xfail` need real SDR hardware).
+Coverage spans ephemeris
 alignment, GPS-time conversions, the SP3 parser and multi-GNSS orbit/clock
 interpolation, the broadcast/precise mode selector, the SP3→broadcast
 fit (pure-Kepler recovery to millimetres, SP3-fixture fit, RINEX-2
@@ -481,8 +497,10 @@ serialisation), precise generation wiring (both engines), geometry, the
 native engine (per-system code generation, NCO/mixer continuity, BOC and
 secondary codes, GLONASS FDMA epoch, multi-constellation acquisition,
 seeded fading, band planning, C++/Python constant parity), acquisition,
-the receiver solve, LNAV decode, the live session, transmit plumbing
-(mocked hardware), the device link, audit, RBAC, NMEA parsing,
+the receiver solve, LNAV decode, the live session, transmit plumbing for
+both the Pluto and bladeRF backends (mocked hardware), the RF-frontend
+LO-offset planner and TX quadrature calibration, the device link, audit,
+RBAC, NMEA parsing,
 recording/replay, the scenario library, the WebSocket hub, the frontend
 assets, and the precise-ephemeris HTTP endpoints. The 4 `xfail` cases
 need real SDR hardware. The suite uses fixtures and mocks only — no
