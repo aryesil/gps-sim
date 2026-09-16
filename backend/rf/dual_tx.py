@@ -153,6 +153,14 @@ class _SlotSink:
         self._carry = np.zeros(0, dtype=np.complex64)
 
     @property
+    def sdr(self):
+        """The shared card's real pyadi-iio handle -- lets a caller (see
+        transmit.py's TX quadrature calibration trigger) reach the actual
+        hardware object without depending on dual_tx's internal _Card
+        layout."""
+        return self._card.sdr
+
+    @property
     def underflow(self) -> int:
         with self._card.lock:
             return self._card.underflow.get(self._slot, 0)

@@ -78,6 +78,23 @@ def test_unknown_mode_rejected():
         rff.plan(_cfg(lo_offset_mode="BOGUS"))
 
 
+def test_explicit_signal_bandwidth_hz_overrides_the_generic_default():
+    # rf_frontend's own default (2.046 MHz, GPS L1 C/A-sized) would pass
+    # this offset; the real L5 signal (20.46 MHz) it's overridden with must not.
+    with pytest.raises(rff.RFFrontendError, match="bandwidth"):
+        rff.plan(rff.RFFrontendConfig(
+            target_rf_frequency_hz=1_176_450_000, lo_offset_mode="MANUAL",
+            lo_offset_hz=-1_000_000, tx_sample_rate_hz=25_000_000,
+            tx_rf_bandwidth_hz=20_000_000, signal_bandwidth_hz=20_460_000))
+
+
+def test_zero_tx_rf_bandwidth_hz_is_not_treated_as_unset():
+    # An explicit 0 must still be validated against (a 0 Hz filter can fit
+    # no signal), not silently skipped like the falsy-zero bug did.
+    with pytest.raises(rff.RFFrontendError, match="bandwidth"):
+        rff.plan(_cfg(lo_offset_mode="MANUAL", lo_offset_hz=0, tx_rf_bandwidth_hz=0))
+
+
 def test_missing_sample_rate_rejected_for_manual():
     with pytest.raises(rff.RFFrontendError, match="sample_rate"):
         rff.plan(_cfg(lo_offset_mode="MANUAL", lo_offset_hz=1_000, tx_sample_rate_hz=0))

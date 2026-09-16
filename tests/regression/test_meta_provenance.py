@@ -2,14 +2,13 @@
 import datetime as dt
 import json
 import pathlib
-import stat
-import sys
 import textwrap
 
 import pytest
 
 from backend import generator, scenario
 from backend.obs import provenance
+from tests._fake_binary_launcher import launcher_for
 
 FIX = pathlib.Path(__file__).resolve().parent.parent / "fixtures" / "brdc_sample.rnx"
 
@@ -21,14 +20,7 @@ def _fake_binary(tmp_path):
         out = sys.argv[sys.argv.index("-o") + 1]
         open(out, "wb").write(b"\\x01\\x02" * 500)
     '''))
-    if sys.platform == "win32":
-        sh = tmp_path / "fake_sim.bat"
-        sh.write_text(f'@"{sys.executable}" "{p}" %*\r\n')
-        return str(sh)
-    sh = tmp_path / "fake_sim"
-    sh.write_text(f'#!/usr/bin/env bash\nexec python "{p}" "$@"\n')
-    sh.chmod(sh.stat().st_mode | stat.S_IEXEC)
-    return str(sh)
+    return launcher_for(p)
 
 
 def _req(**kw):

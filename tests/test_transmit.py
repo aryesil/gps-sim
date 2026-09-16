@@ -1,10 +1,12 @@
+import sys
 import threading
 import time
+import types
 
 import numpy as np
 import pytest
 
-from backend.rf import transmit
+from backend.rf import dual_tx, transmit
 from backend import config
 
 
@@ -147,6 +149,54 @@ def test_default_baseband_offset_is_zero_and_a_no_op(tmp_path, monkeypatch):
     transmit.stream(p, dry_run=True)
     raw = next(transmit._iter_chunks(p.iq_path, p.sample_format, p.chunk_samples))
     assert np.array_equal(seen_chunks[0], raw)
+
+
+class _FakeAD9361ForCalibration:
+    def __init__(self, uri=None):
+        self.uri = uri
+        self.tx_enabled_channels = None
+        self.sample_rate = None
+        self.tx_lo = None
+        self.tx_cyclic_buffer = None
+        self.tx_hardwaregain_chan0 = None
+        self.tx_hardwaregain_chan1 = None
+        self.destroyed = False
+
+    def tx(self, blocks):
+        time.sleep(0.001)
+
+    def tx_destroy_buffer(self):
+        self.destroyed = True
+
+
+def test_nonzero_baseband_offset_triggers_a_calibration_attempt(tmp_path, monkeypatch):
+    # A non-DISABLED LO offset moves the carrier off the AD9361's own TX LO
+    # -- exactly the situation its internal TX quadrature calibration exists
+    # for. calibrate() was written and unit-tested but never invoked from
+    # any real transmit path; this proves stream() now actually calls it.
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    fake_module = types.ModuleType("adi")
+    fake_module.ad9361 = _FakeAD9361ForCalibration
+    monkeypatch.setitem(sys.modules, "adi", fake_module)
+    dual_tx._card = None
+    try:
+        p = transmit.TxParams(
+            iq_path=_iq_file(tmp_path, samples=1000), sample_rate=2.6e6,
+            sample_format="int16", chunk_samples=1000,
+            baseband_offset_hz=100_000.0, uri="ip:1.2.3.4")
+        events = []
+        transmit.stream(p, dry_run=False, progress_cb=events.append)
+        cal_events = [d for d in events if "calibration" in d]
+        assert cal_events, "calibrate() was never invoked from stream()"
+        # The fake sdr has no _ctrl, so capabilities.detect() correctly
+        # reports no TX_QUAD support -- proves calibrate() actually ran
+        # against the real sdr handle, not a stub that always succeeds.
+        assert cal_events[0]["calibration"]["success"] is False
+        assert cal_events[0]["calibration"]["calibration_type"] == "NONE"
+    finally:
+        if dual_tx._card is not None:
+            dual_tx._card.shut_down()
+            dual_tx._card = None
 
 
 def test_nonzero_baseband_offset_shifts_the_spectrum(tmp_path, monkeypatch):

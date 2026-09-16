@@ -116,6 +116,24 @@ def stream(params: TxParams, dry_run: bool = False, progress_cb=None,
     if params.baseband_offset_hz:
         from backend.rf.frontend.nco import NCOMixer
         mixer = NCOMixer(params.baseband_offset_hz, params.sample_rate)
+        # An LO offset moves the carrier off the AD9361's own TX LO, which
+        # is exactly the situation its internal TX quadrature calibration
+        # was tuned for. Best-effort: calibrate() itself never raises (see
+        # backend/rf/frontend/calibration.py), it degrades to a reported
+        # failure on hardware/driver combinations that don't support it.
+        if not dry_run:
+            sdr = getattr(sink, "sdr", None)
+            if sdr is not None:
+                from backend.rf.frontend import calibration, capabilities
+                caps = capabilities.detect(sdr)
+                cal = calibration.calibrate(
+                    sdr, caps, tx_lo_hz=int(params.lo_hz),
+                    target_rf_hz=int(params.lo_hz + params.baseband_offset_hz),
+                    baseband_offset_hz=int(params.baseband_offset_hz))
+                if progress_cb:
+                    progress_cb({"elapsed_s": 0.0,
+                                 "underflow": int(getattr(sink, "underflow", 0)),
+                                 "samples": 0, "calibration": vars(cal)})
 
     chunks = chunk_source if chunk_source is not None else _iter_chunks(
         params.iq_path, params.sample_format, params.chunk_samples)

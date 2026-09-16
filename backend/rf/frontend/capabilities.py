@@ -48,11 +48,6 @@ def _probe_calib_mode(sdr) -> bool:
 
 
 def _probe_temperature(sdr) -> bool:
-    try:
-        ctrl = getattr(sdr, "_ctrl", None)
-        if ctrl is None:
-            return False
-        ctrl.find_channel("temp0")
-        return True
-    except Exception:
-        return False
+    from backend.rf._iio_probe import probe_temp_channel
+    ctrl = getattr(sdr, "_ctrl", None)
+    return probe_temp_channel(ctrl) is not None

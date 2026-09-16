@@ -166,6 +166,50 @@ def test_transmit_applies_rf_plan_when_layer_enabled(client, monkeypatch, tmp_pa
                else '"tx_lo_hz": 1574420000' in line for line in lines)
 
 
+def test_transmit_null_lo_offset_mode_defaults_instead_of_crashing(client, monkeypatch, tmp_path):
+    # An explicit JSON null must not reach rf_frontend as None (AttributeError
+    # on .upper()) -- body.get(key, default) alone doesn't catch this.
+    from backend import config
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    monkeypatch.setattr(config, "RF_FRONTEND_ENABLED", True)
+    p = tmp_path / "g.bin"
+    p.write_bytes(b"\x00\x00" * 2000)
+    body = {
+        "iq_path": str(p), "sample_rate": 2.6e6, "sample_format": "int16",
+        "confirm_isolated": True, "dry_run": True,
+        "target_rf_frequency_hz": 1_575_420_000, "lo_offset_mode": None,
+    }
+    r = client.post("/api/transmit", json=body)
+    assert r.status_code == 200
+    list(r.iter_lines())
+
+
+def test_transmit_null_lo_offset_hz_defaults_to_zero(client, monkeypatch, tmp_path):
+    # Same null-injection hazard for lo_offset_hz -- int(None) is a TypeError.
+    from backend import config
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    monkeypatch.setattr(config, "RF_FRONTEND_ENABLED", True)
+    p = tmp_path / "g.bin"
+    p.write_bytes(b"\x00\x00" * 2000)
+    body = {
+        "iq_path": str(p), "sample_rate": 2.6e6, "sample_format": "int16",
+        "confirm_isolated": True, "dry_run": True,
+        "target_rf_frequency_hz": 1_575_420_000, "lo_offset_mode": "MANUAL",
+        "lo_offset_hz": None,
+    }
+    r = client.post("/api/transmit", json=body)
+    assert r.status_code == 200
+    list(r.iter_lines())
+
+
+def test_signal_bandwidth_hz_uses_the_real_band_not_the_l1_default():
+    # L5's ~20.46 MHz occupied bandwidth (2 * 10.23e6 chip rate) must not be
+    # validated against rf_frontend's generic GPS-L1-sized default.
+    from backend import app as appmod
+    assert appmod._signal_bandwidth_hz("L1", ["G"]) == 2_046_000
+    assert appmod._signal_bandwidth_hz("L5", ["G"]) == 20_460_000
+
+
 def test_transmit_rejects_invalid_rf_plan_with_400(client, monkeypatch, tmp_path):
     from backend import config
     monkeypatch.setattr(config, "ALLOW_TX", True)

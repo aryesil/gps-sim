@@ -25,7 +25,13 @@ from dataclasses import dataclass
 _AUTO_OFFSET_CANDIDATES_HZ: tuple[int, ...] = (1_000_000,)
 
 # GPS L1 C/A occupied bandwidth (main lobe, chip-rate-derived): 2 * CA_CHIP_HZ.
-_DEFAULT_SIGNAL_BANDWIDTH_HZ = 2_046_000
+# Only a fallback for callers that don't know the real transmitted signal's
+# bandwidth (e.g. a generic file replay with no band context); a caller that
+# does know it (live_start resolves the real band -- see
+# backend/app.py's _signal_bandwidth_hz) passes it explicitly instead.
+# Public (not a leading-underscore private): backend/app.py reaches across
+# the module boundary to use it as an explicit fallback value.
+DEFAULT_SIGNAL_BANDWIDTH_HZ = 2_046_000
 
 
 class RFFrontendError(Exception):
@@ -39,7 +45,7 @@ class RFFrontendConfig:
     lo_offset_hz: int = 0                   # used verbatim in MANUAL; ignored otherwise
     tx_rf_bandwidth_hz: int | None = None    # AD936x analog TX filter bandwidth, if set
     tx_sample_rate_hz: int = 0
-    signal_bandwidth_hz: int = _DEFAULT_SIGNAL_BANDWIDTH_HZ
+    signal_bandwidth_hz: int = DEFAULT_SIGNAL_BANDWIDTH_HZ
 
 
 @dataclass
@@ -59,7 +65,7 @@ def _validate_offset(baseband_offset_hz: int, cfg: RFFrontendConfig) -> None:
             f"baseband offset {baseband_offset_hz} Hz meets or exceeds "
             f"Nyquist ({nyquist:.0f} Hz) for sample rate "
             f"{cfg.tx_sample_rate_hz} Hz")
-    if cfg.tx_rf_bandwidth_hz:
+    if cfg.tx_rf_bandwidth_hz is not None:
         half_bw = cfg.tx_rf_bandwidth_hz / 2.0
         half_sig = cfg.signal_bandwidth_hz / 2.0
         if abs(baseband_offset_hz) + half_sig > half_bw:
@@ -86,31 +92,22 @@ def plan(cfg: RFFrontendConfig) -> RFPlan:
     elif mode == "MANUAL":
         result = _plan_for_lo_offset(target, int(cfg.lo_offset_hz), cfg)
     elif mode == "AUTO":
-        result = None
+        candidates = [sign * magnitude
+                      for magnitude in _AUTO_OFFSET_CANDIDATES_HZ
+                      for sign in (-1, 1)]
         last_error: Exception | None = None
-        for magnitude in _AUTO_OFFSET_CANDIDATES_HZ:
-            for lo_offset_hz in (-magnitude, magnitude):
-                try:
-                    result = _plan_for_lo_offset(target, lo_offset_hz, cfg)
-                except RFFrontendError as ex:
-                    last_error = ex
-                    continue
-                break
-            if result is not None:
-                break
-        if result is None:
-            raise RFFrontendError(
-                "AUTO lo_offset_mode found no valid offset for "
-                f"sample_rate={cfg.tx_sample_rate_hz} Hz, "
-                f"tx_rf_bandwidth={cfg.tx_rf_bandwidth_hz} Hz among "
-                f"candidates {_AUTO_OFFSET_CANDIDATES_HZ}"
-            ) from last_error
+        for lo_offset_hz in candidates:
+            try:
+                return _plan_for_lo_offset(target, lo_offset_hz, cfg)
+            except RFFrontendError as ex:
+                last_error = ex
+        raise RFFrontendError(
+            "AUTO lo_offset_mode found no valid offset for "
+            f"sample_rate={cfg.tx_sample_rate_hz} Hz, "
+            f"tx_rf_bandwidth={cfg.tx_rf_bandwidth_hz} Hz among "
+            f"candidates {_AUTO_OFFSET_CANDIDATES_HZ}"
+        ) from last_error
     else:
         raise RFFrontendError(f"unknown lo_offset_mode {cfg.lo_offset_mode!r}")
 
-    if result.tx_lo_hz + result.baseband_offset_hz != result.target_rf_hz:
-        raise RFFrontendError(
-            "internal invariant violated: "
-            f"tx_lo_hz({result.tx_lo_hz}) + baseband_offset_hz("
-            f"{result.baseband_offset_hz}) != target_rf_hz({result.target_rf_hz})")
     return result

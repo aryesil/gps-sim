@@ -139,6 +139,24 @@ def test_live_start_honours_explicit_slot_selection(monkeypatch):
     assert app_module._tx_slots["TX2"] is None  # released once finished
 
 
+def test_live_start_sse_carries_rf_plan_when_layer_enabled(monkeypatch):
+    # start_transmit's SSE already merged rf_report into every event; live_start's
+    # own cb() forgot to (only start_transmit did), leaving a client with no way
+    # to observe the resolved tx_lo_hz/baseband_offset_hz on the live path.
+    import pathlib
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    monkeypatch.setattr(config, "RF_FRONTEND_ENABLED", True)
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    r = client.post("/api/live/start", json={
+        "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
+        "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
+        "dry_run": True, "duration_s": 3600, "max_duration_s": 0.05,
+        "target_rf_frequency_hz": 1_575_420_000, "lo_offset_mode": "MANUAL",
+        "lo_offset_hz": -1_000_000})
+    assert r.status_code == 200
+    assert '"tx_lo_hz": 1574420000' in r.text
+
+
 def test_live_start_explicit_slot_already_occupied_is_409_not_fallback(monkeypatch):
     monkeypatch.setattr(config, "ALLOW_TX", True)
     from backend import app as app_module

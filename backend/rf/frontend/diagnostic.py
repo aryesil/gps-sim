@@ -13,16 +13,12 @@ from collections.abc import Iterator
 
 import numpy as np
 
+from backend.rf.frontend.nco import NCOMixer
+
 
 def cw_chunk_source(sample_rate_hz: float, chunk_samples: int = 65536,
                      tone_hz: float = 0.0) -> Iterator[np.ndarray]:
-    n = 0
+    mixer = NCOMixer(tone_hz, sample_rate_hz) if tone_hz else None
+    carrier = np.ones(chunk_samples, dtype=np.complex64)
     while True:
-        if tone_hz:
-            idx = np.arange(n, n + chunk_samples, dtype=np.float64)
-            phase = (2.0 * np.pi * tone_hz / sample_rate_hz) * idx
-            chunk = np.exp(1j * phase).astype(np.complex64)
-        else:
-            chunk = np.ones(chunk_samples, dtype=np.complex64)
-        n += chunk_samples
-        yield chunk
+        yield mixer.mix(carrier) if mixer is not None else carrier

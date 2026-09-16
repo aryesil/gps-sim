@@ -290,23 +290,55 @@ def _has_libiio() -> bool:
         return False
 
 
-def _resolve_rf_plan(body: dict, default_target_hz: float,
-                      sample_rate: float) -> tuple[float, float, dict | None]:
+def _body_or(body: dict, key: str, default):
+    """body.get(key, default), but also substitutes default for an explicit
+    JSON null -- a bare .get() only catches a missing key, and a client
+    sending e.g. {"lo_offset_mode": null} would otherwise reach rf_frontend
+    with None instead of the documented default."""
+    val = body.get(key, default)
+    return default if val is None else val
+
+
+def _signal_bandwidth_hz(internal_band: str, systems: list[str]) -> int:
+    """Occupied main-lobe bandwidth (Hz) of the real signal(s) that will
+    actually be transmitted on ``internal_band``: the widest of every
+    system's signal there, using 2*(chip_rate+subcarrier) so a BOC signal's
+    split main lobes are covered too (subcarrier is 0 for a plain-BPSK
+    signal, reducing to the familiar 2*chip_rate -- e.g. GPS L1 C/A's
+    2.046 MHz). Falls back to rf_frontend's own default when the band/
+    systems combination resolves no signal (shouldn't happen for a band
+    that was actually resolved, but never worth a crash over)."""
+    widths = [2 * (sig.chip_rate_hz + sig.sub_carrier_hz)
+              for sysc in systems
+              for sig in signals.signals_for(sysc, (internal_band,))]
+    return int(max(widths)) if widths else rf_frontend.DEFAULT_SIGNAL_BANDWIDTH_HZ
+
+
+def _resolve_rf_plan(body: dict, default_target_hz: float, sample_rate: float,
+                      signal_bandwidth_hz: int | None = None
+                      ) -> tuple[float, float, dict | None]:
     """RF-frontend LO-offset planning, gated by RF_FRONTEND_ENABLED. Returns
     (lo_hz, baseband_offset_hz, report). report is None -- and lo_hz/
     baseband_offset_hz are today's exact pass-through values -- whenever the
     layer is off or the request didn't ask for it, so an untouched request
-    body produces byte-identical behavior to before this feature existed."""
+    body produces byte-identical behavior to before this feature existed.
+    ``signal_bandwidth_hz``, when known (live_start resolves the real
+    transmitted band before calling this), is what the RF-bandwidth
+    guard-band check validates against instead of rf_frontend's generic
+    GPS-L1-sized default."""
     if not config.RF_FRONTEND_ENABLED or "target_rf_frequency_hz" not in body:
-        return float(body.get("lo_hz", default_target_hz)), 0.0, None
-    cfg = rf_frontend.RFFrontendConfig(
+        return float(_body_or(body, "lo_hz", default_target_hz)), 0.0, None
+    cfg_kwargs = dict(
         target_rf_frequency_hz=int(body["target_rf_frequency_hz"]),
-        lo_offset_mode=body.get("lo_offset_mode", "DISABLED"),
-        lo_offset_hz=int(body.get("lo_offset_hz", 0)),
+        lo_offset_mode=_body_or(body, "lo_offset_mode", "DISABLED"),
+        lo_offset_hz=int(_body_or(body, "lo_offset_hz", 0)),
         tx_rf_bandwidth_hz=(int(body["tx_rf_bandwidth_hz"])
-                             if body.get("tx_rf_bandwidth_hz") else None),
+                             if body.get("tx_rf_bandwidth_hz") is not None else None),
         tx_sample_rate_hz=int(sample_rate),
     )
+    if signal_bandwidth_hz is not None:
+        cfg_kwargs["signal_bandwidth_hz"] = signal_bandwidth_hz
+    cfg = rf_frontend.RFFrontendConfig(**cfg_kwargs)
     result = rf_frontend.plan(cfg)
     report = {"target_rf_hz": result.target_rf_hz, "tx_lo_hz": result.tx_lo_hz,
               "baseband_offset_hz": result.baseband_offset_hz}
@@ -1303,9 +1335,14 @@ def live_start(body: dict, request: Request):
         # The SDR must run at the resolved band's REAL rate/centre, not the
         # request's nominal (often L1-oriented) sample_rate -- native L2/L5
         # float to their own floor independent of req.sample_rate (see
-        # _resolved_band_output). lo_hz still honours an explicit override.
+        # _resolved_band_output). An explicit lo_hz is honoured only when
+        # RF-frontend LO-offset planning isn't in play (RF_FRONTEND_ENABLED
+        # plus target_rf_frequency_hz together mean rf_frontend.plan()
+        # computes lo_hz instead -- see _resolve_rf_plan).
         band_fs, band_centre_hz = _resolved_band_output(internal_band, systems, req)
-        lo_hz, bb_offset_hz, rf_report = _resolve_rf_plan(body, band_centre_hz, band_fs)
+        sig_bw_hz = _signal_bandwidth_hz(internal_band, systems)
+        lo_hz, bb_offset_hz, rf_report = _resolve_rf_plan(
+            body, band_centre_hz, band_fs, sig_bw_hz)
         params = transmit.TxParams(
             iq_path="(live)", sample_rate=band_fs, sample_format=req.sample_format,
             lo_hz=lo_hz, baseband_offset_hz=bb_offset_hz,
@@ -1333,6 +1370,8 @@ def live_start(body: dict, request: Request):
             q: list = []
             def cb(d):
                 d["fraction"] = None  # unbounded live stream -- no total to divide by
+                if rf_report:
+                    d.update(rf_report)
                 q.append(d)
             def on_row(freqs, db):
                 q.append({"spectrogram_freq_hz": freqs.tolist(),

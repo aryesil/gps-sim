@@ -2,13 +2,13 @@ import datetime as dt
 import json
 import os
 import pathlib
-import stat
 import sys
 import textwrap
 
 import pytest
 
 from backend import generator, scenario
+from tests._fake_binary_launcher import launcher_for
 
 _FIX = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
 
@@ -28,17 +28,7 @@ def _fake_binary(tmp_path):
             print(f"Time into run = {t}", flush=True)
         open(out, "wb").write(b"\\x00\\x01" * 1000)
     '''))
-    if sys.platform == "win32":
-        # Windows' CreateProcess (what subprocess.run([binary, ...]) uses
-        # without shell=True) can launch a .bat/.cmd directly, but not a
-        # POSIX shebang script -- give it a batch-file launcher instead.
-        sh = tmp_path / "fake_sim.bat"
-        sh.write_text(f'@"{sys.executable}" "{p}" %*\r\n')
-        return str(sh)
-    sh = tmp_path / "fake_sim"
-    sh.write_text(f'#!/usr/bin/env bash\nexec python "{p}" "$@"\n')
-    sh.chmod(sh.stat().st_mode | stat.S_IEXEC)
-    return str(sh)
+    return launcher_for(p)
 
 
 def test_run_creates_output_and_meta(tmp_path, monkeypatch):

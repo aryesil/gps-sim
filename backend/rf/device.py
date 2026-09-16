@@ -43,8 +43,9 @@ def _probe_info(sdr) -> dict:
     except Exception:
         pass
     try:
-        if ctrl is not None:
-            temp_ch = ctrl.find_channel("temp0")
+        from backend.rf._iio_probe import probe_temp_channel
+        temp_ch = probe_temp_channel(ctrl)
+        if temp_ch is not None:
             raw = float(temp_ch.attrs["input"].value)
             info["temp_c"] = round(raw / 1000.0, 1)
     except Exception:
