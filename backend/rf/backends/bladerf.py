@@ -17,11 +17,32 @@ transmit.TxParams.tx_scale's KNOWN_ISSUES I2 note, peak ~1331 of int16's
 +-32767), so no extra scaling is applied here either.
 
 API confirmed against Nuand/bladeRF's own
-host/libraries/libbladeRF_bindings/python/bladerf/_bladerf.py at planning
-time; not verified against real hardware -- flag any discrepancy found
-during real-hardware bring-up back to this module's introducing plan
+host/libraries/libbladeRF_bindings/python/bladerf/_bladerf.py; the raw
+buffer layout and stream-config values are not verified against real
+hardware -- flag any discrepancy found during real-hardware bring-up back
+to this module's introducing plan
 (docs/superpowers/plans/2026-09-15-bladerf-tx-backend.md) rather than
 silently patching around it.
+
+Two deliberate differences from ad9361.py, both because bladeRF's own
+model differs from the AD9361/libiio one -- not oversights:
+
+- close() does not mute+zero-flush+destroy_buffer the way ad9361.py's
+  does. That sequence works around a libiio/AD9361-DMA quirk (the last
+  cyclic TX buffer keeps repeating after a plain buffer-destroy). libbladeRF's
+  sync interface is not cyclic-buffer-based; `bladerf_enable_module(dev,
+  TX, false)` is libbladeRF's own documented way to turn the RF front end
+  off, and disabling both channels (below) is that call. No AD9361-style
+  hack is needed or appropriate here.
+- The RF-frontend TX quadrature auto-calibration trigger
+  (backend/rf/frontend/calibration.py) never fires for this backend --
+  capabilities.detect() correctly reports supports_tx_quad_calibration=False,
+  since that trigger is a raw libiio `calib_mode` attribute AD9361/pyadi-iio
+  boards expose and bladeRF does not. This is not a missing feature: a
+  bladeRF's IQ/DC trims (bladerf_get_correction/set_correction --
+  DCOFF_I/DCOFF_Q/PHASE/GAIN) live in on-board flash and are loaded
+  automatically when the device opens, so there is no "recalibrate after
+  retuning the LO" step to trigger in the first place.
 """
 from __future__ import annotations
 
