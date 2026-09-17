@@ -20,7 +20,7 @@ from backend import config, geometry, scenario, generator, inspector, auth
 from backend.ephem import ephemeris, precise, ephemeris_source, ephemeris_fit
 from backend.analysis import receiver, lnav_display
 from backend.rf import transmit, device
-from backend.rf.frontend import rf_frontend
+from backend.rf.frontend import rf_frontend, diagnostic as rf_diagnostic
 from backend.session import live
 from backend.store import trajectory, scenario_lib
 from backend.obs import audit, recording, receiver_feed, ws_hub
@@ -998,20 +998,28 @@ def start_transmit(body: dict, request: Request):
     try:
         sample_rate = float(body["sample_rate"])
         lo_hz, bb_offset_hz, rf_report = _resolve_rf_plan(body, config.L1_HZ, sample_rate)
+        diagnostic_mode = body.get("mode") == "diagnostic_cw"
+        if diagnostic_mode:
+            iq_path = "(diagnostic_cw)"
+        elif "outdir" in body:
+            iq_path = str(config.OUT_DIR / body["outdir"] / "gpssim.bin")
+        else:
+            iq_path = body["iq_path"]
         params = transmit.TxParams(
-            iq_path=str(config.OUT_DIR / body["outdir"] / "gpssim.bin")
-            if "outdir" in body else body["iq_path"],
-            sample_rate=sample_rate, sample_format=body["sample_format"],
+            iq_path=iq_path, sample_rate=sample_rate, sample_format=body["sample_format"],
             lo_hz=lo_hz, baseband_offset_hz=bb_offset_hz,
             tx_gain_db=float(body.get("tx_gain_db", -50.0)),
             uri=body.get("uri", config.DEVICE_URI),
             tx_scale=float(body.get("tx_scale", 1.0)),
             slot=slot)
-        itemsize = 1 if params.sample_format == "int8" else 2
-        try:
-            total_samples = pathlib.Path(params.iq_path).stat().st_size // (2 * itemsize)
-        except OSError:
+        if diagnostic_mode:
             total_samples = 0
+        else:
+            itemsize = 1 if params.sample_format == "int8" else 2
+            try:
+                total_samples = pathlib.Path(params.iq_path).stat().st_size // (2 * itemsize)
+            except OSError:
+                total_samples = 0
     except rf_frontend.RFFrontendError as ex:
         _release_tx_slot(slot)
         raise HTTPException(400, str(ex)) from ex
@@ -1023,6 +1031,7 @@ def start_transmit(body: dict, request: Request):
         try:
             audit.log_event("transmit_start", slot=slot, iq_path=params.iq_path,
                              dry_run=body.get("dry_run", False), tx_gain_db=params.tx_gain_db,
+                             diagnostic=diagnostic_mode,
                              **({"rf_frontend": rf_report} if rf_report else {}))
             q: list = []
             def cb(d):
@@ -1030,9 +1039,12 @@ def start_transmit(body: dict, request: Request):
                 if rf_report:
                     d.update(rf_report)
                 q.append(d)
+            chunk_source = (rf_diagnostic.cw_chunk_source(params.sample_rate)
+                             if diagnostic_mode else None)
             th = threading.Thread(target=transmit.stream,
                                   kwargs=dict(params=params, dry_run=body.get("dry_run", False),
-                                              progress_cb=cb, cancel=_tx_slots[slot]["stop"]))
+                                              progress_cb=cb, cancel=_tx_slots[slot]["stop"],
+                                              chunk_source=chunk_source))
             th.start()
             while th.is_alive() or q:
                 while q:

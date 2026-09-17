@@ -180,3 +180,38 @@ def test_transmit_rejects_invalid_rf_plan_with_400(client, monkeypatch, tmp_path
     }
     r = client.post("/api/transmit", json=body)
     assert r.status_code == 400
+
+
+def test_transmit_diagnostic_cw_mode_skips_iq_path_and_streams_a_tone(client, monkeypatch):
+    # diagnostic_cw streams an infinite chunk_source (backend.rf.frontend.
+    # diagnostic.cw_chunk_source never raises StopIteration) -- on real
+    # hardware it runs until an operator calls /api/transmit/stop, so this
+    # test drives the SSE response from a background thread and issues that
+    # same stop call itself, instead of draining the stream to a natural end
+    # that (by design) never comes.
+    import threading
+
+    from backend import config
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    body = {
+        "mode": "diagnostic_cw", "sample_rate": 2.6e6, "sample_format": "int16",
+        "confirm_isolated": True, "dry_run": True,
+    }
+    result = {}
+
+    def _drive():
+        r = client.post("/api/transmit", json=body)
+        result["status_code"] = r.status_code
+        result["lines"] = list(r.iter_lines())
+
+    t = threading.Thread(target=_drive)
+    t.start()
+    t.join(timeout=2.0)  # let the stream start and emit at least one chunk
+    client.post("/api/transmit/stop")
+    t.join(timeout=10.0)
+    assert not t.is_alive(), "diagnostic_cw stream did not stop after /api/transmit/stop"
+
+    assert result["status_code"] == 200
+    lines = result["lines"]
+    assert any(b'"finished": true' in line if isinstance(line, bytes)
+               else '"finished": true' in line for line in lines)
