@@ -193,6 +193,7 @@ def test_transmit_diagnostic_cw_mode_skips_iq_path_and_streams_a_tone(client, mo
 
     from backend import config
     monkeypatch.setattr(config, "ALLOW_TX", True)
+    monkeypatch.setattr(config, "RF_FRONTEND_ENABLED", True)
     body = {
         "mode": "diagnostic_cw", "sample_rate": 2.6e6, "sample_format": "int16",
         "confirm_isolated": True, "dry_run": True,
@@ -213,6 +214,29 @@ def test_transmit_diagnostic_cw_mode_skips_iq_path_and_streams_a_tone(client, mo
 
     assert result["status_code"] == 200
     lines = result["lines"]
+    assert any(b'"finished": true' in line if isinstance(line, bytes)
+               else '"finished": true' in line for line in lines)
+
+
+def test_diagnostic_cw_mode_inert_when_rf_frontend_layer_disabled(client, monkeypatch, tmp_path):
+    # RF_FRONTEND_ENABLED defaults False; diagnostic_cw must not become a
+    # reachable RF-emitting mode without the feature's master switch --
+    # with the flag off, "mode": "diagnostic_cw" must be ignored entirely
+    # and the request must fall through to ordinary file-backed transmit
+    # (today's exact pre-feature behavior), never to the infinite CW
+    # generator.
+    from backend import config
+    iq_file = tmp_path / "g.bin"
+    iq_file.write_bytes(b"\x00\x01" * 100)
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    monkeypatch.setattr(config, "RF_FRONTEND_ENABLED", False)
+    body = {
+        "mode": "diagnostic_cw", "iq_path": str(iq_file), "sample_rate": 2.6e6,
+        "sample_format": "int16", "confirm_isolated": True, "dry_run": True,
+    }
+    r = client.post("/api/transmit", json=body)
+    assert r.status_code == 200
+    lines = list(r.iter_lines())
     assert any(b'"finished": true' in line if isinstance(line, bytes)
                else '"finished": true' in line for line in lines)
 

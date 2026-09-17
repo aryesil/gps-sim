@@ -242,6 +242,24 @@ def _release_tx_slot(slot: str) -> None:
         _tx_slots[slot] = None
 
 
+def _reserve_all_tx_slots_for_calibration() -> None:
+    """Calibration changes the chip-wide TX LO, which both TX1 and TX2
+    share (see backend/rf/dual_tx.py) -- so it must block against *any*
+    active slot, not just both, and the check-then-reserve must be atomic
+    under the same lock every other slot mutation uses."""
+    with _tx_slots_lock:
+        if any(occ is not None for occ in _tx_slots.values()):
+            raise HTTPException(409, "a TX slot is active -- stop transmit before calibrating")
+        for slot in _tx_slots:
+            _tx_slots[slot] = {"stop": None, "session": None}
+
+
+def _release_all_tx_slots_after_calibration() -> None:
+    with _tx_slots_lock:
+        for slot in _tx_slots:
+            _tx_slots[slot] = None
+
+
 def download_free_bytes(path) -> int:
     return shutil.disk_usage(path).free
 
@@ -999,7 +1017,7 @@ def start_transmit(body: dict, request: Request):
     try:
         sample_rate = float(body["sample_rate"])
         lo_hz, bb_offset_hz, rf_report = _resolve_rf_plan(body, config.L1_HZ, sample_rate)
-        diagnostic_mode = body.get("mode") == "diagnostic_cw"
+        diagnostic_mode = body.get("mode") == "diagnostic_cw" and config.RF_FRONTEND_ENABLED
         if diagnostic_mode:
             iq_path = "(diagnostic_cw)"
         elif "outdir" in body:
@@ -1090,34 +1108,39 @@ def tx_calibrate(body: dict, request: Request):
         raise HTTPException(403,
             "calibration disabled: needs ALLOW_TX and confirm_isolated "
             "(TX quadrature calibration can cause a brief RF emission)")
-    if any(occ is not None for occ in _tx_slots.values()):
-        raise HTTPException(409, "a TX slot is active -- stop transmit before calibrating")
 
-    uri = body.get("uri", config.DEVICE_URI)
-    sample_rate = float(body.get("sample_rate", config.DEFAULT_SAMPLE_RATE))
+    _reserve_all_tx_slots_for_calibration()
     try:
-        lo_hz, bb_offset_hz, rf_report = _resolve_rf_plan(body, config.L1_HZ, sample_rate)
-    except rf_frontend.RFFrontendError as ex:
-        raise HTTPException(400, str(ex)) from ex
-    target_rf_hz = int(rf_report["target_rf_hz"]) if rf_report else int(lo_hz)
-
-    try:
-        import adi
-        sdr = adi.ad9361(uri=uri)
-    except Exception as ex:
-        raise HTTPException(500, f"device open failed: {ex}") from ex
-    try:
-        sdr.sample_rate = int(sample_rate)
-        sdr.tx_lo = int(lo_hz)
-        caps = rf_capabilities.detect(sdr)
-        result = rf_calibration.calibrate(
-            sdr, caps, tx_lo_hz=int(lo_hz), target_rf_hz=target_rf_hz,
-            baseband_offset_hz=int(bb_offset_hz))
-    finally:
+        uri = body.get("uri", config.DEVICE_URI)
+        sample_rate = float(body.get("sample_rate", config.DEFAULT_SAMPLE_RATE))
         try:
-            sdr.tx_destroy_buffer()
-        except Exception:
-            pass
+            lo_hz, bb_offset_hz, rf_report = _resolve_rf_plan(body, config.L1_HZ, sample_rate)
+        except rf_frontend.RFFrontendError as ex:
+            raise HTTPException(400, str(ex)) from ex
+        target_rf_hz = int(rf_report["target_rf_hz"]) if rf_report else int(lo_hz)
+
+        try:
+            import adi
+            sdr = adi.ad9361(uri=uri)
+        except Exception as ex:
+            raise HTTPException(500, f"device open failed: {ex}") from ex
+        try:
+            caps = rf_capabilities.detect(sdr)
+            try:
+                sdr.sample_rate = int(sample_rate)
+                sdr.tx_lo = int(lo_hz)
+            except Exception:
+                pass
+            result = rf_calibration.calibrate(
+                sdr, caps, tx_lo_hz=int(lo_hz), target_rf_hz=target_rf_hz,
+                baseband_offset_hz=int(bb_offset_hz))
+        finally:
+            try:
+                sdr.tx_destroy_buffer()
+            except Exception:
+                pass
+    finally:
+        _release_all_tx_slots_after_calibration()
 
     response = {
         "device": uri, "calibration_type": result.calibration_type,
