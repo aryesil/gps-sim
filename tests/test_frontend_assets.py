@@ -243,3 +243,39 @@ def test_skyplot_click_select_assigns_numeric_prn():
     js = _rd("skyplot.js")
     assert "prnInput.value = best.prn;" in js
     assert "best.svid || best.prn" not in js
+
+
+def test_rf_frontend_panel_present_and_wired():
+    """New Advanced sub-tab for AD936x LO-offset + TX quadrature calibration.
+    Opt-in: default lo_offset_mode is DISABLED, and an untouched panel adds
+    nothing to the /api/transmit or /api/live/start body."""
+    js = _rd("channels.js")
+    assert 'data-adv="rf"' in js
+    assert '${id}-rf-target' in js
+    assert '${id}-rf-lo-mode' in js
+    assert '${id}-rf-lo-offset' in js
+    assert '${id}-rf-calib-mode' in js
+    assert '${id}-rf-recalibrate' in js
+    assert '${id}-rf-computed-lo' in js
+    assert '${id}-rf-computed-bb' in js
+    assert 'value="DISABLED"' in js
+
+
+def test_rf_frontend_body_is_opt_in_and_only_merged_when_not_disabled():
+    js = _rd("channels.js")
+    assert 'function _rfFrontendBody()' in js
+    assert "=== 'DISABLED'" in js
+    assert 'Object.assign(body, _rfFrontendBody() || {});' in js
+
+
+def test_recalibrate_button_hits_calibrate_endpoint_independent_of_start_stop():
+    js = _rd("channels.js")
+    assert "/api/tx/calibrate" in js
+    idx_recal = js.index('${id}-rf-recalibrate')
+    idx_start = js.index("document.getElementById(`${id}-start`).onclick")
+    assert idx_recal < idx_start or "/api/tx/calibrate" in js[idx_start:]
+
+
+def test_rf_frontend_tab_hidden_unless_backend_reports_it_enabled():
+    js = _rd("channels.js")
+    assert 'rf_frontend_enabled' in js
