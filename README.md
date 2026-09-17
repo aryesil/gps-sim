@@ -394,7 +394,7 @@ key in `X-API-Key`; a transmit *stop* never does.
 | Ephemeris | `POST /api/rinex/upload` |
 | Precise (analysis) | `GET /api/precise/status`, `POST /api/precise/load` *(operator)*, `POST /api/precise/compare` |
 | Generate / inspect | `POST /api/generate` (SSE; accepts `ephemeris_mode`, `fallback_to_broadcast`, `engine` (`gps-sdr-sim`｜`native`), `systems`, `fading`, `sample_format` int16/int12/int8), `POST /api/receiver`, `GET /api/iqplot` (per-RF-band breakdown when multi-band), `GET /api/correlation`, `GET /api/lnav` |
-| Transmit *(needs `ALLOW_TX=1`)* | `POST /api/transmit` (SSE, operator), `POST /api/transmit/stop`, `POST /api/live/start` (SSE, operator), `POST /api/live/jog|time_shift` *(operator)*, `POST /api/live/stop` |
+| Transmit *(needs `ALLOW_TX=1`)* | `POST /api/transmit` (SSE, operator), `POST /api/transmit/stop`, `POST /api/tx/calibrate`, `POST /api/live/start` (SSE, operator), `POST /api/live/jog|time_shift` *(operator)*, `POST /api/live/stop` |
 | Device *(needs `ALLOW_TX=1`)* | `POST /api/device/connect|disconnect` *(operator)*, `GET /api/device/status` |
 | Recording | `GET /api/recording/list`, `GET /api/recording/replay` (SSE) |
 | Receiver feedback | `POST /api/receiver/listen|stop_listen|inject` *(operator)*, `GET /api/receiver/fix` |
@@ -413,6 +413,7 @@ All via environment variables (see `backend/config.py`).
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `ALLOW_TX` | `0` | Master switch for every transmit endpoint. Off ⇒ HTTP 403. |
+| `RF_FRONTEND_ENABLED` | `0` | Master switch for the AD936x LO-offset/calibration layer. Off ⇒ `/api/transmit`/`/api/live/start` ignore any RF-frontend body fields (today's exact behavior) and `/api/tx/calibrate` returns 403. |
 | `DEVICE_URI` | `ip:192.168.2.1` | Default SDR URI for `pyadi-iio`. |
 | `DEFAULT_SAMPLE_RATE` | `2600000` | Default IQ sample rate (Hz). |
 | `DEFAULT_FORMAT` | `int16` | Default sample format (`int16` / `int8`). |
@@ -464,6 +465,48 @@ If RF replay is required:
 
 Responsibility for lawful, authorized operation rests entirely with the
 operator; the authors accept no liability for misuse.
+
+---
+
+## AD936x TX RF frontend (LO offset & calibration)
+
+**RF frequency vs TX LO** — The AD9361 hardware shares a single TX LO across both TX1 and TX2 channels. The invariant maintained by this layer is `target_rf_frequency_hz = tx_lo_hz + baseband_offset_hz`.
+
+**LO offset modes** — The layer supports three LO offset modes: `DISABLED` (default, today's exact behavior) where the TX LO is fixed at the configured value; `MANUAL` where the operator sets `lo_offset_hz` directly; and `AUTO` where a validated candidate is picked automatically. Worked examples with `MANUAL` mode:
+```
+target_rf_frequency_hz = 1575420000, lo_offset_mode = MANUAL, lo_offset_hz = -1000000
+  -> tx_lo_hz = 1574420000, baseband_offset_hz = 1000000
+
+target_rf_frequency_hz = 1575420000, lo_offset_mode = MANUAL, lo_offset_hz = 1000000
+  -> tx_lo_hz = 1576420000, baseband_offset_hz = -1000000
+```
+
+**TX quadrature calibration** — This layer triggers the AD9361's built-in TX quadrature calibration via the `sdr._ctrl.attrs["calib_mode"]` device attribute with value `"tx_quad"`, as documented in ADI's own driver documentation. The calibration itself is a hardware-resident process, never a Python reimplementation. Because `POST /api/tx/calibrate` can cause a brief RF emission, it is gated by the same `ALLOW_TX` + `confirm_isolated` safety checks as the transmit endpoints.
+
+**Attenuation** — The `tx_gain_db` register is the AD9361's real hardware attenuation setting, distinct from the IQ-amplitude `tx_scale` parameter which provides headroom within the DAC's dynamic range (see the comment in `backend/rf/transmit.py`).
+
+**Capability degradation** — The layer detects and reports support for optional hardware features:
+
+| Capability | Detected via | If unsupported |
+|---|---|---|
+| `supports_tx_quad_calibration` | `calib_mode`/`calib_mode_available` device attrs | `/api/tx/calibrate` returns `success: false` with a named reason |
+| `supports_tx_lo_control` | `tx_lo` property | existing `dual_tx.acquire()` clamp check fails first |
+| `supports_tx_hardware_gain` | `tx_hardwaregain_chan0` property | existing `dual_tx.acquire()` gain set fails |
+| `supports_temperature_readout` | `temp0` channel | device-status temperature field omitted |
+
+**Diagnostic CW mode** — A constant-wave transmit mode for RF bench testing. Example `POST /api/transmit` body:
+```json
+{"mode": "diagnostic_cw", "target_rf_frequency_hz": 445400000,
+ "lo_offset_mode": "MANUAL", "lo_offset_hz": -1000000,
+ "sample_rate": 2600000, "sample_format": "int16", "confirm_isolated": true}
+```
+This mode never touches the GPS L1 IQ generator.
+
+**Limitation** — This software cannot measure RF leakage itself; it only reports the configured LO/offset/calibration state — verify results with an external spectrum analyzer or receiver.
+
+### Troubleshooting
+
+If a spur appears exactly at the TX LO, try TX quadrature calibration (`POST /api/tx/calibrate`), then move the TX LO away from the target carrier using LO offset. Verify the result with an external spectrum analyzer/receiver — this software cannot measure RF leakage on its own.
 
 ---
 
