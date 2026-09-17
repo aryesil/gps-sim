@@ -21,6 +21,7 @@ from backend.ephem import ephemeris, precise, ephemeris_source, ephemeris_fit
 from backend.analysis import receiver, lnav_display
 from backend.rf import transmit, device
 from backend.rf.frontend import rf_frontend, diagnostic as rf_diagnostic
+from backend.rf.frontend import capabilities as rf_capabilities, calibration as rf_calibration
 from backend.session import live
 from backend.store import trajectory, scenario_lib
 from backend.obs import audit, recording, receiver_feed, ws_hub
@@ -1078,6 +1079,55 @@ def stop_transmit(request: Request, body: dict | None = None):
         occ["stop"].set()
         audit.log_event("manual_stop", slot=slot)
     return {"stopped": True}
+
+
+@app.post("/api/tx/calibrate")
+def tx_calibrate(body: dict, request: Request):
+    auth.require_operator(request)
+    if not config.RF_FRONTEND_ENABLED:
+        raise HTTPException(403, "RF frontend layer disabled (set RF_FRONTEND_ENABLED=1)")
+    if not config.ALLOW_TX or not body.get("confirm_isolated"):
+        raise HTTPException(403,
+            "calibration disabled: needs ALLOW_TX and confirm_isolated "
+            "(TX quadrature calibration can cause a brief RF emission)")
+    if any(occ is not None for occ in _tx_slots.values()):
+        raise HTTPException(409, "a TX slot is active -- stop transmit before calibrating")
+
+    uri = body.get("uri", config.DEVICE_URI)
+    sample_rate = float(body.get("sample_rate", config.DEFAULT_SAMPLE_RATE))
+    try:
+        lo_hz, bb_offset_hz, rf_report = _resolve_rf_plan(body, config.L1_HZ, sample_rate)
+    except rf_frontend.RFFrontendError as ex:
+        raise HTTPException(400, str(ex)) from ex
+    target_rf_hz = int(rf_report["target_rf_hz"]) if rf_report else int(lo_hz)
+
+    try:
+        import adi
+        sdr = adi.ad9361(uri=uri)
+    except Exception as ex:
+        raise HTTPException(500, f"device open failed: {ex}") from ex
+    try:
+        sdr.sample_rate = int(sample_rate)
+        sdr.tx_lo = int(lo_hz)
+        caps = rf_capabilities.detect(sdr)
+        result = rf_calibration.calibrate(
+            sdr, caps, tx_lo_hz=int(lo_hz), target_rf_hz=target_rf_hz,
+            baseband_offset_hz=int(bb_offset_hz))
+    finally:
+        try:
+            sdr.tx_destroy_buffer()
+        except Exception:
+            pass
+
+    response = {
+        "device": uri, "calibration_type": result.calibration_type,
+        "start_time": result.start_time, "end_time": result.end_time,
+        "success": result.success, "error_message": result.error_message,
+        "tx_lo_hz": result.tx_lo_hz, "target_rf_hz": result.target_rf_hz,
+        "baseband_offset_hz": result.baseband_offset_hz,
+    }
+    audit.log_event("tx_calibrate", uri=uri, **response)
+    return response
 
 
 @app.get("/api/audit")

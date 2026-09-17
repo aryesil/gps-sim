@@ -215,3 +215,100 @@ def test_transmit_diagnostic_cw_mode_skips_iq_path_and_streams_a_tone(client, mo
     lines = result["lines"]
     assert any(b'"finished": true' in line if isinstance(line, bytes)
                else '"finished": true' in line for line in lines)
+
+
+def test_calibrate_rejected_when_rf_frontend_layer_disabled(client, monkeypatch):
+    from backend import config
+    monkeypatch.setattr(config, "RF_FRONTEND_ENABLED", False)
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    r = client.post("/api/tx/calibrate", json={"confirm_isolated": True,
+                                                "target_rf_frequency_hz": 1_575_420_000})
+    assert r.status_code == 403
+
+
+def test_calibrate_rejected_without_allow_tx_or_confirm(client, monkeypatch):
+    from backend import config
+    monkeypatch.setattr(config, "RF_FRONTEND_ENABLED", True)
+    monkeypatch.setattr(config, "ALLOW_TX", False)
+    r = client.post("/api/tx/calibrate", json={"confirm_isolated": True,
+                                                "target_rf_frequency_hz": 1_575_420_000})
+    assert r.status_code == 403
+
+
+def test_calibrate_rejected_when_a_slot_is_active(client, monkeypatch):
+    from backend import config, app as app_module
+    monkeypatch.setattr(config, "RF_FRONTEND_ENABLED", True)
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    app_module._tx_slots["TX1"] = {"stop": None, "session": None}
+    try:
+        r = client.post("/api/tx/calibrate", json={"confirm_isolated": True,
+                                                    "target_rf_frequency_hz": 1_575_420_000})
+        assert r.status_code == 409
+    finally:
+        app_module._tx_slots["TX1"] = None
+
+
+def test_calibrate_runs_and_reports_result(client, monkeypatch):
+    import sys
+    import types
+    from backend import config
+
+    monkeypatch.setattr(config, "RF_FRONTEND_ENABLED", True)
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+
+    class _FakeAttr:
+        def __init__(self, value):
+            self.value = value
+
+    class _SettlingCalibModeAttr:
+        # Real AD9361 driver reverts calib_mode away from the trigger value
+        # once the one-shot calibration completes (see calibration.py's own
+        # docstring) -- calibration.calibrate() polls for that revert. This
+        # fake settles on the read right after the triggering write, mirroring
+        # tests/test_rf_calibration.py's `_settle_reader` helper for Task 2.
+        def __init__(self):
+            self._value = "auto"
+
+        @property
+        def value(self):
+            v = self._value
+            if v == "tx_quad":
+                self._value = "auto"
+            return v
+
+        @value.setter
+        def value(self, v):
+            self._value = v
+
+    class _FakeCtrl:
+        def __init__(self):
+            self.attrs = {"calib_mode_available": _FakeAttr("auto manual tx_quad"),
+                          "calib_mode": _SettlingCalibModeAttr()}
+
+        def find_channel(self, name):
+            raise Exception("no temp sensor in this fake")
+
+    class _FakeSDR:
+        def __init__(self, uri=None):
+            self._ctrl = _FakeCtrl()
+            self.sample_rate = None
+            self.tx_lo = None
+
+        def tx_destroy_buffer(self):
+            pass
+
+    fake_module = types.ModuleType("adi")
+    fake_module.ad9361 = _FakeSDR
+    monkeypatch.setitem(sys.modules, "adi", fake_module)
+
+    r = client.post("/api/tx/calibrate", json={
+        "confirm_isolated": True, "target_rf_frequency_hz": 1_575_420_000,
+        "lo_offset_mode": "MANUAL", "lo_offset_hz": -1_000_000,
+        "sample_rate": 2_600_000})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["success"] is True
+    assert body["calibration_type"] == "TX_QUAD"
+    assert body["tx_lo_hz"] == 1_574_420_000
+    assert body["target_rf_hz"] == 1_575_420_000
+    assert body["baseband_offset_hz"] == 1_000_000
