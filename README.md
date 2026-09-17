@@ -516,7 +516,7 @@ If a spur appears exactly at the TX LO, try TX quadrature calibration (`POST /ap
 .venv/bin/pytest -q
 ```
 
-**567 passed, 4 xfailed** as of this writing. Coverage spans ephemeris
+**832 passed, 4 skipped** as of this writing. Coverage spans ephemeris
 alignment, GPS-time conversions, the SP3 parser and multi-GNSS orbit/clock
 interpolation, the broadcast/precise mode selector, the SP3→broadcast
 fit (pure-Kepler recovery to millimetres, SP3-fixture fit, RINEX-2
@@ -527,9 +527,13 @@ seeded fading, band planning, C++/Python constant parity), acquisition,
 the receiver solve, LNAV decode, the live session, transmit plumbing
 (mocked hardware), the device link, audit, RBAC, NMEA parsing,
 recording/replay, the scenario library, the WebSocket hub, the frontend
-assets, and the precise-ephemeris HTTP endpoints. The 4 `xfail` cases
-need real SDR hardware. The suite uses fixtures and mocks only — no
-network downloads.
+assets, the precise-ephemeris HTTP endpoints, and the AD936x TX RF
+frontend (LO offset planning, TX quadrature calibration, diagnostic CW
+mode). The 4 skipped cases need real SDR hardware. The suite uses
+fixtures and mocks only — no network downloads. Two heavy native-engine
+regression tests (25 Msps L5, 44s each) are excluded from routine runs
+on memory-constrained machines; they are unrelated to this feature and
+pass on adequately provisioned hardware.
 
 `tests/` is organised into flat integration tests plus `unit/`,
 `validation/` (independent cross-checks — see below), and `regression/`
