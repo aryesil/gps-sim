@@ -35,7 +35,12 @@ def _run(tmp_path, monkeypatch, route):
     outdir = engine.run(req)
     gps_start = start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
     _week, sow = ephemeris.gps_week_and_sow(gps_start)
-    eph = ephemeris.align_epochs(ephemeris.parse_rinex(_RINEX), _week, sow)
+    # Truth uses the engine's own record choice: the record nearest the run,
+    # kept real when it covers it (see engine.run / align_epochs).
+    eph = ephemeris.align_epochs(
+        ephemeris.parse_rinex_multi(_RINEX, ("G",), at_gps=gps_start),
+        _week, sow, kepler_grid_s=engine._TOE_GRID_S,
+        keep_real_within_s=ephemeris.REAL_EPH_WINDOW_S)
     return outdir, sow, eph
 
 

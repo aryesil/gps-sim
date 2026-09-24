@@ -246,12 +246,13 @@ def test_segments_advance_time_and_pin_ephemeris(monkeypatch):
                for r in reqs[:3])
 
 
-def test_segment_ephemeris_refreshes_every_two_hours():
-    # constant within a 2 h block (seamless joins, cached parse), re-pinned
-    # after it so a long session never broadcasts an expired toe
+def test_segment_ephemeris_refreshes_every_15_min():
+    # constant within a 15 min block (seamless joins, cached parse),
+    # re-pinned after it so a long session never broadcasts an expired
+    # toe / GLONASS tb
     s = live.LiveSession(_base_req())
     base = s.base_req
     snap = live.LiveState(llh=[base.lat, base.lon, base.alt])
     ep = [(s._segment_request(k, snap).eph_epoch - base.start).total_seconds()
-          for k in (0, 7199, 7200, 14500)]
-    assert ep == [0.0, 0.0, 7200.0, 14400.0]
+          for k in (0, 899, 900, 7250)]
+    assert ep == [0.0, 0.0, 900.0, 7200.0]

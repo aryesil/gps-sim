@@ -15,7 +15,13 @@ from backend import geometry, inspector, scenario
 from backend.synth import signal_engine
 
 _PREFETCH = 2   # segments generated ahead of the TX stream
-_EPH_REFRESH_S = 7200.0   # live ephemeris re-pinned every 2 h of session time
+# Live ephemeris is re-pinned every 15 min of session time. Each pin picks
+# every satellite's record nearest it and keeps real records untouched, so a
+# pin only changes a satellite when a newer record is nearer: GPS (2 h
+# records) stays within |t - toe| <= 1.25 h, GLONASS (30 min records) within
+# |t - tb| <= 30 min, the age RTKLIB-style receivers still accept (a 2 h pin
+# left GLONASS tb up to 3 h old, which they reject).
+_EPH_REFRESH_S = 900.0
 
 _ENU_DIRECTIONS = {
     "north": (0.0, 1.0, 0.0), "south": (0.0, -1.0, 0.0),
@@ -126,10 +132,10 @@ class LiveSession:
         seg = self.segment_duration_s
         base = self.base_req
         t = k * seg + snap.time_offset_s
-        # Ephemeris is pinned per 2 h block of the session (a satellite's
-        # upload cadence): constant within a block so segments join
-        # seamlessly and the RINEX parse stays cached, refreshed between
-        # blocks so a long session never broadcasts an expired toe.
+        # Ephemeris is pinned per _EPH_REFRESH_S block of the session:
+        # constant within a block so segments join seamlessly and the RINEX
+        # parse stays cached, refreshed between blocks so a long session
+        # never broadcasts an expired toe / tb.
         block = math.floor(t / _EPH_REFRESH_S) * _EPH_REFRESH_S
         return dataclasses.replace(
             base, lat=snap.llh[0], lon=snap.llh[1], alt=snap.llh[2],
@@ -140,7 +146,7 @@ class LiveSession:
     def _make_segment(self, k: int, snap: LiveState):
         """Segment ``k`` of the session: GPS time base.start + k*seg (+ the
         operator's time shift). Always the native engine, with the
-        ephemeris pinned per 2 h block (``eph_epoch``), so segment
+        ephemeris pinned per 15 min block (``eph_epoch``), so segment
         k+1 continues segment k sample-for-sample: code phase, nav data
         and secondary codes are clocked on absolute transmit time and the
         carrier phase is absolute (engine._trajectory_knots).

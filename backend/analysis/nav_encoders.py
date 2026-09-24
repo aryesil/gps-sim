@@ -87,9 +87,14 @@ def nav_stream_for(sysc, signal, eph, header, week, sow, duration_s,
         p = prn if prn is not None else int(eph.get("prn", 99) or 99)
         # GEO satellites (C01-C05 and C59-C63) broadcast D2, not D1.
         e_b, wk_b, sow_b = to_bdt(eph, week, sow)
+        # Broadcast the Klobuchar set the engine applied (same scaling as
+        # GPS), so a receiver removes the delay the signal carries.
+        h = header or {}
+        iono = (h.get("iono_alpha") or (0.0,) * 4,
+                h.get("iono_beta") or (0.0,) * 4)
         arr, rate = bds_d1_encode.nav_stream(e_b, wk_b, sow_b, duration_s,
                                              d2=(p <= 5 or p >= 59),
-                                             eph_by_prn=eph_by_prn)
+                                             eph_by_prn=eph_by_prn, iono=iono)
         return arr, rate
     if sysc == "R":
         return glo_str_encode.nav_stream(eph, week, sow, duration_s,

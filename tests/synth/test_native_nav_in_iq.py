@@ -32,7 +32,11 @@ def test_acquisition_still_succeeds_with_nav_modulation(tmp_path, monkeypatch):
     outdir = engine.run(req)
     gps_start = req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
     week, sow = ephemeris.gps_week_and_sow(gps_start)
-    eph = ephemeris.align_epochs(ephemeris.parse_rinex(_RINEX), week, sow)
+    # Truth uses the engine's own record choice (nearest the run, kept real).
+    eph = ephemeris.align_epochs(
+        ephemeris.parse_rinex_multi(_RINEX, ("G",), at_gps=gps_start),
+        week, sow, kepler_grid_s=engine._TOE_GRID_S,
+        keep_real_within_s=ephemeris.REAL_EPH_WINDOW_S)
     rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
     sats = geometry.constellation(eph, rx, sow + req.duration_s / 2.0)
     iq = inspector.read_iq(outdir / "gpssim.bin", "int16",

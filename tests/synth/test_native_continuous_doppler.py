@@ -32,7 +32,12 @@ def _run(tmp_path, monkeypatch, continuous):
     outdir = engine.run(req)
     gps_start = start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
     _week, sow = ephemeris.gps_week_and_sow(gps_start)
-    eph = ephemeris.align_epochs(ephemeris.parse_rinex(_RINEX), _week, sow)
+    # Truth uses the engine's own record choice: the record nearest the run,
+    # kept real when it covers it (see engine.run / align_epochs).
+    eph = ephemeris.align_epochs(
+        ephemeris.parse_rinex_multi(_RINEX, ("G",), at_gps=gps_start),
+        _week, sow, kepler_grid_s=engine._TOE_GRID_S,
+        keep_real_within_s=ephemeris.REAL_EPH_WINDOW_S)
     return outdir, sow, eph
 
 
@@ -67,15 +72,19 @@ def test_continuous_doppler_removes_end_of_run_drift(tmp_path, monkeypatch):
 
 def test_flag_off_drifts_more_than_flag_on(tmp_path, monkeypatch):
     # Guards against the knots silently not being used: over a 45 s run the
-    # constant-Doppler path accumulates a materially larger end-of-file code
-    # phase error than the per-block re-propagation path.
+    # constant-Doppler path ends materially further from the true Doppler /
+    # code phase than the per-block re-propagation path.
     on_dir, sow, eph = _run(tmp_path / "on", monkeypatch, continuous=True)
     off_dir, _s, _e = _run(tmp_path / "off", monkeypatch, continuous=False)
     on = _tail_errors(on_dir, sow, eph)
     off = _tail_errors(off_dir, sow, eph)
     common = sorted(set(on) & set(off))
     assert len(common) >= 4, (on, off)
-    worse = [p for p in common if off[p][1] > on[p][1] + 0.1]
+    # Over 45 s the held Doppler is off by tens of Hz at the tail; the code
+    # phase it integrates is only a few tenths of a chip with a real
+    # (not relabeled) orbit, so either symptom counts.
+    worse = [p for p in common
+             if off[p][0] > on[p][0] + 3.0 or off[p][1] > on[p][1] + 0.1]
     assert len(worse) >= max(1, len(common) // 2), (on, off)
 
 

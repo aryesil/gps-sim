@@ -31,6 +31,10 @@ _VARMAP = {
 
 
 _VARMAP_KEPLER = dict(_VARMAP)   # GPS map; QZSS + Galileo + BeiDou share it
+# BeiDou records name their clock/health fields differently (RINEX 3 BDS:
+# TGD1/TGD2, AODE/AODC, SatH1); without this TGD1 was silently dropped.
+_VARMAP_BDS = dict(_VARMAP_KEPLER, tgd="TGD1", tgd2="TGD2", iode="AODE",
+                   iodc="AODC", health="SatH1")
 
 # ECEF-state systems (GLONASS "R", SBAS "S"): position/velocity/accel vector
 # plus clock terms, expressed directly in km / km s^-1 / km s^-2 by RINEX 3.
@@ -403,7 +407,8 @@ def _parse_rinex_multi(path: str | pathlib.Path, systems=("G",),
             continue
         rec = _pick_epoch(sub, noon_gps, s)
         e: dict = {"system": s, "prn": prn}
-        vmap = _VARMAP_KEPLER if s in _KEPLER_SYS else _VARMAP_STATE
+        vmap = (_VARMAP_BDS if s == "C" else
+                _VARMAP_KEPLER if s in _KEPLER_SYS else _VARMAP_STATE)
         for key, var in vmap.items():
             if var is None or var not in rec:
                 continue
