@@ -59,8 +59,9 @@ def test_glonass_clock_is_linear():
     tau, gamma = r["tau"], r["gamma"]
     _, _, c0 = f(r["toe_ref"])
     _, _, c100 = f(r["toe_ref"] + 100.0)
-    assert abs(c0 - (-tau)) < 1e-12
-    assert abs(c100 - (-tau + gamma * 100.0)) < 1e-9
+    # tau is RINEX's clock bias (-TauN): dts = -TauN + GammaN*dt = tau + gamma*dt
+    assert abs(c0 - tau) < 1e-12
+    assert abs(c100 - (tau + gamma * 100.0)) < 1e-9
 
 
 def test_cpp_glonass_matches_python():

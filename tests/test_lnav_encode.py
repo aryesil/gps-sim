@@ -215,3 +215,29 @@ def test_nav_stream_is_deterministic():
     a = le.nav_stream(_EPH, _HDR, 200, 100801.0, 6)
     b = le.nav_stream(_EPH, _HDR, 200, 100801.0, 6)
     assert np.array_equal(a, b)
+
+
+def _sf_ids(stream):
+    from backend.analysis import lnav_decode
+    return [(h["subframe_id"], h["tow_count"])
+            for h in lnav_decode.find_frame((stream < 0).astype(np.int8))]
+
+
+def test_nav_stream_subframe_id_follows_gps_time():
+    # A frame starts every 30 s of the week: the subframe sent at TOW-count
+    # n (HOW carries n+1) is ((n % 5) + 1), whatever time the stream starts.
+    s = le.nav_stream(_EPH, _HDR, 200, 100813.0, 30)
+    ids = _sf_ids(s)
+    assert ids
+    for sf_id, how_tow in ids:
+        assert sf_id == ((how_tow - 1) % 5) + 1
+
+
+def test_nav_stream_is_time_invariant():
+    # Live mode restarts the stream every segment: a stream started later
+    # must be the same bits as the earlier stream, shifted.
+    a = le.nav_stream(_EPH, _HDR, 200, 100801.0, 60)
+    for d in (6, 12, 30, 36):
+        b = le.nav_stream(_EPH, _HDR, 200, 100801.0 + d, 20)
+        off = (int((100801.0 + d) // 6) - int(100801.0 // 6)) * 6 * le.NAV_BIT_HZ
+        assert np.array_equal(a[off:off + b.size], b)

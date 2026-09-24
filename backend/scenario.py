@@ -89,6 +89,12 @@ class ScenarioRequest:
     bands: list[str] | None = None
     l2_sample_rate: float | None = None
     l5_sample_rate: float | None = None
+    # Native engine: UTC epoch the broadcast ephemeris is aligned to
+    # (ephemeris.align_epochs). None = ``start``. A live session pins it to
+    # the SESSION start so every segment uses the same toe/orbit; aligning
+    # per segment would relabel the orbit -- and the broadcast toe -- each
+    # time a segment crosses a toe-grid boundary.
+    eph_epoch: dt.datetime | None = None
 
     def __post_init__(self):
         self.systems = _norm_systems(self.systems)

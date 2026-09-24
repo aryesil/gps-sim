@@ -166,6 +166,18 @@ typedef struct {
     // SP-D -- navigation-message symbol rate. 0.0 => 50 Hz (GPS LNAV). Set per
     // system (Galileo E1-B I/NAV 250, GLONASS meander 100, SBAS 500, ...).
     double nav_sym_rate_hz;
+    // ABI 25 -- transmit-time modulation clock. tx_time_valid == 0 keeps the
+    // legacy behaviour (nav symbols indexed by receiver time, secondary code
+    // by the raw code-period count). With tx_time_valid == 1 the mixer forms
+    //   u = code_phase + tx_chips_offset
+    // = primary chips elapsed at the SATELLITE since the transmit instant of
+    // nav symbol 0, and indexes BOTH the secondary code (floor(u / code_len))
+    // and the nav symbol (floor(u * nav_sym_rate / chip_rate)) from it, so
+    // symbol edges land on code-epoch edges, secondary codes stay locked to
+    // the symbols, and the broadcast time (TOW) is delayed by the true
+    // propagation time exactly like the ranging code.
+    int    tx_time_valid;
+    double tx_chips_offset;
 } SvSpec;
 // Whole-run spec. Field order frozen -- _lib.py mirrors it exactly.
 typedef struct {
@@ -214,7 +226,7 @@ int synth_code(int sys, int prn, int8_t *primary, int prim_len,
 // GPS L2C civil codes (IS-GPS-200 3.2.1.4). Fills cm[0..cm_len-1]
 // (cm_len >= 10230) with the CM code chips in {-1,+1}; when cl != NULL
 // and cl_len >= 767250, fills cl with the CL code. Returns 0 on success,
-// -1 on bad prn (outside 1..63) / short buffer / NULL cm.
+// -1 on bad prn (outside 1..63 / 159..210) / short buffer / NULL cm.
 int synth_code_l2c(int prn, int8_t *cm, int cm_len, int8_t *cl, int cl_len);
 // GPS / QZSS L5 civil codes (IS-GPS-200 3.3.2). Fills i5[0..i5_len-1]
 // (i5_len >= 10230) with the I5 code chips in {-1,+1}; when q5 != NULL

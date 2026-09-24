@@ -168,10 +168,17 @@ def nav_stream(eph: dict, week: int, tow0_sow: float, duration_s: float,
     rate = SYM_RATE_D2 if d2 else SYM_RATE_D1
     sf_len_s = 0.6 if d2 else 6.0
     nsf = int(math.ceil((math.ceil(duration_s) + 30) / sf_len_s))
-    sow0 = int(round(tow0_sow))
+    # Subframe boundaries sit on the BDT SOW grid (6 s D1 subframes; 3 s D2
+    # frames) at or before ``tow0_sow`` -- round() left them off-grid.
+    grid = 3 if d2 else 6
+    sow0 = int(float(tow0_sow) // grid) * grid
     syms: list[int] = []
+    # D1: the 30 s frame starts on a 30 s BDT boundary, so the subframe id
+    # follows SOW rather than the stream start (live mode restarts the
+    # stream every segment). D2's 3 s grid is already a frame boundary.
+    i0 = 0 if d2 else (sow0 // 6) % 5
     for i in range(nsf):
-        sf_id = _D1_CYCLE[i % 5]
+        sf_id = _D1_CYCLE[(i0 + i) % 5]
         sow = (sow0 + int(round(i * sf_len_s))) % 604800
         syms.extend(build_subframe(sf_id, eph, sow, week))
     a = np.asarray(syms, dtype=np.int8)

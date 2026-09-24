@@ -167,7 +167,9 @@ def nav_stream(eph: dict, prn: int, week: int, tow0_sow: float,
     syms: list[int] = []
     for f in range(nframes):
         sow = (tow0 + 3 * f) % 604800
-        mtype = _CYCLE[f % len(_CYCLE)]
+        # Message type follows BDT (frame count since the week start), so a
+        # stream started later continues the same schedule.
+        mtype = _CYCLE[(sow // 3) % len(_CYCLE)]
         syms.extend(build_frame(mtype, eph, prn, sow, week))
     bits = np.asarray(syms, dtype=np.int8)
     arr = np.where(bits > 0, np.int8(-1), np.int8(1))   # bit=0->+1, bit=1->-1

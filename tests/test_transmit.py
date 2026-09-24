@@ -55,39 +55,91 @@ def test_tx_params_kind_defaults_to_pluto(tmp_path):
     assert p.kind == "pluto"
 
 
-def test_default_tx_scale_is_unity(tmp_path, monkeypatch):
-    # KNOWN_ISSUES I2: measured against a real generated file, gps-sdr-sim's
-    # -b 16 output peaks around +-1331 out of int16's +-32767 -- comfortably
-    # inside the AD936x's 12-bit range already, and libiio's own
-    # iio_channel_convert() handles the 12-in-16-bit MSB alignment using the
-    # real hardware format (channel.c format.shift), so no manual pre-scaling
-    # is needed or correct here. Default must not alter samples.
+def test_default_levels_stream_to_dac_full_scale(tmp_path, monkeypatch):
+    # pyadi-iio writes raw int16 words and the AD9361 DAC takes their top 12
+    # bits, so a file's own amplitude (gps-sdr-sim ~+-1331, int8 +-127) is
+    # NOT the DAC level. Default: RMS leveled to level_dbfs below the
+    # backend's full scale, one fixed gain for the whole stream.
     monkeypatch.setattr(config, "ALLOW_TX", True)
     p = transmit.TxParams(iq_path=_iq_file(tmp_path, samples=1000),
                           sample_rate=2.6e6, sample_format="int16",
                           chunk_samples=1000)
-    assert p.tx_scale == 1.0
+    assert p.tx_scale == 1.0 and p.level_dbfs == -15.0
+    seen_chunks = []
+    monkeypatch.setattr(transmit, "_DrySink", _recording_sink(seen_chunks))
+    res = transmit.stream(p, dry_run=True)
+    raw = next(transmit._iter_chunks(p.iq_path, p.sample_format, p.chunk_samples))
+    target = 32767 * 10 ** (-15 / 20)
+    assert abs(transmit._rms(seen_chunks[0]) / target - 1) < 1e-6
+    assert np.allclose(seen_chunks[0], raw * res["digital_scale"])
+    assert res["clipped"] == 0
+
+
+def test_int8_and_int16_files_reach_the_same_dac_level(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    levels = []
+    for fmt in ("int8", "int16"):
+        d = tmp_path / fmt
+        d.mkdir()
+        p = transmit.TxParams(iq_path=_iq_file(d, samples=1000, fmt=fmt),
+                              sample_rate=2.6e6, sample_format=fmt,
+                              chunk_samples=1000)
+        seen = []
+        monkeypatch.setattr(transmit, "_DrySink", _recording_sink(seen))
+        transmit.stream(p, dry_run=True)
+        levels.append(transmit._rms(seen[0]))
+    assert abs(levels[0] / levels[1] - 1) < 1e-6
+
+
+def test_bladerf_levels_against_sc16q11(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    p = transmit.TxParams(iq_path=_iq_file(tmp_path, samples=1000),
+                          sample_rate=2.6e6, sample_format="int16",
+                          chunk_samples=1000, kind="bladerf")
+    seen = []
+    monkeypatch.setattr(transmit, "_DrySink", _recording_sink(seen))
+    transmit.stream(p, dry_run=True)
+    assert abs(transmit._rms(seen[0]) / (2047 * 10 ** (-15 / 20)) - 1) < 1e-6
+
+
+def test_level_none_is_raw_passthrough(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    p = transmit.TxParams(iq_path=_iq_file(tmp_path, samples=1000),
+                          sample_rate=2.6e6, sample_format="int16",
+                          chunk_samples=1000, level_dbfs=None)
     seen_chunks = []
     monkeypatch.setattr(transmit, "_DrySink", _recording_sink(seen_chunks))
     transmit.stream(p, dry_run=True)
-    assert seen_chunks
     raw = next(transmit._iter_chunks(p.iq_path, p.sample_format, p.chunk_samples))
     assert np.array_equal(seen_chunks[0], raw)
 
 
 def test_explicit_tx_scale_attenuates_chunks(tmp_path, monkeypatch):
-    # The knob still works when a caller wants headroom margin for a
-    # pathological scenario (many simultaneous satellites at max fixed gain).
+    # The knob multiplies on top of the leveled signal.
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    out = []
+    for sc in (1.0, 0.25):
+        p = transmit.TxParams(iq_path=_iq_file(tmp_path, samples=1000),
+                              sample_rate=2.6e6, sample_format="int16",
+                              chunk_samples=1000, tx_scale=sc)
+        seen_chunks = []
+        monkeypatch.setattr(transmit, "_DrySink", _recording_sink(seen_chunks))
+        transmit.stream(p, dry_run=True)
+        out.append(seen_chunks[0])
+    assert np.allclose(out[1], out[0] * 0.25)
+
+
+def test_overdriven_stream_saturates_instead_of_wrapping(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "ALLOW_TX", True)
     p = transmit.TxParams(iq_path=_iq_file(tmp_path, samples=1000),
                           sample_rate=2.6e6, sample_format="int16",
-                          chunk_samples=1000, tx_scale=0.25)
-    seen_chunks = []
-    monkeypatch.setattr(transmit, "_DrySink", _recording_sink(seen_chunks))
-    transmit.stream(p, dry_run=True)
-    assert seen_chunks
-    raw = next(transmit._iter_chunks(p.iq_path, p.sample_format, p.chunk_samples))
-    assert np.allclose(seen_chunks[0], raw * 0.25)
+                          chunk_samples=1000, level_dbfs=0.0, tx_scale=4.0)
+    seen = []
+    monkeypatch.setattr(transmit, "_DrySink", _recording_sink(seen))
+    res = transmit.stream(p, dry_run=True)
+    assert res["clipped"] > 0
+    assert np.max(np.abs(seen[0].real)) <= 32767
+    assert np.max(np.abs(seen[0].imag)) <= 32767
 
 
 def test_rate_mismatch_rejected(tmp_path, monkeypatch):
@@ -152,9 +204,10 @@ def test_default_baseband_offset_is_zero_and_a_no_op(tmp_path, monkeypatch):
     assert p.baseband_offset_hz == 0.0
     seen_chunks = []
     monkeypatch.setattr(transmit, "_DrySink", _recording_sink(seen_chunks))
-    transmit.stream(p, dry_run=True)
+    res = transmit.stream(p, dry_run=True)
     raw = next(transmit._iter_chunks(p.iq_path, p.sample_format, p.chunk_samples))
-    assert np.array_equal(seen_chunks[0], raw)
+    # no rotation: output is the leveled input, sample for sample
+    assert np.allclose(seen_chunks[0], raw * res["digital_scale"])
 
 
 class _FakeAD9361ForCalibration:

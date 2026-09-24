@@ -48,6 +48,8 @@ static int run_one_band(const BandSpec &b,
         ch[i].traj_carr_phase = specs[i].traj_carr_phase;
         ch[i].traj_code_rate = specs[i].traj_code_rate;
         ch[i].traj_code_phase = specs[i].traj_code_phase;
+        ch[i].tx_time_valid = specs[i].tx_time_valid;
+        ch[i].tx_chips_offset = specs[i].tx_chips_offset;
     }
     // Static per-SV gain, before any per-block fading is folded in.
     std::vector<float> base_gain(static_cast<size_t>(nsv));

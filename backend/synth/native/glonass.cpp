@@ -76,7 +76,8 @@ void glonass_state(const GloEph *e, double t_gps, double *pos3, double *vel3,
     vel3[0] = y[3];
     vel3[1] = y[4];
     vel3[2] = y[5];
-    *clk1 = -e->tau + e->gamma * dt_total;
+    // tau is RINEX's clock bias (-TauN): dts = -TauN + GammaN*dt = +tau.
+    *clk1 = e->tau + e->gamma * dt_total;
 }
 
 }  // namespace gs

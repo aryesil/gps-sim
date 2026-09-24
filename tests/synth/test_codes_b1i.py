@@ -14,8 +14,10 @@ import pytest
 
 from backend.synth import _lib
 
-_NH20 = np.array([-1, -1, -1, -1, -1, 1, -1, -1, 1, 1,
-                  -1, 1, -1, 1, -1, -1, 1, 1, 1, -1], np.int8)
+# NH20 = 0 0 0 0 0 1 0 0 1 1 0 1 0 1 0 0 1 1 1 0 with the ranging-code chip
+# map (bit 0 -> +1): the earlier table had every chip inverted.
+_NH20 = np.array([1, 1, 1, 1, 1, -1, 1, 1, -1, -1,
+                  1, -1, 1, -1, 1, 1, -1, -1, -1, 1], np.int8)
 
 
 def test_b1i_primary_period_and_balance():
@@ -89,5 +91,5 @@ def test_b1i_bad_prn_and_short_buffer():
 
 
 def test_abi_version_is_current():
-    assert _lib.load_lib().synth_abi_version() == 24
-    assert _lib.ABI_VERSION == 24
+    assert _lib.load_lib().synth_abi_version() == 25
+    assert _lib.ABI_VERSION == 25

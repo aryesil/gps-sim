@@ -27,6 +27,9 @@ struct SvChannel {
     const double *traj_carr_phase = nullptr;
     const double *traj_code_rate = nullptr;
     const double *traj_code_phase = nullptr;
+    // ABI 25 -- transmit-time modulation clock (see SvSpec in abi.h).
+    int tx_time_valid = 0;
+    double tx_chips_offset = 0.0;
 };
 void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
                uint64_t sample0, int n, float *__restrict iq);

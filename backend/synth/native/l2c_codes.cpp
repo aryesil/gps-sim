@@ -1,62 +1,97 @@
 // backend/synth/native/l2c_codes.cpp
 #include "l2c_codes.hpp"
 
-#include <array>
 #include <cstddef>
 
 namespace {
 
-// IS-GPS-200 3.2.1.4 feedback polynomial, taps on stages
-// {3,4,5,6,9,11,13,16,19,21,24,27}. Bit i-1 of the mask <=> stage i.
-constexpr uint32_t kFeedbackMask =
-    (1u << (3 - 1)) | (1u << (4 - 1)) | (1u << (5 - 1)) | (1u << (6 - 1)) |
-    (1u << (9 - 1)) | (1u << (11 - 1)) | (1u << (13 - 1)) | (1u << (16 - 1)) |
-    (1u << (19 - 1)) | (1u << (21 - 1)) | (1u << (24 - 1)) | (1u << (27 - 1));
-
 constexpr int kCmLen = 10230;
 constexpr int kClLen = 767250;
-constexpr uint32_t k27 = 0x07FFFFFFu;
 
-inline int parity(uint32_t v) { return __builtin_parity(v); }
+// IS-GPS-200 3.2.1.4 / Figure 3-9: the CM and CL codes come from a 27-stage
+// MODULAR (Galois) shift register with polynomial
+//   1 + x^3 + x^4 + x^5 + x^6 + x^9 + x^11 + x^13 + x^16 + x^19 + x^21
+//     + x^24 + x^27,
+// output taken from the last stage. In the right-shift form used by the ICD
+// tables (and by GNSS-SDR / PocketSDR) the output is bit 0 and the feedback
+// mask is octal 0445112474. The per-PRN initial states below are the ICD's
+// Table 3-IIa columns (transcribed from PocketSDR sdr_code.c, which tracks the
+// live signals) -- chip-for-chip interoperable with a real L2C receiver.
+constexpr uint32_t kGaloisMask = 0445112474u;
 
-// --- Per-PRN initial shift-register states -------------------------------
-//
-// IS-GPS-200 Revision M gives these as octal columns in Table 3-IIa (CM)
-// and Table 3-IIb (CL) for PRN 1..63. Transcribing 126 octal constants
-// from the ICD by hand, unverifiable offline, is deferred: for now every
-// PRN is seeded deterministically from a fixed non-zero base rotated by
-// the PRN number, which yields distinct, balanced, reproducible CM / CL
-// sequences with the correct polynomial, period and chip rate -- enough
-// for self-consistent generation, acquisition and closed-loop decode in
-// this simulator. To interoperate bit-for-bit with a real GPS receiver,
-// replace kSeedBaseCm / kSeedBaseCl selection below with the ICD octal
-// initial states. The generator, taps, lengths and reset behaviour are
-// already spec-exact.
-constexpr uint32_t kSeedBaseCm = 0742417664u & k27;   // ICD PRN 1 CM state
-constexpr uint32_t kSeedBaseCl = 0624145772u & k27;   // ICD PRN 1 CL state
+// IS-GPS-200 Table 3-IIa: CM initial states, PRN 1..63 (octal).
+constexpr uint32_t kCmInit1[63] = {
+    0742417664, 0756014035, 0002747144, 0066265724, 0601403471,
+    0703232733, 0124510070, 0617316361, 0047541621, 0733031046,
+    0713512145, 0024437606, 0021264003, 0230655351, 0001314400,
+    0222021506, 0540264026, 0205521705, 0064022144, 0120161274,
+    0044023533, 0724744327, 0045743577, 0741201660, 0700274134,
+    0010247261, 0713433445, 0737324162, 0311627434, 0710452007,
+    0722462133, 0050172213, 0500653703, 0755077436, 0136717361,
+    0756675453, 0435506112, 0771353753, 0226107701, 0022025110,
+    0402466344, 0752566114, 0702011164, 0041216771, 0047457275,
+    0266333164, 0713167356, 0060546335, 0355173035, 0617201036,
+    0157465571, 0767360553, 0023127030, 0431343777, 0747317317,
+    0045706125, 0002744276, 0060036467, 0217744147, 0603340174,
+    0326616775, 0063240065, 0111460621,
+};
+// IS-GPS-200 Table 3-IIa: CM initial states, PRN 159..210 (octal).
+constexpr uint32_t kCmInit2[52] = {
+    0604055104, 0157065232, 0013305707, 0603552017, 0230461355,
+    0603653437, 0652346475, 0743107103, 0401521277, 0167335110,
+    0014013575, 0362051132, 0617753265, 0216363634, 0755561123,
+    0365304033, 0625025543, 0054420334, 0415473671, 0662364360,
+    0373446602, 0417564100, 0000526452, 0226631300, 0113752074,
+    0706134401, 0041352546, 0664630154, 0276524255, 0714720530,
+    0714051771, 0044526647, 0207164322, 0262120161, 0204244652,
+    0202133131, 0714351204, 0657127260, 0130567507, 0670517677,
+    0607275514, 0045413633, 0212645405, 0613700455, 0706202440,
+    0705056276, 0020373522, 0746013617, 0132720621, 0434015513,
+    0566721727, 0140633660,
+};
+// IS-GPS-200 Table 3-IIa: CL initial states, PRN 1..63 (octal).
+constexpr uint32_t kClInit1[63] = {
+    0624145772, 0506610362, 0220360016, 0710406104, 0001143345,
+    0053023326, 0652521276, 0206124777, 0015563374, 0561522076,
+    0023163525, 0117776450, 0606516355, 0003037343, 0046515565,
+    0671511621, 0605402220, 0002576207, 0525163451, 0266527765,
+    0006760703, 0501474556, 0743747443, 0615534726, 0763621420,
+    0720727474, 0700521043, 0222567263, 0132765304, 0746332245,
+    0102300466, 0255231716, 0437661701, 0717047302, 0222614207,
+    0561123307, 0240713073, 0101232630, 0132525726, 0315216367,
+    0377046065, 0655351360, 0435776513, 0744242321, 0024346717,
+    0562646415, 0731455342, 0723352536, 0000013134, 0011566642,
+    0475432222, 0463506741, 0617127534, 0026050332, 0733774235,
+    0751477772, 0417631550, 0052247456, 0560404163, 0417751005,
+    0004302173, 0715005045, 0001154457,
+};
+// IS-GPS-200 Table 3-IIa: CL initial states, PRN 159..210 (octal).
+constexpr uint32_t kClInit2[52] = {
+    0605253024, 0063314262, 0066073422, 0737276117, 0737243704,
+    0067557532, 0227354537, 0704765502, 0044746712, 0720535263,
+    0733541364, 0270060042, 0737176640, 0133776704, 0005645427,
+    0704321074, 0137740372, 0056375464, 0704374004, 0216320123,
+    0011322115, 0761050112, 0725304036, 0721320336, 0443462103,
+    0510466244, 0745522652, 0373417061, 0225526762, 0047614504,
+    0034730440, 0453073141, 0533654510, 0377016461, 0235525312,
+    0507056307, 0221720061, 0520470122, 0603764120, 0145604016,
+    0051237167, 0033326347, 0534627074, 0645230164, 0000171400,
+    0022715417, 0135471311, 0137422057, 0714426456, 0640724672,
+    0501254540, 0513322453,
+};
 
-inline uint32_t rotl27(uint32_t v, int s) {
-    s %= 27;
-    return ((v << s) | (v >> (27 - s))) & k27;
+// Initial state for `prn`, or 0 when the PRN has no ICD assignment.
+uint32_t init_state(int prn, const uint32_t *lo, const uint32_t *hi) {
+    if (prn >= 1 && prn <= 63) return lo[prn - 1];
+    if (prn >= 159 && prn <= 210) return hi[prn - 159];
+    return 0u;
 }
 
-uint32_t seed_cm(int prn) {
-    uint32_t s = rotl27(kSeedBaseCm, (prn - 1) * 7 + 1);
-    return s ? s : 1u;
-}
-
-uint32_t seed_cl(int prn) {
-    uint32_t s = rotl27(kSeedBaseCl, (prn - 1) * 11 + 1);
-    return s ? s : 1u;
-}
-
-void run_lfsr(uint32_t state, int8_t *out, int n) {
-    uint32_t reg = state & k27;
+void run_lfsr(uint32_t reg, int8_t *out, int n) {
     for (int i = 0; i < n; ++i) {
-        int chip = static_cast<int>((reg >> (27 - 1)) & 1u);   // stage 27
-        out[i] = chip ? -1 : 1;
-        int fb = parity(reg & kFeedbackMask);
-        reg = ((reg << 1) | static_cast<uint32_t>(fb)) & k27;
+        const uint32_t bit = reg & 1u;
+        out[i] = bit ? int8_t(-1) : int8_t(1);   // 0 -> +1, 1 -> -1
+        reg = (reg >> 1) ^ (bit ? kGaloisMask : 0u);
     }
 }
 
@@ -64,15 +99,21 @@ void run_lfsr(uint32_t state, int8_t *out, int n) {
 
 namespace gs {
 
+bool l2c_prn_valid(int prn) {
+    return (prn >= 1 && prn <= 63) || (prn >= 159 && prn <= 210);
+}
+
 void l2c_cm(int prn, int8_t *out, int n) {
-    if (prn < 1 || prn > 63 || n < kCmLen || out == nullptr) return;
-    run_lfsr(seed_cm(prn), out, kCmLen);
+    const uint32_t s = init_state(prn, kCmInit1, kCmInit2);
+    if (s == 0u || n < kCmLen || out == nullptr) return;
+    run_lfsr(s, out, kCmLen);
     for (int i = kCmLen; i < n; ++i) out[i] = out[i - kCmLen];   // repeat
 }
 
 void l2c_cl(int prn, int8_t *out, int n) {
-    if (prn < 1 || prn > 63 || n < kClLen || out == nullptr) return;
-    run_lfsr(seed_cl(prn), out, kClLen);
+    const uint32_t s = init_state(prn, kClInit1, kClInit2);
+    if (s == 0u || n < kClLen || out == nullptr) return;
+    run_lfsr(s, out, kClLen);
     for (int i = kClLen; i < n; ++i) out[i] = out[i - kClLen];
 }
 

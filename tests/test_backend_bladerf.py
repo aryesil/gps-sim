@@ -70,7 +70,8 @@ def test_open_tx_configures_both_channels_and_streaming():
     assert handle.channels[0].frequency == 1575420000.0
     assert handle.channels[1].frequency == 1575420000.0
     assert handle.channels[0].sample_rate == 2_600_000.0
-    assert handle.channels[0].bandwidth == 1_300_000.0
+    # RF (two-sided) filter bandwidth covers the whole generated band
+    assert handle.channels[0].bandwidth == 2_600_000.0
     assert handle.channels[0].enable is True
     assert handle.channels[1].enable is True
     assert handle.sync_config_calls

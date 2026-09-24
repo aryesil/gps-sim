@@ -96,3 +96,37 @@ def test_l1_dispatch_still_lnav(eph_multi):
 def test_unknown_system_returns_none(eph_multi):
     assert nav_encoders.nav_stream_for("X", signals.signal_for("G"), {},
                                        {}, _WEEK, _SOW, 6) is None
+
+
+# A live session restarts every nav stream each ~1 s segment, so a stream
+# started later must carry exactly the symbols the earlier stream carries at
+# the same time: message/page/subframe schedules follow GNSS time, not the
+# stream start. The first 12 symbols are skipped: a continuous rate-1/2 K=7
+# FEC (CNAV, SBAS) restarts from the zero state, a transient the engine's
+# 1 s nav lead keeps off the air.
+_FEC_SKIP = 12
+
+
+@pytest.mark.parametrize("sysc,sig_name", [
+    ("G", "GPS_L1CA"), ("J", "QZSS_L1CA"), ("E", "GAL_E1"), ("C", "BDS_B1I"),
+    ("S", "SBAS_L1"), ("G", "GPS_L2C"), ("G", "GPS_L5I"), ("E", "GAL_E5AI"),
+    ("C", "BDS_B2AD"), ("I", "IRNSS_L5"), ("R", "GLO_G1"),
+])
+def test_nav_stream_is_time_invariant(sysc, sig_name):
+    e = ephemeris.parse_rinex_multi(_RINEX, ("G", "J", "E", "C", "R", "S", "I"),
+                                    require=())
+    e = ephemeris.align_epochs(e, _WEEK, _SOW)
+    key = next((k for k in sorted(e, key=str) if isinstance(k, tuple) and k[0] == sysc), None)
+    if key is None:
+        pytest.skip(f"no {sysc} record in fixture")
+    rec, prn = e[key], key[1]
+    sig = signals.SIGNALS[sig_name]
+    t0 = _SOW + 7.3
+    a, rate = nav_encoders.nav_stream_for(sysc, sig, rec, {}, _WEEK, t0, 200, prn=prn)
+    ta = nav_encoders.stream_t0_sow(sysc, sig, t0, prn=prn)
+    for d in (1.0, 6.0, 60.0):
+        b, _ = nav_encoders.nav_stream_for(sysc, sig, rec, {}, _WEEK, t0 + d, 20, prn=prn)
+        tb = nav_encoders.stream_t0_sow(sysc, sig, t0 + d, prn=prn)
+        off = int(round((tb - ta) * rate))
+        n = min(b.size, a.size - off)
+        assert np.array_equal(a[off + _FEC_SKIP:off + n], b[_FEC_SKIP:n]), f"shift {d} s"

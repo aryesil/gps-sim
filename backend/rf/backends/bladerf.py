@@ -11,10 +11,9 @@ per card; each `write()` interleaves the two per-channel blocks dual_tx.py's
 pump loop already produces into one SC16Q11 buffer (ch0_I, ch0_Q, ch1_I,
 ch1_Q per sample period) and pushes it with `sync_tx()`. SC16Q11 samples
 are plain int16 in each channel's native -2048..2047 range (Nuand's own
-examples scale a unit-magnitude complex tone by 2048.0 before casting) --
-the same int16 headroom the on-disk gpssim_*.bin IQ already sits in (see
-transmit.TxParams.tx_scale's KNOWN_ISSUES I2 note, peak ~1331 of int16's
-+-32767), so no extra scaling is applied here either.
+examples scale a unit-magnitude complex tone by 2048.0 before casting);
+values outside it are NOT saturated by the FPGA. transmit.stream() levels
+the stream against DAC_FULL_SCALE and write() rounds and saturates.
 
 API confirmed against Nuand/bladeRF's own
 host/libraries/libbladeRF_bindings/python/bladerf/_bladerf.py; the raw
@@ -55,8 +54,11 @@ _BUFFER_SIZE = 8192
 _NUM_TRANSFERS = 8
 _STREAM_TIMEOUT_MS = 3500
 
+DAC_FULL_SCALE = 2047        # SC16Q11
 
-def open_tx(uri: str, lo_hz: float, sample_rate: float):
+
+def open_tx(uri: str, lo_hz: float, sample_rate: float, *,
+            rf_bandwidth_hz: float | None = None, xo_ppm: float = 0.0):
     """Open both TX channels for synchronized 2x2 streaming. Raises
     TransmitError if the device silently clamped the requested LO or
     sample rate on either channel."""
@@ -66,7 +68,11 @@ def open_tx(uri: str, lo_hz: float, sample_rate: float):
         ch = dev.Channel(_bladerf.CHANNEL_TX(idx))
         ch.frequency = lo_hz
         ch.sample_rate = sample_rate
-        ch.bandwidth = sample_rate / 2.0
+        # libbladeRF's bandwidth is the AD9361 RF (complex, two-sided)
+        # filter bandwidth. sample_rate/2 cut e.g. the GPS C/A main lobe
+        # (2.046 MHz) at 2.6 Msps down to 1.3 MHz: lost signal power and a
+        # distorted correlation peak.
+        ch.bandwidth = float(rf_bandwidth_hz) if rf_bandwidth_hz else sample_rate
         if abs(ch.frequency - lo_hz) > 1000:
             raise TransmitError(f"device clamped LO to {ch.frequency}")
         if abs(ch.sample_rate - sample_rate) > 1.0:
@@ -81,6 +87,19 @@ def open_tx(uri: str, lo_hz: float, sample_rate: float):
     return dev
 
 
+def n_tx_channels(handle) -> int:
+    return 2
+
+
+def active_channels(handle) -> list[int]:
+    # TX_X2 sync layout streams both channels always (USB 3 has the room).
+    return [0, 1]
+
+
+def set_active_channels(handle, chans) -> None:
+    pass
+
+
 def set_gain(handle, chan: int, gain_db: float) -> None:
     from bladerf import _bladerf
     handle.Channel(_bladerf.CHANNEL_TX(chan)).gain = gain_db
@@ -93,10 +112,15 @@ def write(handle, blocks) -> None:
     ch0, ch1 = (np.asarray(b, dtype=np.complex64) for b in blocks)
     n = len(ch0)
     interleaved = np.empty(n * 4, dtype=np.int16)
-    interleaved[0::4] = ch0.real.astype(np.int16)
-    interleaved[1::4] = ch0.imag.astype(np.int16)
-    interleaved[2::4] = ch1.real.astype(np.int16)
-    interleaved[3::4] = ch1.imag.astype(np.int16)
+    lim = DAC_FULL_SCALE
+
+    def q(x):
+        return np.clip(np.rint(x), -lim, lim).astype(np.int16)
+
+    interleaved[0::4] = q(ch0.real)
+    interleaved[1::4] = q(ch0.imag)
+    interleaved[2::4] = q(ch1.real)
+    interleaved[3::4] = q(ch1.imag)
     handle.sync_tx(interleaved.tobytes(), n)
 
 

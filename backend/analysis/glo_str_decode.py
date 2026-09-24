@@ -4,20 +4,16 @@ Acquires the shared 511-chip m-sequence (common to every FDMA slot) at a
 given channel offset, carrier-tracks the 100 sym/s meander stream the same
 way :mod:`backend.analysis.cnav_decode` tracks CNAV (chirp Doppler + drift
 + residual-phase polyfit), then hunts for Hamming-valid GLONASS string
-framing. GLONASS strings carry no fixed preamble -- the KX Hamming
-SEC-DED check (:func:`backend.analysis.glo_str_encode.hamming_check`) is
-the only sync signal, so both the 85-bit string-start offset and the 2-way
-meander parity (which symbol of each bit-pair is "first") are searched
-jointly, picking whichever combination yields the most Hamming-valid
-strings.
+framing. Sync uses the KX Hamming check
+(:func:`backend.analysis.glo_str_encode.hamming_check`) rather than the
+30-chip time mark: the string start (one of 100 bit-pair slots per 2 s
+string) and the 2-way meander parity (which symbol of each bit-pair is
+"first") are searched jointly, picking whichever combination yields the
+most Hamming-valid strings.
 
 Ephemeris reconstruction is :func:`glo_str_encode.reconstruct_ephemeris`.
-Because ``glo_str_encode.nav_stream`` never re-propagates per string --
-every 15-string cycle re-encodes the *same* broadcast state vector -- and
-the engine always aligns a GLONASS record's ``toe_ref`` to the scenario's
-own GPS start-of-week before encoding it, the recovered fields describe
-the state at exactly ``toe_ref == approx_time_gps``. No epoch needs
-decoding out of ``t_k``.
+The state vector is referenced to the broadcast t_b (string 2); the
+receiver resolves it with :func:`glo_str_encode.toe_ref_from_tb`.
 """
 from __future__ import annotations
 
@@ -221,37 +217,35 @@ def demod_symbols(iq, fs, *, nominal_ctr_hz, offset_hz, dopp_hz=None,
 
 
 def sync_and_decode(sym01) -> dict[int, list[int]]:
-    """Map string number -> its 76-bit data field (``data[:4]`` the string
-    number, ``data[4:]`` the payload; see ``glo_str_encode.build_string``)
-    out of raw meander-symbol hard decisions.
+    """Map string number -> its 76 data bits (``data[:4]`` the string
+    number; see ``glo_str_encode.build_string``) out of raw meander-symbol
+    hard decisions.
 
-    Neither the 2-way meander parity (which symbol of each data-bit pair is
-    "first") nor the 85-bit string-start offset is known after
-    acquisition/carrier-tracking alone. GLONASS strings carry no fixed
-    preamble, so the Hamming SEC-DED check is the only sync signal: this
-    tries both parities at every offset and keeps whichever combination
-    yields the most Hamming-valid strings.
+    A string is 200 symbols: 85 relative-coded data bits as meander pairs,
+    then the 30-chip time mark. Neither the 2-way meander parity nor the
+    string start is known after tracking, so both are searched jointly
+    (string start over the 100 bit-pair slots of one string), keeping the
+    combination with the most KX-valid strings. The relative code is undone
+    differentially, which also makes the result immune to a carrier-phase
+    sign flip.
     """
     sym = [int(s) & 1 for s in sym01]
+    per = G._STR_SYMS // 2                     # bit-pair slots per string
     best_n, best_frame = -1, {}
     for parity in (0, 1):
-        # A meander-encoded bit's first symbol IS the data bit's hard
-        # decision (see glo_str_encode._meander: bit 0 -> [+1,-1], bit 1 ->
-        # [-1,+1], and this module's own hard-decision sign convention
-        # matches _demeander's); the second symbol is redundant.
         bits = sym[parity::2]
-        for off in range(G._STR_BITS):
+        for off in range(per):
             n_ok = 0
             frame: dict[int, list[int]] = {}
             i = off
             while i + G._STR_BITS <= len(bits):
-                s = bits[i:i + G._STR_BITS]
+                s = G._derelative(bits[i:i + G._STR_BITS])
                 if G.hamming_check(s):
                     n_ok += 1
-                    data = G._string_data(s[:84])
+                    data = G._string_data(s)
                     sidx = int("".join(map(str, data[:4])), 2)
                     frame.setdefault(sidx, data)
-                i += G._STR_BITS
+                i += per
             if n_ok > best_n:
                 best_n, best_frame = n_ok, frame
     return best_frame

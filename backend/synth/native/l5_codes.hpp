@@ -6,13 +6,8 @@
 //       8190 chips (IS-GPS-200 3.3.2.2), and
 //   XBi is a 13-stage LFSR, polynomial
 //       1 + x + x^3 + x^4 + x^6 + x^7 + x^8 + x^12 + x^13, with a
-//       per-PRN initial state (IS-GPS-200-M Table 3-Ia for I5,
-//       Table 3-Ib for Q5).
-// The ICD initial-state tables are not available offline; as in
-// l2c_codes.cpp the per-PRN XB states are seeded deterministically by
-// rotating a fixed base, which yields distinct, balanced, reproducible
-// I5 / Q5 sequences with the correct polynomials, period and chip rate.
-// The generators, taps, length and XA short-cycle are spec-exact.
+//       per-PRN code advance (IS-GPS-705 Table 3-Ia for I5, Table 3-Ib
+//       for Q5, PRN 1..210).
 // Internal C++ helpers -- NOT part of the extern "C" ABI.
 #pragma once
 #include <cstdint>

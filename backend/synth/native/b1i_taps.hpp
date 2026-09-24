@@ -36,11 +36,13 @@ constexpr int8_t kB1iG2Tap3[63] = {
 };
 
 // Neumann-Hoffman secondary code (20 chips, 1 kHz), BDS-SIS-ICD-B1I v3.0
-// section on the NH-modulated D1 NAV. Modulated onto MEO/IGSO ranging codes;
-// GEO satellites use a flat +1 secondary.
+// section on the NH-modulated D1 NAV: bits 0 0 0 0 0 1 0 0 1 1 0 1 0 1 0 0
+// 1 1 1 0. Mapped with the same bit 0 -> +1, 1 -> -1 convention as the
+// ranging code (the previous table had every chip inverted). Modulated onto
+// MEO/IGSO ranging codes; GEO satellites use a flat +1 secondary.
 constexpr int8_t kNH20[20] = {
-    -1, -1, -1, -1, -1, 1, -1, -1, 1, 1,
-    -1, 1, -1, 1, -1, -1, 1, 1, 1, -1,
+    1, 1, 1, 1, 1, -1, 1, 1, -1, -1,
+    1, -1, 1, -1, 1, 1, -1, -1, -1, 1,
 };
 
 // GEO PRN mask: bit (prn-1) set for C01..C05 and C59..C63 (per Table 4-2

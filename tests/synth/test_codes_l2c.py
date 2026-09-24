@@ -3,9 +3,25 @@ import numpy as np
 from backend.synth import _lib
 
 
-def test_abi_version_is_20():
-    assert _lib.ABI_VERSION == 24
-    assert _lib.load_lib().synth_abi_version() == 24
+def test_abi_version():
+    assert _lib.ABI_VERSION == 25
+    assert _lib.load_lib().synth_abi_version() == 25
+
+
+def test_l2c_icd_known_answer():
+    # IS-GPS-200 Table 3-IIa initial states through the modular (Galois)
+    # register, output = LSB. First 10 chips match GNSS-SDR / PocketSDR.
+    cm, cl = _lib.code_l2c(1)
+    assert cm[:10].tolist() == [1, 1, -1, 1, -1, 1, -1, -1, -1, -1]
+    assert cl[:10].tolist() == [1, -1, 1, -1, 1, 1, -1, -1, 1, -1]
+    cm159, _ = _lib.code_l2c(159)          # extended PRN block 159..210
+    assert cm159[:10].tolist() == [1, 1, -1, 1, 1, -1, 1, -1, 1, 1]
+
+
+def test_l2c_prn_gap_rejected():
+    import pytest
+    with pytest.raises(ValueError):
+        _lib.code_l2c(100)                 # no ICD assignment for 64..158
 
 
 def test_l2c_cm_period_and_alphabet():

@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-ABI_VERSION = 24
+ABI_VERSION = 25
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 if sys.platform == "darwin":
     _EXT = "dylib"
@@ -87,6 +87,9 @@ class SvSpec(ctypes.Structure):
         ("traj_code_phase", ctypes.POINTER(ctypes.c_double)),
         # SP-D -- nav-message symbol rate (0.0 => 50 Hz GPS LNAV).
         ("nav_sym_rate_hz", ctypes.c_double),
+        # ABI 25 -- transmit-time modulation clock (see abi.h).
+        ("tx_time_valid", ctypes.c_int),
+        ("tx_chips_offset", ctypes.c_double),
     ]
 
 
@@ -155,6 +158,8 @@ def one_sv_spec(code, carrier_hz=0.0, code_phase0=0.0, code_doppler=0.0,
     s.traj_code_rate = None
     s.traj_code_phase = None
     s.nav_sym_rate_hz = 0.0
+    s.tx_time_valid = 0
+    s.tx_chips_offset = 0.0
     return s
 
 

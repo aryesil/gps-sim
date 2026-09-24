@@ -27,6 +27,9 @@ class _FakeAD9361:
         _FakeAD9361.instances.append(self)
 
     def tx(self, blocks):
+        # pyadi-iio takes a bare array when exactly one channel is enabled
+        if isinstance(blocks, np.ndarray):
+            blocks = [blocks]
         self.tx_calls.append([np.array(b) for b in blocks])
         time.sleep(0.005)   # keep the pump thread from busy-spinning in tests
 
@@ -59,7 +62,8 @@ def test_acquire_configures_lo_rate_and_gain():
     try:
         dev = _FakeAD9361.instances[0]
         assert dev.uri == "ip:1.2.3.4"
-        assert dev.tx_enabled_channels == [0, 1]
+        # only the acquired slot's channel streams (link bandwidth)
+        assert dev.tx_enabled_channels == [0]
         assert dev.sample_rate == 2_600_000
         assert dev.tx_lo == 1575420000
         assert dev.tx_cyclic_buffer is False
@@ -148,7 +152,9 @@ def test_device_open_failure_propagates(monkeypatch):
     assert dual_tx._card is None   # never left half-open
 
 
-def test_idle_slot_transmits_silence_while_active_one_streams():
+def test_idle_slot_is_not_streamed_while_active_one_streams():
+    # TX2 was never acquired: its channel is not enabled at all, so the link
+    # carries only TX1's IQ (two full-rate channels overran a USB Pluto).
     s1 = dual_tx.acquire("TX1", "ip:1.2.3.4", 1575420000.0, 2_600_000.0, -30.0)
     try:
         block = (np.ones(dual_tx._BLOCK_SAMPLES, dtype=np.complex64)
@@ -157,13 +163,22 @@ def test_idle_slot_transmits_silence_while_active_one_streams():
         time.sleep(0.2)
         dev = _FakeAD9361.instances[0]
         assert dev.tx_calls, "pump never called tx()"
-        # TX2 was never acquired -- its channel must always be silence.
-        for tx1_chunk, tx2_chunk in dev.tx_calls:
-            assert np.all(tx2_chunk == 0)
-        # At least one call actually carried TX1's real data (not silence).
-        assert any(np.any(tx1_chunk != 0) for tx1_chunk, _tx2 in dev.tx_calls)
+        assert all(len(c) == 1 for c in dev.tx_calls)
+        assert any(np.any(c[0] != 0) for c in dev.tx_calls)
     finally:
         s1.close()
+
+
+def test_second_slot_enables_both_channels():
+    s1 = dual_tx.acquire("TX1", "ip:1.2.3.4", 1575420000.0, 2_600_000.0, -30.0)
+    s2 = dual_tx.acquire("TX2", "ip:1.2.3.4", 1575420000.0, 2_600_000.0, -30.0)
+    try:
+        dev = _FakeAD9361.instances[0]
+        assert dev.tx_enabled_channels == [0, 1]
+        assert dev.destroyed is True       # buffer re-created with the new mask
+    finally:
+        s1.close()
+        s2.close()
 
 
 def test_both_slots_transmit_their_own_content_simultaneously():
@@ -186,17 +201,19 @@ def test_both_slots_transmit_their_own_content_simultaneously():
 def test_push_splits_into_fixed_blocks_and_close_flushes_zero_padded_carry():
     s1 = dual_tx.acquire("TX1", "ip:1.2.3.4", 1575420000.0, 2_600_000.0, -30.0)
     n = dual_tx._BLOCK_SAMPLES + 10   # one full block plus a small remainder
-    chunk = np.arange(n, dtype=np.complex64)
+    # distinct in-range values: the AD9361 backend saturates at DAC full scale
+    chunk = (np.arange(n) % 30000 + 1).astype(np.complex64)
     s1.push(chunk)
     time.sleep(0.2)
     dev = _FakeAD9361.instances[0]
-    full_block_calls = [c1 for c1, _c2 in dev.tx_calls if np.any(c1 != 0)]
+    full_block_calls = [c[0] for c in dev.tx_calls if np.any(c[0] != 0)]
     assert full_block_calls, "the full block never reached tx()"
     assert np.array_equal(full_block_calls[0], chunk[:dual_tx._BLOCK_SAMPLES])
     s1.close()   # must flush the 10-sample carry, zero-padded
     time.sleep(0.2)
-    tail_calls = [c1 for c1, _c2 in dev.tx_calls
-                  if c1.size and np.any(c1 != 0) and c1[0] == chunk[dual_tx._BLOCK_SAMPLES]]
+    tail_calls = [c[0] for c in dev.tx_calls
+                  if c[0].size and np.any(c[0] != 0)
+                  and c[0][0] == chunk[dual_tx._BLOCK_SAMPLES]]
     assert tail_calls, "the trailing partial block was never flushed on close()"
     tail = tail_calls[0]
     assert np.array_equal(tail[:10], chunk[dual_tx._BLOCK_SAMPLES:])
@@ -233,9 +250,9 @@ def test_shut_down_mutes_gain_and_flushes_silence_before_destroying_buffer():
     assert dev.tx_hardwaregain_chan0 == -89.75
     assert dev.tx_hardwaregain_chan1 == -89.75
     assert dev.tx_calls, "no tx() calls recorded"
-    last_tx1, last_tx2 = dev.tx_calls[-1]
-    assert np.all(last_tx1 == 0), "last tx() call before buffer teardown must be silence"
-    assert np.all(last_tx2 == 0)
+    last = dev.tx_calls[-1]
+    assert all(np.all(c == 0) for c in last), \
+        "last tx() call before buffer teardown must be silence"
     assert dev.destroyed is True
 
 
@@ -246,3 +263,47 @@ def test_underflow_counts_when_a_slot_has_nothing_queued():
         assert s1.underflow >= 1
     finally:
         s1.close()
+
+
+def test_single_tx_device_rejects_tx2_and_streams_bare_array(monkeypatch):
+    # A stock PlutoSDR (AD9363, 1R1T) exposes only voltage0/voltage1 on its
+    # DDS core. Enabling channel 1 there makes the first buffer push fail,
+    # and pyadi-iio wants a bare array (not a list) with one channel.
+    class _Chan:
+        def __init__(self, cid):
+            self.id, self.output = cid, True
+
+    class _OneTx(_FakeAD9361):
+        def __init__(self, uri=None):
+            super().__init__(uri)
+            self._txdac = types.SimpleNamespace(
+                channels=[_Chan("voltage0"), _Chan("voltage1"),
+                          _Chan("altvoltage0")])
+
+        def tx(self, data):
+            assert isinstance(data, np.ndarray)
+            self.tx_calls.append([np.array(data)])
+            time.sleep(0.005)
+
+    sys.modules["adi"].ad9361 = _OneTx
+    with pytest.raises(transmit.TransmitError, match="TX2 unavailable"):
+        dual_tx.acquire("TX2", "ip:1.2.3.4", 1575420000.0, 2_600_000.0, -30.0)
+    assert dual_tx._card is None
+    s1 = dual_tx.acquire("TX1", "ip:1.2.3.4", 1575420000.0, 2_600_000.0, -30.0)
+    dev = _FakeAD9361.instances[-1]
+    assert dev.tx_enabled_channels == [0]
+    s1.push(np.full(dual_tx._BLOCK_SAMPLES, 5 + 5j, np.complex64))
+    time.sleep(0.2)
+    s1.close()
+    assert any(np.any(c[0] != 0) for c in dev.tx_calls)
+
+
+def test_ad9361_write_rounds_and_saturates():
+    from backend.rf.backends import ad9361
+    dev = _FakeAD9361()
+    dev._gs_n_tx = 2
+    ad9361.write(dev, [np.array([1.6 - 2.4j, 1e6 - 1e6j], np.complex64),
+                       np.zeros(2, np.complex64)])
+    got = dev.tx_calls[-1][0]
+    assert got[0] == 2 - 2j
+    assert got[1] == ad9361.DAC_FULL_SCALE - 1j * ad9361.DAC_FULL_SCALE

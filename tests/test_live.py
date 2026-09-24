@@ -10,6 +10,12 @@ from backend.session import live
 from backend import scenario
 
 
+@pytest.fixture(autouse=True)
+def _in_process_segments(monkeypatch):
+    # the fakes below patch this process; the worker process would not see them
+    monkeypatch.setattr(live.LiveSession, "use_process", False)
+
+
 def _base_req():
     import datetime as dt
     return scenario.ScenarioRequest(
@@ -46,7 +52,7 @@ def test_segments_resolves_band_file_once_and_reuses_it(monkeypatch):
         d = pathlib.Path(tempfile.mkdtemp())
         (d / "gpssim_l5.bin").write_bytes(b"\x00\x00" * 100)
         return d
-    monkeypatch.setattr(live.generator, "run_segment", fake_run_segment)
+    _patch_engine(monkeypatch, s, fake_run_segment)
 
     def fake_read_iq(path, fmt):
         seen_paths.append(pathlib.Path(path).name)
@@ -76,7 +82,7 @@ def test_segments_raises_immediately_on_multi_band_conflict_no_retry(monkeypatch
         (d / "gpssim.bin").write_bytes(b"\x00\x00" * 100)
         (d / "gpssim_g1.bin").write_bytes(b"\x00\x00" * 100)
         return d
-    monkeypatch.setattr(live.generator, "run_segment", fake_run_segment)
+    _patch_engine(monkeypatch, s, fake_run_segment)
 
     gen = s.segments()
     with pytest.raises(RuntimeError, match="exactly one RF output"):
@@ -143,7 +149,7 @@ def test_segments_snapshot_is_consistent_under_concurrent_jog(monkeypatch):
         d = pathlib.Path(tempfile.mkdtemp())
         (d / "gpssim.bin").write_bytes(b"\x00\x00" * 100)
         return d
-    monkeypatch.setattr(live.generator, "run_segment", fake_run_segment)
+    _patch_engine(monkeypatch, s, fake_run_segment)
     monkeypatch.setattr(live.inspector, "read_iq",
                         lambda path, fmt: np.zeros(50, dtype=np.complex64))
 
@@ -199,3 +205,53 @@ def test_segments_snapshot_is_consistent_under_concurrent_jog(monkeypatch):
     displacement = np.linalg.norm(final_ecef - start_ecef)
     expected = NUM_JOGGERS * JOGS_PER_THREAD * JOG_DISTANCE
     assert abs(displacement - expected) < 1.0
+
+
+def _patch_engine(monkeypatch, session, fake_run_segment):
+    """Route LiveSession's per-segment native-engine call to a
+    run_segment-shaped fake (llh, time offset from the session start)."""
+    base = session.base_req
+
+    def fake_run(req):
+        off = float((req.start - base.start).total_seconds())
+        return fake_run_segment(req, (float(req.lat), float(req.lon),
+                                      float(req.alt)), off, req.duration_s)
+    monkeypatch.setattr(live.signal_engine, "run", fake_run)
+
+
+def test_segments_advance_time_and_pin_ephemeris(monkeypatch):
+    """Each segment continues the previous one in GPS time (the old loop
+    re-generated the same start every second, so the SDR replayed one
+    0.9 s gps-sdr-sim clip forever), always on the native engine, with the
+    ephemeris aligned to the SESSION start."""
+    s = live.LiveSession(_base_req())
+    reqs = []
+
+    def fake_run(req):
+        reqs.append(req)
+        d = pathlib.Path(tempfile.mkdtemp())
+        (d / "gpssim.bin").write_bytes(b"\x00\x00" * 100)
+        return d
+    monkeypatch.setattr(live.signal_engine, "run", fake_run)
+    monkeypatch.setattr(live.inspector, "read_iq",
+                        lambda path, fmt: np.zeros(50, dtype=np.complex64))
+    gen = s.segments()
+    for _ in range(3):
+        next(gen)
+    s.stop()
+    base = s.base_req
+    offs = [(r.start - base.start).total_seconds() for r in reqs[:3]]
+    assert offs == [0.0, 1.0, 2.0]
+    assert all(r.engine == "native" and r.eph_epoch == base.start
+               for r in reqs[:3])
+
+
+def test_segment_ephemeris_refreshes_every_two_hours():
+    # constant within a 2 h block (seamless joins, cached parse), re-pinned
+    # after it so a long session never broadcasts an expired toe
+    s = live.LiveSession(_base_req())
+    base = s.base_req
+    snap = live.LiveState(llh=[base.lat, base.lon, base.alt])
+    ep = [(s._segment_request(k, snap).eph_epoch - base.start).total_seconds()
+          for k in (0, 7199, 7200, 14500)]
+    assert ep == [0.0, 0.0, 7200.0, 14400.0]

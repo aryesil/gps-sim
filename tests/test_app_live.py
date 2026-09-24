@@ -511,3 +511,29 @@ def test_live_start_runs_timeline_steps_in_order(monkeypatch):
     body = r.text
     assert '"timeline_step"' in body
     assert '"field": "time_offset_s"' in body
+
+
+def test_live_start_now_runs_on_current_time_plus_lead(monkeypatch):
+    import datetime as dt
+    import pathlib
+    from backend.session import live
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    seen = {}
+    real_init = live.LiveSession.__init__
+
+    def spy_init(self, base_req, *a, **k):
+        seen["start"] = base_req.start
+        real_init(self, base_req, *a, **k)
+
+    monkeypatch.setattr(live.LiveSession, "__init__", spy_init)
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    t0 = dt.datetime.utcnow()
+    r = client.post("/api/live/start", json={
+        "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
+        "start_utc": "now", "confirm_isolated": True,
+        "engine": "native", "systems": ["G"],
+        "sample_rate": 2.6e6, "dry_run": True, "duration_s": 3600,
+        "max_duration_s": 0.05})
+    assert r.status_code == 200
+    lead = (seen["start"] - t0).total_seconds()
+    assert config.LIVE_START_LEAD_S - 0.5 < lead < config.LIVE_START_LEAD_S + 5.0

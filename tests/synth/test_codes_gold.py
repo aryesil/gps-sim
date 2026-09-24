@@ -42,13 +42,19 @@ def test_gps_first_chips_pinned():
 
 
 def test_qzss_sbas_first_chips_pinned():
-    # Pins the committed qzss_sbas_taps.hpp G2-delay tables so an accidental
-    # edit or a reversed delay direction cannot pass silently.
+    # Pins the committed qzss_sbas_taps.hpp G2-delay tables AND the delay
+    # direction (G2 DELAYED by n chips, IS-GPS-200 Table 3-Ia convention).
+    # Values are the ICD "first 10 chips" columns: SBAS PRN 120 = octal 0671
+    # (RTCA DO-229), QZSS PRN 193 = 0727 (IS-QZSS-PNT); cross-checked
+    # chip-for-chip against PocketSDR's L1CA_G2_delay generator. An earlier
+    # table test pinned the ADVANCED (wrong) sequence.
     q = _prim(1, 193, 1023)
-    assert q[:10].tolist() == [1, 1, 1, 1, -1, 1, 1, 1, -1, 1]
+    assert q[:10].tolist() == [1, -1, -1, -1, 1, -1, 1, -1, -1, -1]   # 0727
     assert int(q.sum()) == -1
+    s = _prim(2, 120, 1023)
+    assert s[:10].tolist() == [1, -1, -1, 1, -1, -1, -1, 1, 1, -1]  # 0671
     s = _prim(2, 133, 1023)
-    assert s[:10].tolist() == [1, -1, 1, 1, -1, -1, 1, 1, 1, -1]
+    assert s[:10].tolist() == [1, 1, 1, 1, -1, 1, 1, -1, -1, 1]     # 0046
     assert int(s.sum()) == -1
 
 

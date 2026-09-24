@@ -168,12 +168,16 @@ def nav_stream(eph, header, week, sow, duration_s, *, prn, eph_by_prn=None):
     unused -- NavIC's ionosphere/UTC data lives in subframe 4 messages,
     out of scope for this closed-loop-fix path."""
     n_sf = max(1, math.ceil((math.ceil(float(duration_s)) + 24) / 12))
-    tow0 = int(math.ceil(float(sow) / 12.0))
+    # Subframes sit on the 12 s grid at or before ``sow`` (see cnav_encode).
+    tow0 = int(float(sow) // 12.0)
     eph = dict(eph or {})
     eph.setdefault("gps_week", int(week))
     bits: list[int] = []
     for i in range(n_sf):
-        sf_id = 1 if i % 2 == 0 else 2
+        # By 12 s slot of the week (master frame = slots 1..4; 3/4 are out
+        # of scope and repeat 1/2), not by stream position: a stream started
+        # later must continue the same sequence.
+        sf_id = 1 if (tow0 + i) % 2 == 0 else 2
         tow = tow0 + i + 1               # next subframe start, 12 s units
         bits.extend(build_subframe(sf_id, tow, eph))
     arr = np.array([1 if s == 0 else -1 for s in bits], dtype=np.int8)

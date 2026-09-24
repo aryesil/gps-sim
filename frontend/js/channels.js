@@ -56,6 +56,7 @@ window.addChannel = function () {
       <div class="col-sim">
         <h4>Simulation Config</h4>
         <label>Start UTC <input type="datetime-local" id="${id}-start-utc"></label>
+        <label title="Live Start only: run on the real current GPS time (needed by phones / A-GPS receivers)"><input type="checkbox" id="${id}-start-now"> Live: now</label>
         <label>Duration s <input type="number" id="${id}-duration" value="300"></label>
         <label>Sample rate <select id="${id}-rate">
           <option>2600000</option><option>4000000</option><option>5000000</option><option>8000000</option>
@@ -975,7 +976,8 @@ function wireChannelActions(id) {
     const body = {
       rinex_path: document.getElementById(`${id}-rinex-path`).value.trim() || 'AUTO',
       lat: ll.lat, lon: ll.lng, alt: 100,
-      start_utc: document.getElementById(`${id}-start-utc`).value + ':00',
+      start_utc: document.getElementById(`${id}-start-now`).checked
+        ? 'now' : document.getElementById(`${id}-start-utc`).value + ':00',
       duration_s: Number(document.getElementById(`${id}-duration`).value),
       sample_rate: Number(document.getElementById(`${id}-rate`).value),
       sample_format: document.getElementById(`${id}-fmt`).value,

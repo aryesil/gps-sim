@@ -41,27 +41,48 @@ class TxParams:
     # backend/rf/dual_tx.py); the slot only selects the physical output
     # port and its independent gain, not a separate device.
     slot: str = "TX1"
-    # KNOWN_ISSUES I2 originally assumed gps-sdr-sim's `-b 16` output sits
-    # near full int16 scale and defaulted this to 0.25 to protect the
-    # AD936x's 12-bit DAC from clipping. Measured against a real generated
-    # file, that assumption was wrong: peak amplitude is ~1331 out of
-    # int16's +-32767 (~4% of full scale), so there is nothing to clip in
-    # the first place. Separately, the 12-bit-in-a-16-bit-word MSB alignment
-    # (kernel scan_elements "s12/16>>4" format) is handled inside libiio's
-    # own iio_channel_convert() (channel.c, format.shift) using the real
-    # hardware format it reads from the driver -- callers write plain
-    # int16 values and libiio bit-shifts them into place; no manual
-    # shifting or pre-scaling is needed or correct to do here. Default is
-    # therefore unity; the knob stays available as a headroom margin for a
-    # pathological scenario (e.g. `-p 128` with many simultaneous
-    # satellites can push the raw sum toward +-4096) -- lower it only if a
-    # real spectrum/power check shows clipping.
+    # Extra linear multiplier applied AFTER the automatic DAC leveling
+    # below (level_dbfs). 1.0 = leave the leveled signal alone.
+    #
+    # History (KNOWN_ISSUES I2): this used to be the ONLY scaling, on the
+    # belief that libiio's iio_channel_convert() MSB-aligns 12-bit samples
+    # inside a 16-bit word. It does not on this path: pyadi-iio's tx()
+    # casts the complex array to int16 and writes the raw bytes into the
+    # DMA buffer (iio_buffer write, no convert), and the AD9361 DAC takes
+    # the 12 MOST significant bits of each 16-bit word (the reason ADI's
+    # own Pluto examples scale by 2**14). A +-1331 gps-sdr-sim sample
+    # therefore drove the DAC at +-83 LSB (~-28 dBFS), an int8 file at +-7
+    # LSB -- a few DAC codes carrying the whole constellation. bladeRF's
+    # SC16Q11 is the opposite: +-2047 full scale, so a native int16 file
+    # (RMS ~-15 dBFS of 32767) wrapped around the 12-bit field.
     tx_scale: float = 1.0
     # RF-frontend LO-offset support (backend/rf/frontend/rf_frontend.py):
     # non-zero only when the caller resolved a lo_offset_mode other than
     # DISABLED. Mixed into the stream in stream() below via a per-session
     # NCOMixer -- the on-disk IQ file is never touched.
     baseband_offset_hz: float = 0.0
+    # Automatic DAC leveling: the stream is scaled so its composite RMS sits
+    # at this many dB below the selected backend's DAC full scale
+    # (backends' DAC_FULL_SCALE), independent of the file's own sample
+    # format or generator. The scale is measured once, from the first
+    # non-silent chunk, and then held fixed for the whole session (no AGC
+    # breathing). -15 dBFS RMS keeps a Gaussian-like GNSS composite's
+    # per-rail peaks ~8 sigma below clipping. None = legacy raw pass-through.
+    # Output power is then deterministic: DAC full-scale power +
+    # level_dbfs + tx_gain_db.
+    level_dbfs: float | None = -15.0
+    # AD936x analog TX low-pass (RF) bandwidth. None = the sample rate, so
+    # the filter passes the whole generated band and still cuts DAC images.
+    # Before this was applied the device kept whatever bandwidth the last
+    # user left programmed (possibly narrower than the signal).
+    tx_rf_bandwidth_hz: float | None = None
+    # Reference-oscillator error of the SDR in ppm (+ = oscillator runs
+    # fast). A stock PlutoSDR's 40 MHz crystal is only +-25 ppm: at L1 that
+    # is up to +-39 kHz carrier and +-25 chip/s code-rate error seen by the
+    # receiver as a huge clock drift. Programmed into the AD9361 driver's
+    # xo_correction, which re-derives both the LO and the sample clock.
+    # Pluto only; measure it once (e.g. receiver-reported clock drift).
+    xo_ppm: float = 0.0
 
 
 class _DrySink:
@@ -86,10 +107,36 @@ def _open_device(params: TxParams):
     from backend.rf import dual_tx
     return dual_tx.acquire(params.slot, params.uri, params.lo_hz,
                             params.sample_rate, params.tx_gain_db,
-                            params.kind)
+                            params.kind,
+                            rf_bandwidth_hz=params.tx_rf_bandwidth_hz,
+                            xo_ppm=params.xo_ppm)
+
+
+def _dac_full_scale(kind: str) -> float:
+    from backend.rf.backends import BACKENDS
+    backend = BACKENDS.get(kind)
+    if backend is None:
+        raise TransmitError(f"unknown SDR kind {kind!r}: must be one of {sorted(BACKENDS)}")
+    return float(backend.DAC_FULL_SCALE)
+
+
+def _rms(chunk: np.ndarray) -> float:
+    c = np.asarray(chunk)
+    return float(np.sqrt(np.mean(c.real.astype(np.float64) ** 2
+                                 + c.imag.astype(np.float64) ** 2))) if c.size else 0.0
+
+
+def _clip_iq(chunk: np.ndarray, lim: float) -> tuple[np.ndarray, int]:
+    re = np.real(chunk)
+    im = np.imag(chunk)
+    n = int(np.count_nonzero((np.abs(re) > lim) | (np.abs(im) > lim)))
+    if n:
+        chunk = np.clip(re, -lim, lim) + 1j * np.clip(im, -lim, lim)
+    return chunk, n
 
 
 def _iter_chunks(path: str, fmt: str, chunk_samples: int):
+    # int12 is the native engine's 12-bit range in an int16 container.
     dtype = np.int8 if fmt == "int8" else np.int16
     itemsize = np.dtype(dtype).itemsize
     with open(path, "rb") as fh:
@@ -106,11 +153,12 @@ def stream(params: TxParams, dry_run: bool = False, progress_cb=None,
            cancel=None, chunk_source=None) -> dict:
     if not config.ALLOW_TX:
         raise TransmitDisabled("set ALLOW_TX=1 and confirm the isolated setup")
-    if params.sample_format not in ("int8", "int16"):
+    if params.sample_format not in ("int8", "int12", "int16"):
         raise TransmitError(f"bad format {params.sample_format}")
     if params.sample_rate < _TX_RATE_MIN:
         raise TransmitError(f"{params.sample_rate} Hz below AD936x TX minimum {_TX_RATE_MIN}")
 
+    dac_fs = _dac_full_scale(params.kind)
     sink = _DrySink(params.sample_rate)
     if not dry_run:
         try:
@@ -147,6 +195,9 @@ def stream(params: TxParams, dry_run: bool = False, progress_cb=None,
         params.iq_path, params.sample_format, params.chunk_samples)
 
     total = 0
+    clipped = 0
+    # None until measured; the legacy raw path fixes it to 1.0 up front.
+    level = None if params.level_dbfs is not None else 1.0
     t0 = time.monotonic()
     try:
         for chunk in chunks:
@@ -154,8 +205,17 @@ def stream(params: TxParams, dry_run: bool = False, progress_cb=None,
                 break
             if mixer is not None:
                 chunk = mixer.mix(chunk)
-            if params.tx_scale != 1.0:
-                chunk = chunk * params.tx_scale
+            if level is None:
+                r = _rms(chunk)
+                if r > 0.0:
+                    level = dac_fs * 10.0 ** (params.level_dbfs / 20.0) / r
+            g = (level if level is not None else 1.0) * params.tx_scale
+            if g != 1.0:
+                chunk = chunk * g
+            # Out-of-range floats wrap when the backend casts to int16 --
+            # saturate here instead, and count it.
+            chunk, n_clip = _clip_iq(chunk, dac_fs)
+            clipped += n_clip
             sink.push(chunk)
             total += len(chunk)
             if cancel is not None and cancel.is_set():
@@ -163,13 +223,16 @@ def stream(params: TxParams, dry_run: bool = False, progress_cb=None,
             if progress_cb:
                 progress_cb({"elapsed_s": total / params.sample_rate,
                              "underflow": int(getattr(sink, "underflow", 0)),
-                             "samples": total})
+                             "samples": total, "clipped": clipped,
+                             "digital_scale": g})
     finally:
         sink.close()
     return {
         "elapsed_s": total / params.sample_rate,
         "underflow": int(getattr(sink, "underflow", 0)),
         "samples": total,
+        "clipped": clipped,
+        "digital_scale": (level if level is not None else 1.0) * params.tx_scale,
         "dry_run": dry_run,
         "wall_s": time.monotonic() - t0,
     }

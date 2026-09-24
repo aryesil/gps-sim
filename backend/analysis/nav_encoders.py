@@ -66,7 +66,8 @@ def nav_stream_for(sysc, signal, eph, header, week, sow, duration_s,
         # docstring).
         from backend.analysis import bcnav2_encode
         p = int(prn if prn is not None else (eph.get("prn", 1) or 1))
-        arr, rate = bcnav2_encode.nav_stream(eph, p, week, sow, duration_s,
+        e_b, wk_b, sow_b = to_bdt(eph, week, sow)
+        arr, rate = bcnav2_encode.nav_stream(e_b, p, wk_b, sow_b, duration_s,
                                              eph_by_prn=eph_by_prn)
         return arr, rate
     if sysc == "I":
@@ -84,8 +85,10 @@ def nav_stream_for(sysc, signal, eph, header, week, sow, duration_s,
         return arr, inav_encode.SYM_RATE_HZ
     if sysc == "C":
         p = prn if prn is not None else int(eph.get("prn", 99) or 99)
-        arr, rate = bds_d1_encode.nav_stream(eph, week, sow, duration_s,
-                                             d2=(p <= 5),
+        # GEO satellites (C01-C05 and C59-C63) broadcast D2, not D1.
+        e_b, wk_b, sow_b = to_bdt(eph, week, sow)
+        arr, rate = bds_d1_encode.nav_stream(e_b, wk_b, sow_b, duration_s,
+                                             d2=(p <= 5 or p >= 59),
                                              eph_by_prn=eph_by_prn)
         return arr, rate
     if sysc == "R":
@@ -95,3 +98,56 @@ def nav_stream_for(sysc, signal, eph, header, week, sow, duration_s,
         return sbas_encode.nav_stream(eph, week, sow, duration_s,
                                       eph_by_prn=eph_by_prn)
     return None
+
+
+# BeiDou Time runs 14 s behind GPS time and its week count starts 1356 GPS
+# weeks later (BDS-SIS-ICD 5.1.2).
+BDT_MINUS_GPS_S = -14.0
+BDT_WEEK_OFFSET = 1356
+
+
+def to_bdt(eph: dict, week: int, sow: float):
+    """GPS-time (eph, week, sow) -> BDT for the BeiDou encoders. The engine
+    aligns every Keplerian toe/toc on the GPS scale; a BeiDou receiver
+    evaluates them on BDT, so they are shifted by the same -14 s as the
+    broadcast SOW (the orbit itself is unchanged: tk = t_bdt - toe_bdt)."""
+    e = dict(eph)
+    for k in ("toe", "toc"):
+        if k in e and e[k] is not None:
+            e[k] = (float(e[k]) + BDT_MINUS_GPS_S) % 604800.0
+    return e, int(week) - BDT_WEEK_OFFSET, float(sow) + BDT_MINUS_GPS_S
+
+
+def stream_t0_sow(sysc, signal, tow0_sow: float, prn=None) -> float:
+    """GPS seconds-of-week at which symbol 0 of ``nav_stream_for(...,
+    tow0_sow, ...)`` leaves the satellite. Mirrors each encoder's own grid
+    rule; the engine uses it to lock the mixer's transmit-time clock to the
+    stream (``SvSpec.tx_chips_offset``)."""
+    import math
+    band = getattr(signal, "band", "L1")
+    t = float(tow0_sow)
+    if band in ("L2", "L5") and sysc in ("G", "J"):
+        return (t // 12.0) * 12.0                        # CNAV, 12 s messages
+    if sysc in ("G", "J"):
+        return (t // 6.0) * 6.0                          # LNAV subframes
+    if band == "L5" and sysc == "E":
+        r = int(round(t))
+        return float(r - r % 10)                         # F/NAV 10 s pages
+    if band == "L5" and sysc == "C":
+        b = int(round(t + BDT_MINUS_GPS_S))
+        return float(b - b % 3) - BDT_MINUS_GPS_S        # B-CNAV2, BDT grid
+    if sysc == "I":
+        return (t // 12.0) * 12.0                        # NavIC subframes
+    if sysc == "E":
+        r = int(round(t))
+        return float(r - r % 2)                          # I/NAV 2 s pages
+    if sysc == "C":
+        p = int(prn if prn is not None else 99)
+        grid = 3 if (p <= 5 or p >= 59) else 6
+        b = t + BDT_MINUS_GPS_S
+        return math.floor(b / grid) * grid - BDT_MINUS_GPS_S
+    if sysc == "R":
+        return (t // 2.0) * 2.0                          # 2 s strings
+    if sysc == "S":
+        return float(math.floor(t))                      # 1 s blocks
+    return t

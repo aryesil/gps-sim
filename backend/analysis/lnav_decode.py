@@ -155,13 +155,17 @@ def _prompt_per_ms(x_wiped, fs, ca, code_phase0_chips, code_rate):
 
 
 def demod_nav_bits(iq, fs, prn, code_phase0_chips, doppler_hz, *,
-                   n_bits: int = 1500, align_ms: int = 0):
+                   n_bits: int = 1500, align_ms: int | None = None):
     """Hard nav bits (``int8`` {0,1}) from IQ.
 
     Steps: prompt correlation to 1 ms samples, residual-frequency search,
     BPSK phase de-rotation, then 20 ms integration. ``align_ms`` skips a
     leading partial bit so the 20 ms blocks land on transmitted bit
-    boundaries. Global sign ambiguity is left for :func:`find_frame`.
+    boundaries; ``None`` (default) finds it by bit synchronisation -- the
+    offset whose 20 ms sums carry the most energy. The generator stamps
+    bits on satellite transmit time, so the edges sit wherever the
+    propagation delay puts them, not on the capture's 20 ms grid. Global
+    sign ambiguity is left for :func:`find_frame`.
     """
     from backend import inspector
 
@@ -183,6 +187,24 @@ def demod_nav_bits(iq, fs, prn, code_phase0_chips, doppler_hz, *,
         if e > best_e:
             best_e, best_p = e, cand
     p = best_p
+    if align_ms is None:
+        # coarse carrier removal for the bit-sync search only: 1 ms-rate
+        # power spectrum peak of p**2 (data-free), then energy per offset.
+        sq = p[:min(p.size, 2000)] ** 2
+        spec = np.abs(np.fft.fft(sq, 8 * sq.size))
+        f2 = np.fft.fftfreq(8 * sq.size, d=1e-3)[int(np.argmax(spec))] / 2.0
+        mm = np.arange(p.size, dtype=np.float64)
+        pw = p * np.exp(-2j * np.pi * f2 * mm / 1000.0)
+        best_off, best_en = 0, -1.0
+        for off in range(20):
+            nbo = (pw.size - off) // 20
+            if nbo <= 0:
+                continue
+            en = float(np.sum(np.abs(
+                pw[off:off + nbo * 20].reshape(nbo, 20).sum(axis=1))))
+            if en > best_en:
+                best_off, best_en = off, en
+        align_ms = best_off
     if align_ms:
         p = p[align_ms:]
     nb = min(n_bits, p.size // 20)

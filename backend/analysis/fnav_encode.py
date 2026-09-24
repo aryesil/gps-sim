@@ -248,7 +248,9 @@ def nav_stream(eph: dict, prn: int, week: int, tow0_sow: float,
     syms: list[int] = []
     for p in range(npages):
         tow = (tow0 + 10 * p) % 604800
-        wtype = _CYCLE[p % len(_CYCLE)]
+        # Page type follows GST (page count since the week start), so a
+        # stream started later continues the same schedule.
+        wtype = _CYCLE[(tow // 10) % len(_CYCLE)]
         syms.extend(build_page(wtype, eph, prn, tow, week))
     bits = np.asarray(syms, dtype=np.int8)
     arr = np.where(bits > 0, np.int8(-1), np.int8(1))    # bit=0->+1, bit=1->-1

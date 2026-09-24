@@ -20,7 +20,8 @@ def _req():
 def _mid_epoch(req):
     gps_start = req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
     week, sow = ephemeris.gps_week_and_sow(gps_start)
-    eph = ephemeris.align_epochs(ephemeris.parse_rinex(_RINEX), week, sow)
+    eph = ephemeris.align_epochs(ephemeris.parse_rinex(_RINEX), week, sow,
+                                   kepler_grid_s=ephemeris.NATIVE_TOE_GRID_S)
     rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
     return eph, rx, sow + req.duration_s / 2.0
 
@@ -28,7 +29,8 @@ def _mid_epoch(req):
 def _start_epoch(req):
     gps_start = req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
     week, sow = ephemeris.gps_week_and_sow(gps_start)
-    eph = ephemeris.align_epochs(ephemeris.parse_rinex(_RINEX), week, sow)
+    eph = ephemeris.align_epochs(ephemeris.parse_rinex(_RINEX), week, sow,
+                                   kepler_grid_s=ephemeris.NATIVE_TOE_GRID_S)
     rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
     return eph, rx, sow
 

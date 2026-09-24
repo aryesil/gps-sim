@@ -10,6 +10,16 @@ struct NavSource {
     int nbits = 0;
     double sym_rate_hz = 0.0;   // 0 => kNavBitHz (GPS LNAV 50 Hz)
 };
+// Symbol for an absolute symbol index (wrapped into the stream).
+inline int8_t nav_symbol_at(const NavSource &s, int64_t idx) {
+    if (s.mode == NavMode::Zero || s.nbits <= 0) return 1;
+    idx %= s.nbits;
+    if (idx < 0) idx += s.nbits;
+    return s.bits[idx] >= 0 ? 1 : -1;
+}
+inline double nav_rate(const NavSource &s) {
+    return s.sym_rate_hz > 0.0 ? s.sym_rate_hz : kNavBitHz;
+}
 inline int8_t nav_symbol(const NavSource &s, double t_s) {
     if (s.mode == NavMode::Zero || s.nbits <= 0) return 1;
     const double rate = s.sym_rate_hz > 0.0 ? s.sym_rate_hz : kNavBitHz;

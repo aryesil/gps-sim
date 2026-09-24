@@ -6,6 +6,7 @@ import gzip
 import logging
 import math
 import pathlib
+import time
 
 import georinex as gr
 import numpy as np
@@ -75,7 +76,55 @@ def gps_week_and_sow(when_gps: dt.datetime) -> tuple[int, float]:
     return int(total // _WEEK_SECONDS), total % _WEEK_SECONDS
 
 
-def align_epochs(eph_by_prn: dict[int, dict], week: int, sow: float) -> dict[int, dict]:
+# Keplerian toe/toc grid the native engine aligns to (align_epochs
+# kepler_grid_s). Anything rebuilding a native run's "expected" geometry must
+# use the same grid, or it compares against a different orbit.
+NATIVE_TOE_GRID_S = 3600.0
+
+
+def toe_grid_for(engine: str | None) -> float:
+    return NATIVE_TOE_GRID_S if engine == "native" else 0.0
+
+
+# Systems whose RINEX toe/week are on the GPS time scale (GPSWeek field),
+# so a record can be used with its REAL broadcast epoch.
+_REAL_EPOCH_SYS = ("G", "J")
+# A real record stays in use up to 4 h from its toe: past the nominal
+# +/-2 h fit it drifts only tens of metres, while relabelling puts the
+# satellite on a fictitious orbit (a receiver with real assistance data then
+# sees a satellite that is not in the sky). The daily BRDC also lags the
+# uploads, so at hh:01 the newest record of some satellites is 2 h old.
+REAL_EPH_WINDOW_S = 14400.0
+
+
+_GLO_TB_GRID_S = 900.0        # GLONASS t_b: 15 min steps of Moscow time
+_GLO_REAL_WINDOW_S = 900.0    # a real GLONASS state is good for ~+/-15 min
+
+
+def _glonass_toe_ref(utc_sow: float, sow: float, grid_s: float,
+                     keep_real_within_s: float) -> float:
+    """GPS-SoW reference epoch for a GLONASS state record.
+
+    The parser gives the record's own epoch on the UTC scale (RINEX
+    GLONASS epochs are UTC). With ``keep_real_within_s`` set and that epoch
+    within 15 min of the run, the real state is kept at its real epoch,
+    converted to GPS time. Otherwise the state is relabelled to the run
+    start -- snapped down onto the 15 min Moscow-time grid when ``grid_s``
+    is set (native engine), because the broadcast t_b field can only carry
+    that grid and a receiver propagates from t_b."""
+    real = float(utc_sow) + config.GPS_UTC_LEAP_S
+    d = (real - float(sow) + _WEEK_SECONDS / 2) % _WEEK_SECONDS - _WEEK_SECONDS / 2
+    if keep_real_within_s > 0 and abs(d) <= _GLO_REAL_WINDOW_S:
+        return float(sow) + d
+    if grid_s and grid_s > 0:
+        u = float(sow) - config.GPS_UTC_LEAP_S
+        return (u // _GLO_TB_GRID_S) * _GLO_TB_GRID_S + config.GPS_UTC_LEAP_S
+    return float(sow)
+
+
+def align_epochs(eph_by_prn: dict[int, dict], week: int, sow: float,
+                 kepler_grid_s: float = 0.0,
+                 keep_real_within_s: float = 0.0) -> dict[int, dict]:
     """Return a copy of eph_by_prn with every satellite's toc/toe/gps_week
     overwritten to the same (week, sow).
 
@@ -90,7 +139,29 @@ def align_epochs(eph_by_prn: dict[int, dict], week: int, sow: float) -> dict[int
     start ourselves keeps the approximation (same one -t/-T always makes:
     tk=0, no orbit propagation) but bounds it uniformly instead of leaving it
     to chance which satellite gps-sdr-sim's shift happens to land on.
+
+    ``keep_real_within_s`` > 0: a GPS/QZSS record whose own broadcast epoch
+    is within that many seconds of (week, sow) is kept UNCHANGED -- the
+    real ephemeris, i.e. the real sky. Relabeling moves every satellite to
+    a fictitious orbit position; a receiver that also knows the real
+    ephemeris (any phone: A-GPS/SUPL assistance + network time) then only
+    searches the satellites that are really up, with the real Doppler, and
+    rejects ours. Only records too far from the run start are relabeled.
+
+    ``kepler_grid_s`` > 0 snaps the Keplerian toe/toc down to that grid
+    instead of using ``sow`` itself. The native engine needs this: the
+    broadcast toe/toc fields are quantised (LNAV 16 s, CNAV/B-CNAV2 300 s,
+    I/NAV 60 s, D1 8 s), so an off-grid toe is transmitted rounded and a
+    real receiver then propagates a different orbit than the one the IQ was
+    generated from (tens of km at an 8 s toe error). A whole-hour grid is a
+    multiple of every one of those resolutions.
     """
+    k_sow = k_sow_bds = sow
+    if kepler_grid_s and kepler_grid_s > 0:
+        g = float(kepler_grid_s)
+        k_sow = (float(sow) // g) * g
+        # BeiDou broadcasts toe/toc on BDT = GPS - 14 s: snap on that scale.
+        k_sow_bds = ((float(sow) - 14.0) // g) * g + 14.0
     out = {}
     for prn, e in eph_by_prn.items():
         e2 = dict(e)
@@ -98,10 +169,22 @@ def align_epochs(eph_by_prn: dict[int, dict], week: int, sow: float) -> dict[int
             # ECEF-state record (GLONASS / SBAS): the state vector is already
             # at its own broadcast epoch, so record that epoch as GPS SoW and
             # leave the vector untouched.
-            e2["toe_ref"] = sow
+            if e2.get("system") == "R":
+                e2["toe_ref"] = _glonass_toe_ref(e2["toe_ref"], sow,
+                                                 kepler_grid_s, keep_real_within_s)
+            else:
+                e2["toe_ref"] = sow
+        elif (keep_real_within_s > 0
+              and e2.get("system", "G") in _REAL_EPOCH_SYS
+              and "gps_week" in e2
+              and int(e2["gps_week"]) == int(week)   # geometry uses SoW only
+              and abs((float(e2["gps_week"]) - week) * _WEEK_SECONDS
+                      + float(e2["toe"]) - float(sow)) <= keep_real_within_s):
+            e2["gps_week"] = int(e2["gps_week"])
         else:
-            e2["toc"] = sow
-            e2["toe"] = sow
+            k = k_sow_bds if e2.get("system") == "C" else k_sow
+            e2["toc"] = k
+            e2["toe"] = k
             e2["gps_week"] = week
         out[prn] = e2
     return out
@@ -199,8 +282,89 @@ def _prn_in_range(s: str, prn: int) -> bool:
     return False
 
 
+_PARSE_CACHE: dict = {}
+_PARSE_CACHE_MAX = 4
+
+
 def parse_rinex_multi(path: str | pathlib.Path, systems=("G",),
-                      require=None) -> dict:
+                      require=None, at_gps: dt.datetime | None = None) -> dict:
+    """Cached front of :func:`_parse_rinex_multi` (same contract).
+
+    ``at_gps`` (GPS-time naive datetime): pick each satellite's broadcast
+    record nearest that epoch instead of nearest the file's midday.
+
+    A daily multi-GNSS BRDC file takes ~0.8 s of pure-Python (GIL-holding)
+    georinex/xarray work to parse. A live session generates a 1 s segment
+    every second, so re-parsing per segment both ate most of the real-time
+    budget and starved the TX pump thread of the GIL (hardware underruns).
+    Keyed on the file's identity and mtime, so an edited or re-downloaded
+    file is re-parsed; records are copied out so callers may mutate them.
+    """
+    try:
+        st = pathlib.Path(path).stat()
+        key = (str(pathlib.Path(path).resolve()), st.st_mtime_ns, st.st_size,
+               tuple(systems),
+               None if require is None else tuple(require),
+               None if at_gps is None else at_gps.isoformat())
+    except OSError:
+        return _parse_rinex_multi(path, systems, require, at_gps)
+    hit = _PARSE_CACHE.get(key)
+    if hit is None:
+        hit = _parse_rinex_multi(path, systems, require, at_gps)
+        if len(_PARSE_CACHE) >= _PARSE_CACHE_MAX:
+            _PARSE_CACHE.pop(next(iter(_PARSE_CACHE)))
+        _PARSE_CACHE[key] = hit
+    return {k: dict(v) for k, v in hit.items()}
+
+
+_ZERO_FIELD = " 0.000000000000e+00"
+
+
+def _georinex_source(path):
+    """What to hand ``georinex.load`` for ``path``.
+
+    georinex parses each 19-column data field with ``float(field or 0)``:
+    an empty field reads as 0, but a field of blanks raises, and the whole
+    record is then silently discarded ("malformed line", all-NaN row, later
+    dropped). Real-time BRDC files (BKG ConvertoCpp) write the spare fields
+    at the end of a record as blanks, so every fresh record of the day was
+    lost and only yesterday's -- hours stale -- survived. Blank data fields
+    on continuation lines are rewritten as zeros (the value RINEX assigns a
+    spare/unknown field); the original path is returned when nothing needs
+    changing."""
+    import io
+    p = pathlib.Path(path)
+    opener = gzip.open if p.suffix == ".gz" else open
+    try:
+        with opener(p, "rt", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return str(p)
+    try:
+        hdr_end = next(i for i, ln in enumerate(lines) if "END OF HEADER" in ln)
+        version = float(lines[0][:9])
+    except (StopIteration, ValueError):
+        return str(p)
+    col0 = 4 if version >= 3 else 3
+    lead = " " * col0
+    changed = False
+    for i in range(hdr_end + 1, len(lines)):
+        ln = lines[i]
+        if not ln.startswith(lead) or not ln.strip():
+            continue
+        ln = ln.ljust(col0 + 4 * 19)
+        fields = [ln[col0 + 19 * k: col0 + 19 * (k + 1)] for k in range(4)]
+        if not any(not f.strip() for f in fields):
+            continue
+        lines[i] = lead + "".join(f if f.strip() else _ZERO_FIELD for f in fields)
+        changed = True
+    if not changed:
+        return str(p)
+    return io.StringIO("\n".join(lines) + "\n")
+
+
+def _parse_rinex_multi(path: str | pathlib.Path, systems=("G",),
+                       require=None, at_gps: dt.datetime | None = None) -> dict:
     """Parse a RINEX 2/3 nav file into per-satellite broadcast records.
 
     ``systems`` is an ordered iterable of RINEX system letters. When it is
@@ -219,11 +383,11 @@ def parse_rinex_multi(path: str | pathlib.Path, systems=("G",),
     mixed BRDC files often omit SBAS ('S') and are sparse in QZSS ('J').
     """
     systems = tuple(dict.fromkeys(systems))          # dedupe, keep order
-    nav = gr.load(str(path), use=list(systems))
+    nav = gr.load(_georinex_source(path), use=list(systems))
     # File's calendar day -> that day's noon UTC, as continuous GPS seconds.
     mid_day = _to_datetime(nav.time.values[len(nav.time) // 2])
     noon = dt.datetime(mid_day.year, mid_day.month, mid_day.day, 12, 0, 0)
-    noon_gps = _gps_seconds(noon)
+    noon_gps = _gps_seconds(noon) if at_gps is None else _gps_seconds(at_gps)
     out: dict = {}
     skipped: list[str] = []
     for sv in nav.sv.values:
@@ -360,8 +524,20 @@ def to_rinex2_nav(eph_by_prn: dict[int, dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
+_TODAY_REFRESH_S = 1800.0
+
+
 def get_ephemeris(date: dt.date, download: bool = True) -> dict[int, dict]:
     p = _cache_path(date)
+    if (p.exists() and download
+            and date == dt.datetime.utcnow().date()
+            and time.time() - p.stat().st_mtime > _TODAY_REFRESH_S):
+        # Today's BRDC grows all day (hourly uploads); a copy cached this
+        # morning lacks the records a run starting "now" needs, and the
+        # run would fall back to relabeled stale ones.
+        fresh = _download(date)
+        if fresh is not None:
+            p = fresh
     if not p.exists():
         if not download:
             raise EphemerisUnavailable(f"no cached RINEX for {date}")

@@ -67,7 +67,11 @@ void gps_gold_g2delay(int g2_delay, int8_t *out) {
         step_g1g2(g1, g2);
     }
     for (int k = 0; k < 1023; ++k) {
-        int chip = g1seq[k] ^ g2seq[(k + g2_delay) % 1023];
+        // G2i(t) = G2(t - delay * Tc): the G2 sequence is DELAYED by
+        // g2_delay chips (IS-GPS-200 Table 3-Ia "G2 delay" column, the same
+        // convention IS-QZSS-PNT and RTCA DO-229 tabulate). Indexing with
+        // (k + delay) advanced G2 instead and produced a non-ICD code.
+        int chip = g1seq[k] ^ g2seq[(k + 1023 - g2_delay) % 1023];
         out[k] = chip ? -1 : 1;
     }
 }
@@ -188,7 +192,7 @@ int synth_ca_code(int prn, int8_t *out, int n) {
 extern "C" int synth_code_l2c(int prn, int8_t *cm, int cm_len,
                               int8_t *cl, int cl_len) {
     if (cm == nullptr || cm_len < 10230) return -1;
-    if (prn < 1 || prn > 63) return -1;
+    if (!gs::l2c_prn_valid(prn)) return -1;
     gs::l2c_cm(prn, cm, cm_len);
     if (cl != nullptr && cl_len >= 767250) gs::l2c_cl(prn, cl, cl_len);
     return 0;

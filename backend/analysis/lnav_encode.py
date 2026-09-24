@@ -114,11 +114,30 @@ def subframe(words_src, tow_count: int, subframe_id: int,
     w2 = how_word((tow_count + 1) & 0x1FFFF, subframe_id, d29, d30)
     out += w2
     d29, d30 = w2[28], w2[29]
-    for src in words_src:
-        w = make_word(list(src), d29, d30)
+    for k, src in enumerate(words_src):
+        src = list(src)
+        if k == len(words_src) - 1:
+            # Word 10 ends in two non-information bits (bits 23-24, "t")
+            # that IS-GPS-200 20.3.5.2 requires to be solved so the word's
+            # D29/D30 parity bits are zero -- the next subframe's TLM is
+            # built on D29* = D30* = 0. Leaving them at 0,0 made the TLM
+            # parity (and, with D30* = 1, the preamble polarity) wrong for
+            # a real receiver on roughly 3 of 4 subframes.
+            src = _solve_trailing_zero_parity(src[:22], d29, d30)
+        w = make_word(src, d29, d30)
         out += w
         d29, d30 = w[28], w[29]
     return out
+
+
+def _solve_trailing_zero_parity(src22, D29_prev: int, D30_prev: int):
+    for t23 in (0, 1):
+        for t24 in (0, 1):
+            src = list(src22) + [t23, t24]
+            w = make_word(src, D29_prev, D30_prev)
+            if w[28] == 0 and w[29] == 0:
+                return src
+    raise AssertionError("no word-10 solve bits found")
 
 
 # --- Subframe 1: clock, health, URA, IODC, Tgd, Toc -------------------
@@ -297,11 +316,19 @@ def nav_stream(eph: dict, header, week: int, tow0_sow: float,
     """
     start = int(tow0_sow // 6) * 6
     tc0 = start // 6
+    # Subframe id and SF4/5 page follow GPS time, not the stream start: a
+    # frame (SF1..SF5) begins every 30 s of the week and the 25-page cycle
+    # restarts at the week start (IS-GPS-200 20.3.4.1). Starting every
+    # stream at SF1 made each 1 s live segment re-send SF1 only, so a
+    # receiver never saw SF2/SF3 and could not collect the ephemeris.
+    f0 = tc0 // 5
+    skip = (tc0 - f0 * 5) * 300
     need = int(NAV_BIT_HZ * (_math.ceil(duration_s) + 30))
-    n_frames = need // 1500 + 2
+    n_frames = (skip + need) // 1500 + 2
     bits: list[int] = []
     for k in range(n_frames):
-        bits += frame_bits(eph, header, week, tc0 + k * 5,
-                           (k % 25) + 1, eph_by_prn)
-    arr = _np.array([1 if b == 0 else -1 for b in bits[:need]], dtype=_np.int8)
+        bits += frame_bits(eph, header, week, (f0 + k) * 5,
+                           ((f0 + k) % 25) + 1, eph_by_prn)
+    bits = bits[skip:skip + need]
+    arr = _np.array([1 if b == 0 else -1 for b in bits], dtype=_np.int8)
     return arr

@@ -327,3 +327,45 @@ def dop(entries: list[dict], rx_ecef) -> dict:
         "vdop": float(np.sqrt(Q[2, 2])),
         "tdop": float(np.sqrt(Q[3, 3])),
     }
+
+
+def group_delay_bias_s(sysc: str, band: str, rec: dict | None) -> float:
+    """Single-frequency satellite group-delay term (seconds) that a receiver
+    adds to the broadcast clock polynomial for this signal -- the
+    ``sv_clock_bias_s`` of :func:`observables`. The generator must put the
+    same term into the transmitted code phase, otherwise every receiver that
+    applies the broadcast TGD/BGD (all of them) is biased by ``c * TGD``.
+
+    * GPS/QZSS (IS-GPS-200 20.3.3.3.3.2 / 30.3.3.3.1.1, IS-GPS-705):
+      L1 C/A ``-TGD``, L2C ``-TGD + ISC_L2C``, L5 I5 ``-TGD + ISC_L5I5``.
+    * Galileo (OS SIS ICD 5.1.5): E1 ``-BGD(E1,E5b)``, E5a
+      ``-(f_E1/f_E5a)^2 BGD(E1,E5a)``. Records carry one ``tgd`` field.
+    * BeiDou: B1I ``-TGD1``; B2a data ``-TGD_B2ap + ISC_B2ad``.
+    * NavIC ``-TGD``. GLONASS / SBAS: none.
+    """
+    r = rec or {}
+
+    def g(k, d=0.0):
+        try:
+            v = float(r.get(k, d))
+        except (TypeError, ValueError):
+            return 0.0
+        return 0.0 if v != v else v
+
+    if sysc in ("G", "J"):
+        if band == "L2":
+            return -g("tgd") + g("isc_l2c")
+        if band == "L5":
+            return -g("tgd") + g("isc_l5i5")
+        return -g("tgd")
+    if sysc == "E":
+        if band == "L5":
+            return -((config.L1_HZ / config.L5_HZ) ** 2) * g("tgd")
+        return -g("tgd")
+    if sysc == "C":
+        if band == "L5":
+            return -g("tgd_b2ap", g("tgd")) + g("isc_b2ad")
+        return -g("tgd")
+    if sysc == "I":
+        return -g("tgd")
+    return 0.0

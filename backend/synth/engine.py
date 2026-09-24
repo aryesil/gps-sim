@@ -13,6 +13,16 @@ from backend.ephem import ephemeris, ephemeris_fit, ephemeris_source
 from backend.gpstime import GPSTime
 from backend.synth import _lib, bands, signals
 from backend.synth.fading import FadingConfig
+from backend.models import atmosphere
+
+# Keplerian toe/toc grid (s) used when re-labelling broadcast records to the
+# run epoch: a multiple of every nav message's toe resolution (see
+# ephemeris.align_epochs).
+_TOE_GRID_S = ephemeris.NATIVE_TOE_GRID_S
+# The nav streams start this long before the run's first receive instant so
+# the earliest transmit time (sow - ~90 ms, more for GEO/IGSO) is covered.
+_NAV_LEAD_S = 1.0
+_DEFAULT_ATMOSPHERE = {"ionosphere": "klobuchar", "troposphere": "saastamoinen"}
 
 _log = logging.getLogger(__name__)
 
@@ -120,7 +130,8 @@ def _route_rx_fn(route, duration_s):
 
 def _trajectory_knots(state, rx, sow, fs, block_samples, total_samples,
                       chip_rate_hz, carrier_hz, code_phase0_chips, code_len,
-                      signal=None, carrier_offset_hz=0.0, rx_fn=None):
+                      signal=None, carrier_offset_hz=0.0, rx_fn=None,
+                      atmo_fn=None, doppler_scale=1.0):
     """SP-B per-mixer-block trajectory knots for one satellite.
 
     Samples ``geometry.observables`` at every mixer-block boundary and turns
@@ -131,7 +142,16 @@ def _trajectory_knots(state, rx, sow, fs, block_samples, total_samples,
 
     ``state`` is a broadcast-ephemeris dict or a state function (precise
     path); ``carrier_offset_hz`` is the static FDMA/LO offset folded into
-    the Phase-1 ``carrier_freq_hz`` (non-zero for GLONASS).
+    the Phase-1 ``carrier_freq_hz`` (non-zero for GLONASS). The mixer runs
+    each block from the knot phase at ``cf[j]`` Hz, so ``cph`` must be the
+    integral of the SAME frequency: it includes ``2*pi*offset*t_j`` (without
+    it every GLONASS block started with a carrier-phase jump of
+    ``2*pi*offset*block_s`` mod 2*pi -- a PLL-breaking discontinuity every
+    65536 samples). ``carrier_hz`` is the satellite's true carrier
+    (``doppler_scale`` rescales the observables' nominal-band Doppler to
+    it). ``atmo_fn(az_rad, el_rad, t_rel) -> (iono_m, tropo_m)`` adds the
+    time-varying atmospheric delay: group delay on the code, phase advance
+    of the ionosphere on the carrier.
     """
     # A broadcast record dict must be dispatched to its system's propagator
     # (GLONASS/SBAS are not Keplerian); geometry.observables' own as_state_fn
@@ -145,6 +165,7 @@ def _trajectory_knots(state, rx, sow, fs, block_samples, total_samples,
     eff = L - (float(code_phase0_chips) % L)
     cf, cph, cr, kp = [], [], [], []
     r0 = None
+    a0 = None
     for j in range(nk):
         tj = (j * block_samples) / fs
         if rx_fn is not None:
@@ -156,10 +177,30 @@ def _trajectory_knots(state, rx, sow, fs, block_samples, total_samples,
         if r0 is None:
             r0 = o["geo_range_m"]
         dr = o["geo_range_m"] - r0
-        cf.append(o["carrier_doppler_hz"] + carrier_offset_hz)
-        cph.append(-2.0 * math.pi * carrier_hz / config.C * dr)
+        iono_abs = tropo_abs = 0.0
+        if atmo_fn is not None:
+            iono_abs, tropo_abs = atmo_fn(math.radians(o["az_deg"]),
+                                          math.radians(o["el_deg"]), tj)
+            if a0 is None:
+                a0 = (iono_abs, tropo_abs)
+        iono = iono_abs - (a0[0] if a0 else 0.0)
+        tropo = tropo_abs - (a0[1] if a0 else 0.0)
+        dr_code = dr + iono + tropo
+        cf.append(o["carrier_doppler_hz"] * doppler_scale + carrier_offset_hz)
+        # ABSOLUTE carrier phase (a function of GPS time and the absolute
+        # carrier range only), not phase relative to this run's start: two
+        # runs that abut in time (live segments) then join without a
+        # carrier-phase jump. A run-relative phase restarted at 0 every
+        # segment, which a receiver PLL sees as a random phase step each
+        # second -- cycle slips, flipped data bits, no ephemeris. Cycles are
+        # reduced in float64 before scaling to radians.
+        cyc = (math.fmod(carrier_offset_hz * (sow + tj), 1.0)
+               - math.fmod(carrier_hz / config.C
+                           * (o["geo_range_m"] - iono_abs + tropo_abs), 1.0))
+        cph.append(2.0 * math.pi * cyc)
         cr.append(chip_rate_hz + o["code_doppler_hz"])
-        kp.append(eff + chip_rate_hz * tj - (chip_rate_hz / config.C) * dr)
+        kp.append(eff + chip_rate_hz * tj
+                  - (chip_rate_hz / config.C) * dr_code)
     return cf, cph, cr, kp
 
 
@@ -421,6 +462,28 @@ def _sv_spec_for(entry, gain, nav=None):
     return spec, keep
 
 
+def _attach_tx_clock(spec, entry, sow):
+    """Lock the mixer's nav-symbol / secondary-code clock to satellite
+    transmit time (``SvSpec.tx_time_valid``). At receive time ``sow`` the
+    signal left the satellite at ``sow - pseudorange/c`` (SV-clock time);
+    the mixer's code phase at sample 0 is ``eff = L - (code_phase mod L)``,
+    so ``tx_chips_offset`` maps it onto chips elapsed since the nav stream's
+    symbol 0 (which leaves at ``stream_t0_sow``). Without this the symbols
+    were stamped on RECEIVER time: TOW off by ``sow mod 6 s`` plus the
+    ~70 ms flight time, and bit edges falling mid code period."""
+    sig = entry["signal_id"]
+    L = int(sig.code_len)
+    rate = float(sig.chip_rate_hz)
+    t0 = nav_encoders.stream_t0_sow(entry["sys"], sig, sow - _NAV_LEAD_S,
+                                    prn=int(entry.get("prn", 0)))
+    tau_chips = float(entry["pseudorange_m"]) / config.C * rate
+    eff = L - (float(entry["code_phase_chips"]) % L)
+    if eff >= L:
+        eff -= L
+    spec.tx_time_valid = 1
+    spec.tx_chips_offset = (sow - t0) * rate - tau_chips - eff
+
+
 def _el_gain(el_deg: float) -> float:
     """Elevation-dependent receive amplitude taper. Without it every SV comes
     out at exactly equal power (gps-sdr-sim applies an antenna-pattern +
@@ -568,14 +631,20 @@ def run(req, progress_cb=None) -> pathlib.Path:
         # the data-bit stream.
         nav_eph_by_key: dict = {}
         if getattr(req, "nav_message", True):
-            fit_epoch = GPSTime(p_week, p_sow)
+            # Fit on the toe grid (BDT grid for BeiDou), not at the run
+            # start itself -- see ephemeris.align_epochs(kepler_grid_s).
+            def _fit_epoch(sc):
+                off = 14.0 if sc == "C" else 0.0
+                return GPSTime(p_week, ((p_sow - off) // _TOE_GRID_S)
+                               * _TOE_GRID_S + off)
             fit_source = getattr(provider.product, "source", "precise")
             for k, sfn in state_fns.items():
                 sc, pn = k
                 if sc in ("G", "J", "E", "C", "I"):
                     try:
                         nav_eph_by_key[k] = ephemeris_fit.fit_satellite(
-                            sfn, fit_epoch, sys=sc, prn=pn, source=fit_source)
+                            sfn, _fit_epoch(sc), sys=sc, prn=pn,
+                            source=fit_source)
                     except Exception as exc:        # noqa: BLE001 - degrade
                         # Both a rejected fit (EphemerisFitError) and the
                         # +/-2h fit window falling outside this satellite's
@@ -629,8 +698,16 @@ def run(req, progress_cb=None) -> pathlib.Path:
             # which branch ran, not the system count.
             ephemeris_mode = "precise"
         else:
+            a_week, a_sow = week, sow
+            a_dt = gps_start
+            if getattr(req, "eph_epoch", None) is not None:
+                a_dt = req.eph_epoch + dt.timedelta(
+                    seconds=config.GPS_UTC_LEAP_S)
+                a_week, a_sow = ephemeris.gps_week_and_sow(a_dt)
+            # Each satellite's record nearest the run (not the file's
+            # midday), so a same-day RINEX yields the REAL ephemeris.
             eph = ephemeris.parse_rinex_multi(req.rinex_path, systems,
-                                              require=("G",))
+                                              require=("G",), at_gps=a_dt)
             got = {(k[0] if isinstance(k, tuple) else "G") for k in eph}
             dropped = [s for s in systems if s not in got]
             if dropped:
@@ -638,7 +715,13 @@ def run(req, progress_cb=None) -> pathlib.Path:
                                 "generated the remaining systems")
                 systems = tuple(s for s in systems if s in got)
 
-        eph = ephemeris.align_epochs(eph, week, sow)
+        if ephemeris_mode != "broadcast":
+            a_week, a_sow = week, sow
+        # Records whose own epoch covers the run are used as broadcast (the
+        # real sky); only stale ones are relabeled onto the toe grid.
+        eph = ephemeris.align_epochs(
+            eph, a_week, a_sow, kepler_grid_s=_TOE_GRID_S,
+            keep_real_within_s=ephemeris.REAL_EPH_WINDOW_S)
         rx = (rx_fn(0.0)[0] if rx_fn is not None
               else geometry.llh_to_ecef(req.lat, req.lon, req.alt))
         req_bands = getattr(req, "bands", None)
@@ -653,6 +736,73 @@ def run(req, progress_cb=None) -> pathlib.Path:
         for e in entries:
             e["_state"] = eph.get((e["sys"], e["prn"]), eph.get(e["prn"]))
             e["prn"] = _native_prn(e["sys"], e["prn"])
+
+    # --- Signal-level terms a real receiver removes using the broadcast
+    # message. Every receiver applies the broadcast TGD/BGD, the broadcast
+    # Klobuchar ionosphere and a tropospheric model to its pseudoranges, so
+    # the transmitted code phase must carry them or the fix is biased by
+    # metres (vertical tens of metres at low elevation). Header iono is the
+    # single source for BOTH the injected delay and the LNAV/CNAV broadcast.
+    try:
+        hdr = dict(ephemeris.rinex_header_iono_utc(req.rinex_path) or {})
+    except Exception:                       # noqa: BLE001 - degrade
+        hdr = {}
+    atmo_cfg = atmosphere.AtmosphereConfig.from_dict(
+        getattr(req, "atmosphere", None) or _DEFAULT_ATMOSPHERE)
+    if atmo_cfg.ionosphere == "klobuchar":
+        if hdr.get("iono_alpha") and hdr.get("iono_beta"):
+            atmo_cfg.klobuchar_alpha = tuple(float(x) for x in hdr["iono_alpha"][:4])
+            atmo_cfg.klobuchar_beta = tuple(float(x) for x in hdr["iono_beta"][:4])
+        else:
+            hdr["iono_alpha"] = list(atmo_cfg.klobuchar_alpha)
+            hdr["iono_beta"] = list(atmo_cfg.klobuchar_beta)
+    rx_lat_rad = math.radians(float(req.lat))
+    rx_lon_rad = math.radians(float(req.lon))
+    rx_h_m = float(req.alt)
+
+    def _atmo_for(carrier_hz):
+        if not atmo_cfg.enabled:
+            return None
+
+        def f(az_rad, el_rad, t_rel):
+            iono = tropo = 0.0
+            if atmo_cfg.ionosphere == "klobuchar":
+                iono = atmosphere.klobuchar_delay_m(
+                    atmo_cfg.klobuchar_alpha, atmo_cfg.klobuchar_beta,
+                    sow + t_rel, rx_lat_rad, rx_lon_rad, az_rad, el_rad,
+                    freq_hz=carrier_hz)["delay_m"]
+            if atmo_cfg.troposphere == "saastamoinen":
+                tropo = atmosphere.saastamoinen_delay_m(
+                    el_rad, rx_h_m, atmo_cfg.pressure_hpa,
+                    atmo_cfg.temperature_k, atmo_cfg.humidity)["delay_m"]
+            return iono, tropo
+        return f
+
+    for e in entries:
+        sig = e["signal_id"]
+        sysc = e["sys"]
+        rec = e.get("_nav_eph") if precise_multi else e.get("_state")
+        rec = rec if isinstance(rec, dict) else None
+        f_car = float(sig.carrier_hz)
+        scale = 1.0
+        gk = e.get("glo_k")
+        if sysc == "R" and gk is not None and not (
+                isinstance(gk, float) and math.isnan(gk)):
+            # GLONASS FDMA: Doppler scales with the slot's own carrier.
+            step_hz = 437_500.0 if sig.band == "G2" else 562_500.0
+            f_car += int(gk) * step_hz
+            scale = f_car / float(sig.carrier_hz)
+            e["carrier_doppler_hz"] *= scale
+        e["_carrier_hz"] = f_car
+        e["_doppler_scale"] = scale
+        fa = _atmo_for(f_car)
+        e["_atmo_fn"] = fa
+        iono, tropo = (fa(math.radians(e["az_deg"]), math.radians(e["el_deg"]),
+                          0.0) if fa is not None else (0.0, 0.0))
+        svb = geometry.group_delay_bias_s(sysc, sig.band, rec)
+        e["pseudorange_m"] += -config.C * svb + iono + tropo
+        e["code_phase_chips"] = ((e["pseudorange_m"] / config.C
+                                  * sig.chip_rate_hz) % sig.code_len)
 
     cfg = FadingConfig.from_dict(getattr(req, "fading", None))
     fading_model_int = 1 if cfg.model == "lognormal" else 0
@@ -676,10 +826,6 @@ def run(req, progress_cb=None) -> pathlib.Path:
                 "R": "strings", "S": "sbas", "I": "navic"}.get(sysc, "on")
 
     if getattr(req, "nav_message", True):
-        try:
-            hdr = ephemeris.rinex_header_iono_utc(req.rinex_path)
-        except Exception:                       # noqa: BLE001 - degrade
-            hdr = {}
         for e in entries:
             sysc = e["sys"]
             # precise_multi: `_state` is a callable state_fn (SP-B trajectory
@@ -690,7 +836,8 @@ def run(req, progress_cb=None) -> pathlib.Path:
                 continue
             try:
                 res = nav_encoders.nav_stream_for(
-                    sysc, e["signal_id"], rec, hdr, week, sow, req.duration_s,
+                    sysc, e["signal_id"], rec, hdr, week, sow - _NAV_LEAD_S,
+                    req.duration_s + _NAV_LEAD_S,
                     prn=int(e.get("prn", 0)))
             except (KeyError, ValueError) as exc:
                 warnings.append(f"{sysc}{e['prn']}: nav-message encode failed "
@@ -740,10 +887,13 @@ def run(req, progress_cb=None) -> pathlib.Path:
                 cf, cph, cr, kp = _trajectory_knots(
                     e["_state"], rx, sow, plan.fs, _BLOCK_SAMPLES,
                     int(round(plan.fs * req.duration_s)),
-                    sig0.chip_rate_hz, sig0.carrier_hz,
+                    sig0.chip_rate_hz, e.get("_carrier_hz", sig0.carrier_hz),
                     e["code_phase_chips"], sig0.code_len,
-                    signal=sig0, carrier_offset_hz=carr_off, rx_fn=rx_fn)
+                    signal=sig0, carrier_offset_hz=carr_off, rx_fn=rx_fn,
+                    atmo_fn=e.get("_atmo_fn"),
+                    doppler_scale=e.get("_doppler_scale", 1.0))
                 _lib.attach_trajectory(spec, _BLOCK_SAMPLES, cf, cph, cr, kp)
+            _attach_tx_clock(spec, e, sow)
             spec.fading.model = fading_model_int
             spec.fading.sigma_db = cfg.sigma_db
             spec.fading.coherence_s = cfg.coherence_s

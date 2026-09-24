@@ -88,3 +88,42 @@ def test_get_ephemeris_raises_when_unavailable(tmp_path, monkeypatch):
 ])
 def test_prn_in_range(s, prn, ok):
     assert ephemeris._prn_in_range(s, prn) is ok
+
+
+def test_parse_rinex_multi_at_gps_selects_nearest_epoch(tmp_path):
+    p = _make_multi_epoch(tmp_path)
+    eph = ephemeris.parse_rinex_multi(p, ("G",), at_gps=dt.datetime(2026, 8, 28, 4, 30))
+    assert eph[8]["toe"] == pytest.approx(446400.0)
+    eph = ephemeris.parse_rinex_multi(p, ("G",), at_gps=dt.datetime(2026, 8, 28, 19, 0))
+    assert eph[8]["toe"] == pytest.approx(504000.0)
+
+
+def test_align_epochs_keeps_real_record_near_start():
+    e = ephemeris.parse_rinex(FIX)[8]
+    week = int(e["gps_week"])
+    near = ephemeris.align_epochs({8: e}, week, e["toe"] + 4000.0,
+                                  kepler_grid_s=3600.0, keep_real_within_s=7200.0)[8]
+    assert near["toe"] == e["toe"] and near["toc"] == e["toc"]
+    far = ephemeris.align_epochs({8: e}, week, e["toe"] + 10000.0,
+                                 kepler_grid_s=3600.0, keep_real_within_s=7200.0)[8]
+    assert far["toe"] == pytest.approx((e["toe"] + 10000.0) // 3600.0 * 3600.0)
+    # off by default: always relabeled
+    dflt = ephemeris.align_epochs({8: e}, week, e["toe"] + 4000.0, kepler_grid_s=3600.0)[8]
+    assert dflt["toe"] != e["toe"]
+
+
+def test_parse_rinex_keeps_records_with_blank_spare_fields(tmp_path):
+    # Real-time BRDC files (BKG ConvertoCpp) write a record's trailing spare
+    # fields as blanks. georinex sizes the fields from the satellite's first
+    # record; when that one is full-width, a later blank-padded record fails
+    # float() and is dropped entirely -- leaving only stale epochs.
+    lines = _make_multi_epoch(tmp_path).read_text().splitlines()
+    starts = [k for k, l in enumerate(lines) if l.startswith("G08 ")]
+    last0 = lines[starts[0] + 7]
+    lines[starts[0] + 7] = last0[:42].ljust(42) + " 0.000000000000E+00" * 2
+    for k in starts[1:]:
+        lines[k + 7] = lines[k + 7][:42].ljust(80)
+    p = tmp_path / "blank_spare.rnx"
+    p.write_text("\n".join(lines) + "\n")
+    eph = ephemeris.parse_rinex(p)
+    assert eph[8]["toe"] == pytest.approx(475200.0)      # the noon record survived

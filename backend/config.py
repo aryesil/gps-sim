@@ -101,6 +101,14 @@ PRECISE_SP3_MIRRORS = [m.strip() for m in
 ALLOW_TX = _flag("ALLOW_TX", False)
 RF_FRONTEND_ENABLED = _flag("RF_FRONTEND_ENABLED", False)
 DEVICE_URI = _str("DEVICE_URI", "ip:192.168.2.1")
+# Measured reference-oscillator error of the TX SDR in ppm (see
+# transmit.TxParams.xo_ppm); a request body's "xo_ppm" overrides it.
+DEVICE_XO_PPM = _float("DEVICE_XO_PPM", 0.0)
+# Live start_utc "now": how far ahead of the wall clock segment 0 is
+# stamped -- the delay from session start until its first sample leaves
+# the antenna (first-segment generation + host/kernel TX buffering).
+# Measured 2.5 s on a LibreSDR (AD9361, USB) at 2.6 Msps.
+LIVE_START_LEAD_S = _float("LIVE_START_LEAD_S", 2.5)
 DEFAULT_SAMPLE_RATE = _float("DEFAULT_SAMPLE_RATE", 2.6e6)
 DEFAULT_FORMAT = _str("DEFAULT_FORMAT", "int16")
 

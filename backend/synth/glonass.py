@@ -86,7 +86,11 @@ def glonass_state(record: dict):
             h = step if abs(remaining) > abs(step) else remaining
             y = _rk4_step(y, h, acc)
             remaining -= h
-        clk = -tau + gamma * dt_total
+        # ``tau`` is RINEX's "SV clock bias", which RINEX stores as -TauN;
+        # the ICD clock offset is -TauN + GammaN*(t - tb), i.e. +tau here
+        # (RTKLIB: taun = -bias, dts = -taun + gamn*dt). The old -tau
+        # flipped it: a 2*TauN range error, ~110 km for TauN ~ 1.9e-4 s.
+        clk = tau + gamma * dt_total
         return y[:3].copy(), y[3:].copy(), float(clk)
 
     return f

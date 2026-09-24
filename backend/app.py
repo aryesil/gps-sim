@@ -314,6 +314,19 @@ def _signal_bandwidth_hz(internal_band: str, systems: list[str]) -> int:
     return int(max(widths)) if widths else rf_frontend.DEFAULT_SIGNAL_BANDWIDTH_HZ
 
 
+def _tx_level_kwargs(body: dict) -> dict:
+    """Device-side TX knobs shared by /api/transmit and /api/live/start:
+    DAC leveling target (null = legacy raw pass-through), analog TX filter
+    bandwidth and the SDR reference-oscillator correction."""
+    kw = {"xo_ppm": float(body.get("xo_ppm", config.DEVICE_XO_PPM))}
+    if "level_dbfs" in body:
+        lv = body["level_dbfs"]
+        kw["level_dbfs"] = None if lv is None else float(lv)
+    if body.get("tx_rf_bandwidth_hz") is not None:
+        kw["tx_rf_bandwidth_hz"] = float(body["tx_rf_bandwidth_hz"])
+    return kw
+
+
 def _resolve_rf_plan(body: dict, default_target_hz: float, sample_rate: float,
                       signal_bandwidth_hz: int | None = None
                       ) -> tuple[float, float, dict | None]:
@@ -884,7 +897,9 @@ def generate(body: dict):
                     eph, _ = _resolve_eph(req.start.date(), req.rinex_path)
                     gps_start = req.start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
                     week, sow = ephemeris.gps_week_and_sow(gps_start)
-                    eph = ephemeris.align_epochs(eph, week, sow)
+                    eph = ephemeris.align_epochs(
+                        eph, week, sow,
+                        kepler_grid_s=ephemeris.toe_grid_for(req.engine))
                 rx = geometry.llh_to_ecef(req.lat, req.lon, req.alt)
                 sats = geometry.constellation(eph, rx, _gps_tow(req.start))
                 iq = inspector.read_iq(outdir / "gpssim.bin", req.sample_format,
@@ -932,7 +947,9 @@ def run_receiver(body: dict):
     eph, _ = _resolve_eph(start.date(), meta["config"].get("rinex_path"))
     gps_start = start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
     week, sow = ephemeris.gps_week_and_sow(gps_start)
-    eph = ephemeris.align_epochs(eph, week, sow)
+    eph = ephemeris.align_epochs(
+        eph, week, sow,
+        kepler_grid_s=ephemeris.toe_grid_for(meta.get("provenance", {}).get("engine")))
     return receiver.fix_from_iq(
         outdir / "gpssim.bin", meta["sample_format"], meta["sample_rate"],
         eph, _gps_tow(start), marker_llh=body.get("marker"))
@@ -1017,7 +1034,9 @@ def lnav(prn: int, outdir: str):
     eph_all, _ = _resolve_eph(start.date(), meta["config"].get("rinex_path"))
     gps_start = start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
     week, sow = ephemeris.gps_week_and_sow(gps_start)
-    eph = ephemeris.align_epochs(eph_all, week, sow)[prn]
+    eph = ephemeris.align_epochs(
+        eph_all, week, sow,
+        kepler_grid_s=ephemeris.toe_grid_for(meta.get("provenance", {}).get("engine")))[prn]
     return lnav_display.explain(eph, tow_count=int(_gps_tow(start) / 6), week=int(eph.get("gps_week", 0)))
 
 
@@ -1039,7 +1058,7 @@ def start_transmit(body: dict, request: Request):
             uri=body.get("uri", config.DEVICE_URI),
             tx_scale=float(body.get("tx_scale", 1.0)),
             kind=body.get("kind", "pluto"),
-            slot=slot)
+            slot=slot, **_tx_level_kwargs(body))
         itemsize = 1 if params.sample_format == "int8" else 2
         try:
             total_samples = pathlib.Path(params.iq_path).stat().st_size // (2 * itemsize)
@@ -1295,6 +1314,12 @@ def _apply_timeline_step(session: live.LiveSession, step: dict) -> None:
         raise ValueError(f"unknown timeline action {action!r}")
 
 
+def _is_start_now(value) -> bool:
+    """Live start_utc "now" (or empty): run on the current real time."""
+    v = str(value or "").strip().lower()
+    return v in ("", "now", ":00", "now:00")
+
+
 @app.post("/api/live/start")
 def live_start(body: dict, request: Request):
     auth.require_operator(request)
@@ -1322,10 +1347,18 @@ def live_start(body: dict, request: Request):
     internal_band = next(iter(needed))
     slot = _acquire_tx_slot(_requested_tx_slot(body))
     try:
-        start = dt.datetime.fromisoformat(body["start_utc"])
+        start_now = _is_start_now(body.get("start_utc"))
+        start = (dt.datetime.utcnow() if start_now
+                 else dt.datetime.fromisoformat(body["start_utc"]))
         nav_override, _ = _precise_nav_override(body, start)
         rinex_path = (body.get("rinex_path") or "") if nav_override is not None \
             else _resolve_rinex(body, start)
+        if start_now:
+            # Re-read the clock after the (possibly downloading) RINEX
+            # resolution, then lead it by the live pipeline's latency so the
+            # GPS time on air equals the real GPS time: a phone with network
+            # time and A-GPS assistance searches around the real time.
+            start = dt.datetime.utcnow() + dt.timedelta(seconds=config.LIVE_START_LEAD_S)
         req = scenario.ScenarioRequest(
             rinex_path=rinex_path, lat=body["lat"], lon=body["lon"], alt=body["alt"],
             start=start, duration_s=int(body.get("duration_s", 300)),
@@ -1352,7 +1385,7 @@ def live_start(body: dict, request: Request):
             tx_gain_db=float(body.get("tx_gain_db", -50.0)),
             uri=body.get("uri", config.DEVICE_URI),
             kind=body.get("kind", "pluto"),
-            slot=slot)
+            slot=slot, **_tx_level_kwargs(body))
     except rf_frontend.RFFrontendError as ex:
         _release_tx_slot(slot)
         raise HTTPException(400, str(ex)) from ex
@@ -1420,8 +1453,12 @@ def live_start(body: dict, request: Request):
                     break
                 th.join(timeout=0.2)
             th.join(timeout=2.0)
+            while q:                      # events queued after the loop broke
+                yield emit({**q.pop(0), "slot": slot})
             audit.log_event("live_finished", slot=slot)
-            yield emit({"finished": True, "slot": slot})
+            # carries the RF plan too: a run stopped before its first progress
+            # event (auto-stop, early cancel) must still report it
+            yield emit({"finished": True, **(rf_report or {}), "slot": slot})
         finally:
             if recorder is not None:
                 recorder.close()

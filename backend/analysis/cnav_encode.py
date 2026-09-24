@@ -164,13 +164,18 @@ def nav_stream(eph, header, week, sow, duration_s, *, prn, eph_by_prn=None):
     [10, 11, 30, 33], one 300-bit message per 12 s, TOW field carrying the
     start of the following message (6 s units)."""
     n_msg = max(1, math.ceil((math.ceil(float(duration_s)) + 24) / 12))
-    tow0 = int(math.ceil(float(sow) / 6.0))
+    # Messages sit on the 12 s GPS-time grid at or before ``sow`` (the
+    # engine passes sow minus a margin so symbol 0 precedes the earliest
+    # transmit time). ceil() here used to start the stream AFTER sow.
+    tow0 = int(float(sow) // 12.0) * 2
     eph = dict(eph or {})
     eph.setdefault("gps_week", int(week))
     conv = _Conv()
     bits: list[int] = []
     for i in range(n_msg):
-        mtype = L.CYCLE[i % len(L.CYCLE)]
+        # Message type follows GPS time (message count since the week
+        # start), so a stream started later continues the same schedule.
+        mtype = L.CYCLE[(tow0 // 2 + i) % len(L.CYCLE)]
         tow = tow0 + (i + 1) * 2          # next message start, 12 s = 2 units
         bits.extend(conv.encode(build_message(mtype, prn, tow, 0, eph, header)))
     arr = np.array([1 if s == 0 else -1 for s in bits], dtype=np.int8)

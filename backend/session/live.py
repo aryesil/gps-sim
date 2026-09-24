@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
+import math
+import datetime as dt
+import queue
+import shutil
 import threading
 from dataclasses import dataclass
 
 import numpy as np
 
-from backend import generator, geometry, inspector, scenario
+from backend import geometry, inspector, scenario
+from backend.synth import signal_engine
+
+_PREFETCH = 2   # segments generated ahead of the TX stream
+_EPH_REFRESH_S = 7200.0   # live ephemeris re-pinned every 2 h of session time
 
 _ENU_DIRECTIONS = {
     "north": (0.0, 1.0, 0.0), "south": (0.0, -1.0, 0.0),
@@ -55,6 +64,23 @@ def _resolve_band_file(outdir) -> str:
     return present[0]
 
 
+def _generate_segment(seg_req, iq_filename):
+    """One live segment's IQ (module-level so a worker process can run it).
+    Returns (iq, band file name)."""
+    outdir = signal_engine.run(seg_req)
+    try:
+        if iq_filename is None:
+            # A systems/bands combination needing >1 physical output is a
+            # static config error, not a transient generation hiccup --
+            # surface it immediately rather than burning through the retry
+            # budget on a request that can never succeed.
+            iq_filename = _resolve_band_file(outdir)
+        return (inspector.read_iq(outdir / iq_filename, seg_req.sample_format),
+                iq_filename)
+    finally:
+        shutil.rmtree(outdir, ignore_errors=True)
+
+
 @dataclass
 class LiveState:
     llh: list[float]
@@ -70,6 +96,7 @@ class LiveSession:
         self.running = False
         self.consecutive_errors = 0
         self._iq_filename: str | None = None   # resolved from the first segment
+        self._pool = None
 
     def jog(self, direction: str, distance_m: float) -> None:
         if direction not in _ENU_DIRECTIONS:
@@ -89,38 +116,112 @@ class LiveSession:
         with self._lock:
             setattr(self.state, field, getattr(self.state, field) + delta)
 
+    # Generate segments in a worker PROCESS (production). In-thread
+    # generation's pure-Python geometry/nav work held the GIL for up to
+    # ~200 ms at a time and starved the TX pump thread, underrunning the
+    # SDR (measured: 12 s of signal pushed in 21.5 s of wall time).
+    use_process = True
+
+    def _segment_request(self, k: int, snap: LiveState):
+        seg = self.segment_duration_s
+        base = self.base_req
+        t = k * seg + snap.time_offset_s
+        # Ephemeris is pinned per 2 h block of the session (a satellite's
+        # upload cadence): constant within a block so segments join
+        # seamlessly and the RINEX parse stays cached, refreshed between
+        # blocks so a long session never broadcasts an expired toe.
+        block = math.floor(t / _EPH_REFRESH_S) * _EPH_REFRESH_S
+        return dataclasses.replace(
+            base, lat=snap.llh[0], lon=snap.llh[1], alt=snap.llh[2],
+            start=base.start + dt.timedelta(seconds=t),
+            duration_s=seg, route=None, engine="native",
+            eph_epoch=base.start + dt.timedelta(seconds=block))
+
+    def _make_segment(self, k: int, snap: LiveState):
+        """Segment ``k`` of the session: GPS time base.start + k*seg (+ the
+        operator's time shift). Always the native engine, with the
+        ephemeris pinned per 2 h block (``eph_epoch``), so segment
+        k+1 continues segment k sample-for-sample: code phase, nav data
+        and secondary codes are clocked on absolute transmit time and the
+        carrier phase is absolute (engine._trajectory_knots).
+
+        gps-sdr-sim cannot do this: every run restarts its carrier phase at
+        0 (gpssim.c ``phase_ini = 0.0; // TODO``), re-aligns the nav file's
+        toe to the run start, and a ``-d 1`` run writes only 0.9 s. The old
+        loop also never advanced the start time, so the SDR replayed the
+        same 0.9 s forever -- a receiver saw time jump back every 0.9 s."""
+        seg_req = self._segment_request(k, snap)
+        if self._pool is not None:
+            iq, self._iq_filename = self._pool.submit(
+                _generate_segment, seg_req, self._iq_filename).result()
+            return iq
+        iq, self._iq_filename = _generate_segment(seg_req, self._iq_filename)
+        return iq
+
     def segments(self):
         """Generator of complex IQ chunks -- transmit.stream()'s chunk_source
         for a live session. Stops (StopIteration) once self.running is set
         False by the caller (mirrors TxSession's cancel-event pattern but
-        drives generation, not just playback)."""
+        drives generation, not just playback).
+
+        Segments are produced by a background thread up to ``_PREFETCH``
+        ahead: the TX pump only buffers ~0.2 s, so generating segment k+1
+        after segment k was queued would underflow (zero gaps = receiver
+        clock jumps) every segment. Jog/time-shift therefore take effect
+        a couple of segments later."""
         self.running = True
-        while self.running:
-            with self._lock:
-                snap = copy.deepcopy(self.state)
-            try:
-                outdir = generator.run_segment(
-                    self.base_req, llh=tuple(snap.llh),
-                    time_offset_s=snap.time_offset_s,
-                    duration_s=self.segment_duration_s)
-                if self._iq_filename is None:
-                    # A systems/bands combination needing >1 physical output
-                    # is a static config error, not a transient generation
-                    # hiccup -- surface it immediately rather than burning
-                    # through the retry budget below on a request that can
-                    # never succeed.
-                    self._iq_filename = _resolve_band_file(outdir)
-                iq = inspector.read_iq(outdir / self._iq_filename, self.base_req.sample_format)
-                self.consecutive_errors = 0
-                yield iq
-            except RuntimeError:
-                self.running = False
-                raise
-            except Exception:
-                self.consecutive_errors += 1
-                if self.consecutive_errors >= 3:
+        out: queue.Queue = queue.Queue(maxsize=_PREFETCH)
+        self._pool = None
+        # a precise-ephemeris provider object need not pickle: stay in-process
+        if self.use_process and self.base_req.nav_override is None:
+            import concurrent.futures
+            import multiprocessing
+            self._pool = concurrent.futures.ProcessPoolExecutor(
+                max_workers=1, mp_context=multiprocessing.get_context("spawn"))
+
+        def _producer():
+            k = 0
+            while self.running:
+                with self._lock:
+                    snap = copy.deepcopy(self.state)
+                try:
+                    iq = self._make_segment(k, snap)
+                    self.consecutive_errors = 0
+                except RuntimeError as ex:
+                    out.put(ex)
+                    return
+                except Exception as ex:
+                    self.consecutive_errors += 1
+                    if self.consecutive_errors >= 3:
+                        out.put(ex)
+                        return
+                    continue   # retry the same k: time must not skip
+                k += 1
+                while self.running:
+                    try:
+                        out.put(iq, timeout=0.5)
+                        break
+                    except queue.Full:
+                        pass
+
+        th = threading.Thread(target=_producer, daemon=True)
+        th.start()
+        try:
+            while self.running:
+                try:
+                    item = out.get(timeout=0.5)
+                except queue.Empty:
+                    if not th.is_alive():
+                        return
+                    continue
+                if isinstance(item, Exception):
                     self.running = False
-                    raise
+                    raise item
+                yield item
+        finally:
+            self.running = False
+            if self._pool is not None:
+                self._pool.shutdown(wait=False, cancel_futures=True)
 
     def stop(self) -> None:
         self.running = False

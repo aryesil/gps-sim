@@ -59,7 +59,6 @@ def _fix_from_iq_l2(iq_path, sample_format, sample_rate, eph_by_prn,
     from backend.synth import signals as _sig
 
     l2c = _sig.SIGNALS["GPS_L2C"]
-    fl1, fl2 = config.L1_HZ, config.L2_HZ
     m_per_chip = config.C / _CM_CHIP_HZ
 
     # CNAV messages 10 + 11 arrive once per 12 s each; 50 s of data gives a
@@ -105,8 +104,7 @@ def _fix_from_iq_l2(iq_path, sample_format, sample_rate, eph_by_prn,
     sat_pos, pr, usable = {}, {}, []
     for prn in sorted(decoded):
         rec = decoded[prn]
-        tgd = rec.get("tgd", 0.0)
-        svb = -tgd * (fl1 / fl2) ** 2 + rec.get("isc_l2c", 0.0)
+        svb = geometry.group_delay_bias_s("G", "L2", rec)
         o = geometry.observables(rec, approx_rx, approx_time_gps,
                                  signal=l2c, sv_clock_bias_s=svb)
         if o["el_deg"] < 5.0:
@@ -179,6 +177,7 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
     convention here, not an omission), and BeiDou B2a uses
     ``-TGD_B2ap + ISC_B2ad`` (same -Tgd+ISC shape as GPS).
     """
+    from backend.analysis import nav_encoders
     from backend.analysis import (band_acquire, bcnav2_decode, cnav_decode,
                                   fnav_decode, navic_decode)
     from backend.synth import _lib
@@ -187,7 +186,6 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
     l5, e5a = _sig.SIGNALS["GPS_L5I"], _sig.SIGNALS["GAL_E5AI"]
     navic = _sig.SIGNALS["IRNSS_L5"]
     b2a = _sig.SIGNALS["BDS_B2AD"]
-    fl1, fl5 = config.L1_HZ, config.L5_HZ
 
     # One CNAV 10/11 pair spans 24 s; L5 runs at ~25 Msps, so cap the read
     # near that (a 50 s cap would be ~1.3 G samples) -- read_iq clamps to
@@ -301,6 +299,10 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
                     nav_decode[key] = "no own-PRN 10/11"
                     continue
                 rec = bcnav2_decode.reconstruct_ephemeris(own)
+                # B-CNAV2 broadcasts toe/toc on BDT (GPS - 14 s); this
+                # receiver's geometry runs on GPS time.
+                for _k in ("toe", "toc"):
+                    rec[_k] = (rec[_k] - nav_encoders.BDT_MINUS_GPS_S) % 604800.0
             else:
                 sym = cnav_decode.demod_symbols_l5(
                     iq, sample_rate, prn, dopp_hz=r["doppler_hz"],
@@ -327,7 +329,7 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
         rec = decoded[(sysc, prn)]
         key = f"{sysc}{prn}"
         if sysc == "E":
-            svb = -rec.get("tgd", 0.0)
+            svb = geometry.group_delay_bias_s("E", "L5", rec)
             sig, code = e5a, _lib.code_e5a(int(prn))[0]
             chip_hz, code_len = _L5_CHIP_HZ, _L5_LEN
         elif sysc == "I":
@@ -347,8 +349,7 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
             sig, code = b2a, _lib.code_b2a(int(prn))[0]
             chip_hz, code_len = _L5_CHIP_HZ, _L5_LEN
         else:
-            tgd = rec.get("tgd", 0.0)
-            svb = -tgd * (fl1 / fl5) ** 2 + rec.get("isc_l5i5", 0.0)
+            svb = geometry.group_delay_bias_s(sysc, "L5", rec)
             sig, code = l5, _lib.code_l5(int(prn))[0]
             chip_hz, code_len = _L5_CHIP_HZ, _L5_LEN
         o = geometry.observables(rec, approx_rx, approx_time_gps,
@@ -416,12 +417,10 @@ def _fix_from_iq_glo_l2of(iq_path, sample_format, sample_rate, eph_by_prn,
     but unused: there is no broadcast almanac to seed a channel scan from,
     so it is always blind.
 
-    Because ``glo_str_encode.nav_stream`` re-broadcasts the *same* state
-    vector every 15-string cycle (never re-propagated per string), and the
-    engine always aligns a GLONASS record's ``toe_ref`` to the scenario's
-    own GPS start-of-week before encoding it, the recovered fields describe
-    the state at exactly ``toe_ref == approx_time_gps`` -- passed straight
-    through to ``reconstruct_ephemeris``, no epoch decoded out of ``t_k``.
+    The recovered state vector is referenced to the broadcast t_b (string
+    2): the engine puts a GLONASS record's ``toe_ref`` on the 15 min
+    Moscow-time grid (ephemeris.align_epochs), so the epoch is decoded from
+    t_b and resolved against ``approx_time_gps``.
     """
     from backend.analysis import band_acquire
     from backend.analysis import glo_str_decode as gsd
@@ -433,12 +432,10 @@ def _fix_from_iq_glo_l2of(iq_path, sample_format, sample_rate, eph_by_prn,
     code = _glo_g1_code().astype(np.float64)
     m_per_chip = config.C / _GLO_CHIP_HZ
 
-    # glo_str_encode.nav_stream always starts its string cycle at i=0 ->
-    # sidx=1 (see build_string), so every capture that starts at t=0 sees
-    # strings 1-4 back to back in [0, 6.8) s (85 bits / 100 sym/s = 0.85 s
-    # x2 meander symbols per bit = 1.7 s/string). 16 s gives a full extra
-    # cycle of margin for the Hamming-sync (parity, offset) search, which
-    # is more reliable with more complete strings to vote across.
+    # Strings follow Moscow time (glo_str_encode.nav_stream): strings 1-4
+    # are the first 8 s of every 30 s frame. 16 s covers them for a capture
+    # that starts on a frame boundary (the closed-loop scenarios do); a
+    # capture starting mid-frame needs up to 38 s.
     iq = inspector.read_iq(iq_path, sample_format,
                            max_samples=int(sample_rate * 16.0))
     approx_rx = (np.array(geometry.llh_to_ecef(*marker_llh))
@@ -467,6 +464,9 @@ def _fix_from_iq_glo_l2of(iq_path, sample_format, sample_rate, eph_by_prn,
                 continue
             rec = gsd.G.reconstruct_ephemeris(frame, toe_ref=approx_time_gps,
                                               glo_k=k)
+            if "tb" in rec:
+                # the state is referenced to the broadcast t_b (15 min grid)
+                rec["toe_ref"] = gsd.G.toe_ref_from_tb(rec["tb"], approx_time_gps)
             decoded[k] = rec
             nav_decode[k] = "ok"
         except (ValueError, IndexError):
@@ -618,8 +618,10 @@ def fix_from_iq(iq_path, sample_format, sample_rate, eph_by_prn,
             # observables() models the raw measurement as geo - c*dt_sv;
             # add the decoded satellite-clock term back to get a
             # clock-corrected pseudorange for the position solve.
+            svb = geometry.group_delay_bias_s("G", "L1",
+                                              eph_by_prn[prn])
             pr[prn] = (e["pseudorange_m"] + err_c * m_per_chip
-                       + config.C * clk)
+                       + config.C * (clk + svb))
             usable.append(prn)
         acq = {p: acq[p] for p in usable}
         if len(acq) < 4:

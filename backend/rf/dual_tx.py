@@ -43,6 +43,7 @@ _GET_TIMEOUT_S = 0.5     # how long the pump waits for a slot before feeding sil
 _PUT_TIMEOUT_S = 10.0    # how long push() waits for pump to drain before giving up
 _QUEUE_DEPTH = 8         # ~8 blocks of smoothing headroom per slot
 _SLOT_CHAN = {"TX1": 0, "TX2": 1}
+_CHAN_SLOT = {v: k for k, v in _SLOT_CHAN.items()}
 
 
 class _Card:
@@ -67,11 +68,13 @@ class _Card:
 
     def _pump_loop(self) -> None:
         zero = np.zeros(_BLOCK_SAMPLES, dtype=np.complex64)
-        while not self.stop.is_set():
+        stop = self.stop
+        while not stop.is_set():
             with self.lock:
                 slots = dict(self.queues)
             blocks = []
-            for slot in ("TX1", "TX2"):
+            for chan in self.backend.active_channels(self.handle):
+                slot = _CHAN_SLOT[chan]
                 q = slots.get(slot)
                 if q is None:
                     blocks.append(zero)
@@ -83,6 +86,21 @@ class _Card:
                         self.underflow[slot] = self.underflow.get(slot, 0) + 1
                     blocks.append(zero)
             self.backend.write(self.handle, blocks)
+
+    def ensure_channel(self, chan: int) -> None:
+        """Make sure ``chan`` is streaming. Only the channels in use are
+        enabled (see the backend's set_active_channels); a second slot
+        joining re-creates the buffer with both, which briefly pauses the
+        running slot's stream."""
+        active = self.backend.active_channels(self.handle)
+        if chan in active:
+            return
+        self.stop.set()
+        self.pump_thread.join(timeout=5.0)
+        self.backend.set_active_channels(self.handle, active + [chan])
+        self.stop = threading.Event()
+        self.pump_thread = threading.Thread(target=self._pump_loop, daemon=True)
+        self.pump_thread.start()
 
     def register(self, slot: str) -> None:
         with self.lock:
@@ -163,7 +181,9 @@ _card: _Card | None = None
 
 
 def acquire(slot: str, uri: str, lo_hz: float, sample_rate: float,
-            tx_gain_db: float, kind: str = "pluto") -> _SlotSink:
+            tx_gain_db: float, kind: str = "pluto", *,
+            rf_bandwidth_hz: float | None = None,
+            xo_ppm: float = 0.0) -> _SlotSink:
     """Join (or open) the shared card for ``slot`` ("TX1"/"TX2"). Raises
     TransmitError if the card is already open for a different
     uri/LO/rate/kind -- TX1 and TX2 physically cannot disagree on those."""
@@ -174,7 +194,18 @@ def acquire(slot: str, uri: str, lo_hz: float, sample_rate: float,
         raise TransmitError(f"unknown SDR kind {kind!r}: must be one of {sorted(BACKENDS)}")
     with _lock:
         if _card is None:
-            handle = BACKENDS[kind].open_tx(uri, lo_hz, sample_rate)
+            backend = BACKENDS[kind]
+            handle = backend.open_tx(uri, lo_hz, sample_rate,
+                                     rf_bandwidth_hz=rf_bandwidth_hz,
+                                     xo_ppm=xo_ppm)
+            if _SLOT_CHAN[slot] >= backend.n_tx_channels(handle):
+                backend.close(handle)
+                raise TransmitError(
+                    f"{slot} unavailable: the {kind} at {uri!r} exposes "
+                    f"only {backend.n_tx_channels(handle)} TX channel(s) "
+                    "(a stock PlutoSDR is 1R1T -- use TX1, or switch the "
+                    "firmware to 2r2t)")
+            backend.set_active_channels(handle, [_SLOT_CHAN[slot]])
             _card = _Card(handle, uri, lo_hz, sample_rate, kind)
         else:
             if _card.kind != kind:
@@ -197,7 +228,12 @@ def acquire(slot: str, uri: str, lo_hz: float, sample_rate: float,
                     f"{sample_rate:.0f} Hz -- match the running slot's rate "
                     "or stop it first")
         chan = _SLOT_CHAN[slot]
+        if chan >= _card.backend.n_tx_channels(_card.handle):
+            raise TransmitError(
+                f"{slot} unavailable: the shared card exposes only "
+                f"{_card.backend.n_tx_channels(_card.handle)} TX channel(s)")
         _card.backend.set_gain(_card.handle, chan, tx_gain_db)
+        _card.ensure_channel(chan)
         _card.register(slot)
         return _SlotSink(_card, slot)
 

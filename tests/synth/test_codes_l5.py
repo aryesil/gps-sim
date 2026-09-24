@@ -38,12 +38,17 @@ def test_l5_autocorr_is_a_sharp_peak():
     assert _xcorr_peak(f, f) > 0.99
 
 
+def test_l5_icd_known_answer():
+    # IS-GPS-705 Table 3-Ia/3-Ib XB advances (PRN 1: I5 266, Q5 1701);
+    # chips match GNSS-SDR / PocketSDR.
+    i5, q5 = _lib.code_l5(1)
+    assert i5[:10].tolist() == [-1, -1, 1, -1, -1, 1, 1, 1, -1, 1]
+    assert q5[:10].tolist() == [-1, -1, 1, 1, -1, -1, 1, 1, -1, 1]
+
+
 def test_l5_distinct_prns_decorrelate():
     a = _lib.code_l5(1)[0].astype(np.float64)
     b = _lib.code_l5(2)[0].astype(np.float64)
-    # Deterministically seeded XB states (ICD Table 3-Ia/3-Ib unavailable
-    # offline): the cross-correlation floor is looser than a real code's
-    # but still far below the autocorrelation peak.
     assert _xcorr_peak(a, b) < 0.15
 
 

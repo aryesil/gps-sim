@@ -137,9 +137,15 @@ def nav_stream(eph: dict, week: int, tow0_sow: float, duration_s: float,
     nblk = int(math.ceil((math.ceil(duration_s) + 30)))   # 1 block/s
     conv = _Conv()
     syms: list[int] = []
+    # Block k is the one sent during GPS second k of the week: the preamble
+    # rotation (0x53 on a 6 s GPS epoch, RTCA DO-229) and the message-type
+    # schedule follow GPS time, not the stream start -- a stream started
+    # later (live mode restarts it every segment) continues the sequence.
+    k0 = int(math.floor(float(tow0_sow)))
     for i in range(nblk):
-        mtype = 9 if (i % 2 == 0) else 63
-        syms.extend(conv.encode(build_block(i, mtype, eph)))
+        k = k0 + i
+        mtype = 9 if (k % 2 == 0) else 63
+        syms.extend(conv.encode(build_block(k, mtype, eph)))
     a = np.asarray(syms, dtype=np.int8)
     return np.where(a > 0, np.int8(1), np.int8(-1)).astype(np.int8), SYM_RATE_HZ
 

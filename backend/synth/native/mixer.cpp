@@ -77,6 +77,15 @@ void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
         const bool use_boc = sv.sub_carrier_hz > 0.0;
         const int8_t *__restrict sec = sv.sec_code;
         const int sec_len = sv.sec_len;
+        // Transmit-time modulation clock (ABI 25): u = cp + tx_off counts
+        // primary chips since nav symbol 0 left the satellite. Chips per nav
+        // symbol use the NOMINAL chip rate -- symbol/secondary edges are
+        // fixed in satellite time, Doppler only stretches them in receiver
+        // time (already carried by cp).
+        const bool use_tx = sv.tx_time_valid != 0;
+        const double tx_off = sv.tx_chips_offset;
+        const double chips_per_sym =
+            sv.code_rate_hz / nav_rate(nav);
 
         for (int k = 0; k < n; ++k) {
             double t = abs_t0 + k * dt;
@@ -86,25 +95,33 @@ void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
             // and restarted the code phase at `eff` every call (final review B1).
             double cp = use_traj ? (cp_base + chip_rate * (k * dt))
                                  : (eff + chip_rate * t);
-            long ci = static_cast<long>(cp) % L;
+            // int64_t, not long: long is 32-bit on Windows/MinGW and the
+            // absolute chip count passes 2^31 after ~210 s at 10.23 Mcps.
+            int64_t ci = static_cast<int64_t>(std::floor(cp)) % L;
             if (ci < 0) ci += L;
             float chip = static_cast<float>(code[ci]);
+            const double u = use_tx ? (cp + tx_off) : cp;
             if (sec_len > 0) {
                 // One secondary chip spans exactly one primary code period, so
-                // index by elapsed primary periods derived from the absolute
-                // code phase `cp` -- phase-continuous across streaming blocks and
-                // parallel chunks, with transitions aligned to code-period edges.
-                long period =
-                    static_cast<long>(std::floor(cp / static_cast<double>(L)));
-                long si = period % sec_len;
+                // index by elapsed primary periods -- phase-continuous across
+                // streaming blocks and parallel chunks, with transitions
+                // aligned to code-period edges. In transmit-time mode the
+                // period count is referenced to the nav stream, so secondary
+                // chip 0 starts every nav symbol (ICD synchronisation).
+                int64_t period = static_cast<int64_t>(
+                    std::floor(u / static_cast<double>(L)));
+                int64_t si = period % sec_len;
                 if (si < 0) si += sec_len;
                 chip *= static_cast<float>(sec[si]);
             }
             if (use_boc) {
-                long hc = static_cast<long>(std::floor(2.0 * cp));
-                if (hc & 1L) chip = -chip;
+                int64_t hc = static_cast<int64_t>(std::floor(2.0 * cp));
+                if (hc & 1) chip = -chip;
             }
-            float navsym = static_cast<float>(nav_symbol(nav, t));
+            float navsym = use_tx
+                ? static_cast<float>(nav_symbol_at(
+                      nav, static_cast<int64_t>(std::floor(u / chips_per_sym))))
+                : static_cast<float>(nav_symbol(nav, t));
             std::complex<float> c = carr.next();
             float d = g * chip * navsym;
             iq[2 * k]     += d * c.real();

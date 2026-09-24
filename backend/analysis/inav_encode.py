@@ -301,7 +301,10 @@ def nav_stream(eph: dict, week: int, tow0_sow: float, duration_s: float,
     syms: list[int] = []
     for p in range(npages):
         tow = (tow0 + 2 * p) % 604800
-        wtype = _CYCLE[p % len(_CYCLE)]
+        # Word type follows GST, not the stream start: a stream started
+        # later (live mode restarts it every segment) must continue the
+        # same sequence instead of re-sending the first word type.
+        wtype = _CYCLE[(tow // 2) % len(_CYCLE)]
         syms.extend(build_page(wtype, eph, tow, week))
     a = np.asarray(syms, dtype=np.int8)
     return np.where(a > 0, np.int8(1), np.int8(-1)).astype(np.int8)
