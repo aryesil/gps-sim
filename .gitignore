@@ -18,3 +18,4 @@ out/
 
 # Local AI planning docs -- never pushed, code changes only
 docs/superpowers/
+backend/synth/native/*.d

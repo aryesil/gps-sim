@@ -30,6 +30,8 @@ struct SvChannel {
     // ABI 25 -- transmit-time modulation clock (see SvSpec in abi.h).
     int tx_time_valid = 0;
     double tx_chips_offset = 0.0;
+    // ABI 26 -- CBOC(6,1,1/11) sign (see SvSpec in abi.h); 0 = BOC(1,1).
+    int cboc = 0;
 };
 void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
                uint64_t sample0, int n, float *__restrict iq);

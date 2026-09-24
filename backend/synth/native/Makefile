@@ -32,12 +32,17 @@ endif
 LIB := libgnsssynth.$(LIBEXT)
 SRC := $(wildcard *.cpp)
 OBJ := $(SRC:.cpp=.o)
+# -MMD -MP: each object also depends on the headers it includes, so an ABI
+# change in abi.h / mixer.hpp rebuilds every user (a header-only edit
+# previously left stale objects with the old struct layout).
+DEP := $(OBJ:.o=.d)
 
 all: $(LIB)
 $(LIB): $(OBJ)
 	$(CXX) $(CXXFLAGS) $(SHARED) -o $@ $(OBJ)
 %.o: %.cpp
-	$(CXX) $(CXXFLAGS) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) -MMD -MP -c -o $@ $<
+-include $(DEP)
 clean:
-	rm -f $(OBJ) $(LIB)
+	rm -f $(OBJ) $(DEP) $(LIB)
 .PHONY: all clean

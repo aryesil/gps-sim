@@ -55,7 +55,6 @@ def _fix_from_iq_l2(iq_path, sample_format, sample_rate, eph_by_prn,
                     approx_time_gps, marker_llh) -> dict:
     """GPS L2C closed-loop fix: acquire CM, decode CNAV 10/11/30, solve."""
     from backend.analysis import band_acquire, cnav_decode
-    from backend.synth import _lib
     from backend.synth import signals as _sig
 
     l2c = _sig.SIGNALS["GPS_L2C"]
@@ -117,10 +116,11 @@ def _fix_from_iq_l2(iq_path, sample_format, sample_rate, eph_by_prn,
         # directly; wrap the difference into +/- half a code period. The
         # coarse acquisition lag is only sample-resolved (~0.2 chip), so
         # refine it with a parabolic peak fit at the acquired Doppler.
-        cm, _cl = _lib.code_l2c(int(prn))
         cp = band_acquire.fine_code_phase(
-            iq, sample_rate, cm.astype(float), chip_hz=_CM_CHIP_HZ,
-            code_len=_CM_LEN, dopp_hz=acq[prn]["doppler_hz"])
+            iq, sample_rate, band_acquire.l2c_cm_replica(prn),
+            chip_hz=band_acquire.L2C_TDM_CHIP_HZ,
+            code_len=band_acquire.L2C_TDM_LEN,
+            dopp_hz=acq[prn]["doppler_hz"]) / 2.0      # TDM slots -> CM chips
         err_c = ((cp - o["code_phase_chips"] + _CM_LEN / 2) % _CM_LEN
                  ) - _CM_LEN / 2
         if abs(err_c) > 0.45 * _CM_LEN:

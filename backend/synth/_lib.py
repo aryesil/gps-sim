@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-ABI_VERSION = 25
+ABI_VERSION = 26
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 if sys.platform == "darwin":
     _EXT = "dylib"
@@ -90,6 +90,8 @@ class SvSpec(ctypes.Structure):
         # ABI 25 -- transmit-time modulation clock (see abi.h).
         ("tx_time_valid", ctypes.c_int),
         ("tx_chips_offset", ctypes.c_double),
+        # ABI 26 -- Galileo E1 CBOC(6,1,1/11) sign (0 = BOC(1,1)).
+        ("cboc", ctypes.c_int),
     ]
 
 

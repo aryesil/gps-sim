@@ -137,8 +137,6 @@ def reconstruct_ephemeris(msgs: list[dict]) -> dict:
 
 # --- IQ -> convolutional symbols ---------------------------------------------
 
-_CM_LEN = 10230
-_CM_CHIP_HZ = 0.5115e6
 _SYM_S = 0.02                           # one CNAV symbol (50 sym/s), both bands
 _L2_CTR_HZ = 1_227_600_000.0
 _L5_CTR_HZ = 1_176_450_000.0
@@ -304,21 +302,19 @@ def _demod(iq, fs, code, *, chip_hz, code_len, carrier_ctr_hz, dopp_hz,
 def demod_symbols(iq, fs, prn, *, dopp_hz=None, code_phase_chips=None):
     """Hard {0,1} convolutional symbols (50 sym/s) from a GPS L2C capture."""
     from backend.analysis import band_acquire
-    from backend.synth import _lib
 
     iq = np.asarray(iq, dtype=np.complex128)
-    cm, _cl = _lib.code_l2c(int(prn))
-    cm = cm.astype(np.float64)
     if dopp_hz is None or code_phase_chips is None:
-        a = band_acquire.acquire(iq, fs, cm, chip_hz=_CM_CHIP_HZ,
-                                 code_len=_CM_LEN, dopp_hz=6000.0,
-                                 dopp_step=100.0)
+        a = band_acquire.acquire_l2c(iq, fs, prn)
         dopp_hz = a["doppler_hz"] if dopp_hz is None else dopp_hz
         code_phase_chips = (a["code_phase_chips"] if code_phase_chips is None
                             else code_phase_chips)
-    return _demod(iq, fs, cm, chip_hz=_CM_CHIP_HZ, code_len=_CM_LEN,
+    # CM/CL TDM: track the CM slots (code phase given in CM chips).
+    return _demod(iq, fs, band_acquire.l2c_cm_replica(prn),
+                  chip_hz=band_acquire.L2C_TDM_CHIP_HZ,
+                  code_len=band_acquire.L2C_TDM_LEN,
                   carrier_ctr_hz=_L2_CTR_HZ, dopp_hz=dopp_hz,
-                  code_phase_chips=code_phase_chips)
+                  code_phase_chips=2.0 * float(code_phase_chips))
 
 
 def demod_symbols_l5(iq, fs, prn, *, dopp_hz=None, code_phase_chips=None):

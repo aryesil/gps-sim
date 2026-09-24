@@ -26,7 +26,7 @@ def test_two_bands_write_two_files(tmp_path):
 
 
 def test_abi_version_is_20():
-    assert _lib.load_lib().synth_abi_version() == _lib.ABI_VERSION == 25
+    assert _lib.load_lib().synth_abi_version() == _lib.ABI_VERSION == 26
 
 
 def test_el_gain_is_monotonic_and_bounded():

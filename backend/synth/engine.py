@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import ctypes
 import datetime as dt
+import functools
 import json
 import logging
 import math
 import pathlib
 
+import numpy as np
+
 from backend import config, geometry
 from backend.analysis import nav_encoders
 from backend.ephem import ephemeris, ephemeris_fit, ephemeris_source
 from backend.gpstime import GPSTime
-from backend.synth import _lib, bands, signals
+from backend.synth import _lib, bands, pilot_codes, signals
 from backend.synth.fading import FadingConfig
 from backend.models import atmosphere
 
@@ -204,6 +207,93 @@ def _trajectory_knots(state, rx, sow, fs, block_samples, total_samples,
     return cf, cph, cr, kp
 
 
+_I8P = ctypes.POINTER(ctypes.c_int8)
+_SQRT_HALF = math.sqrt(0.5)
+
+
+def _i8(arr):
+    """int8 numpy array -> ctypes pointer (caller keeps ``arr`` alive)."""
+    return arr.ctypes.data_as(_I8P)
+
+
+def _plain_spec(entry, gain, code_arr, chip_rate_hz):
+    """A data-less, secondary-less SvSpec over ``code_arr`` with the entry's
+    geometry (nav / secondary / scaling are set by the caller)."""
+    spec = _lib.SvSpec()
+    spec.code = _i8(code_arr)
+    spec.code_len = int(code_arr.size)
+    spec.chip_rate_hz = float(chip_rate_hz)
+    spec.carrier_freq_hz = entry["carrier_doppler_hz"]
+    spec.carrier_phase0_rad = 0.0
+    spec.code_phase0_chips = entry["code_phase_chips"]
+    spec.code_doppler_hz = entry["code_doppler_hz"]
+    spec.nav_mode = 0
+    spec.nav_bits = None
+    spec.nav_nbits = 0
+    spec.nav_sym_rate_hz = 0.0
+    spec.gain = gain
+    spec.prn = entry["prn"]
+    spec.sys = _SYS_INT[entry["sys"]]
+    spec.sub_carrier_hz = 0.0
+    spec.sec_code = None
+    spec.sec_len = 0
+    spec.sec_rate_hz = 0.0
+    return spec
+
+
+def _attach_nav(spec, nav):
+    nbuf, nbits, sym_rate = nav
+    spec.nav_mode = 1
+    spec.nav_bits = nbuf
+    spec.nav_nbits = nbits
+    spec.nav_sym_rate_hz = float(sym_rate)
+    return nbuf
+
+
+def _attach_sec(spec, chips, rate_hz):
+    arr = np.asarray(chips, dtype=np.int8)
+    spec.sec_code = _i8(arr)
+    spec.sec_len = int(arr.size)
+    spec.sec_rate_hz = float(rate_hz)
+    return arr
+
+
+@functools.lru_cache(maxsize=64)
+def _l2c_tdm(prn: int):
+    """(cm_tdm[20460], cl_tdm[1534500]) at 1.023 Mcps: CM in even slots,
+    CL in odd slots, zero elsewhere. Cached: CL generation is ~0.8 M chips."""
+    cm, cl = _lib.code_l2c(prn)
+    cm_tdm = np.zeros(2 * cm.size, np.int8)
+    cm_tdm[0::2] = cm
+    cl_tdm = np.zeros(2 * cl.size, np.int8)
+    cl_tdm[1::2] = cl
+    cm_tdm.flags.writeable = False
+    cl_tdm.flags.writeable = False
+    return cm_tdm, cl_tdm
+
+
+def _pilot_spec_for(entry, gain):
+    """Dataless L5-band pilot: GPS/QZSS Q5 + NH20, Galileo E5a-Q + CS100,
+    BeiDou B2a-P + its 100-chip Weil secondary; one secondary chip per 1 ms
+    primary period, clocked on transmit time like the data component.
+    Tagged ``_phase_off`` = pi/2: the run loop puts it in quadrature."""
+    sysc, prn = entry["sys"], int(entry["prn"])
+    try:
+        if sysc in ("G", "J"):
+            prim, sec = _lib.code_l5(prn)[1], pilot_codes.NH20
+        elif sysc == "E":
+            prim, sec = _lib.code_e5a(prn)[1], pilot_codes.e5aq_secondary(prn)
+        else:
+            prim, sec = _lib.code_b2a(prn)[1], pilot_codes.b2ap_secondary(prn)
+    except ValueError as exc:
+        return None, f"{sysc}{prn}: pilot code rejected ({exc}), skipped"
+    prim = np.ascontiguousarray(prim, dtype=np.int8)
+    spec = _plain_spec(entry, gain, prim, 10.23e6)
+    sbuf = _attach_sec(spec, sec, 1000.0)
+    spec._phase_off = math.pi / 2.0
+    return spec, [prim, sbuf]
+
+
 def _sv_spec_for(entry, gain, nav=None):
     """Turn one ``constellation_multi`` entry into a ready ``_lib.SvSpec`` plus
     the ctypes buffers that must outlive it (``keep``). The full multi-system
@@ -211,40 +301,31 @@ def _sv_spec_for(entry, gain, nav=None):
     sig = entry["signal_id"]
     sysc = entry["sys"]
 
-    # GPS / QZSS L2C: the CM ranging code at 511.5 kcps (10230 chips, 20 ms
-    # period), CNAV riding it as one 50 Hz data symbol per CM period (like
-    # LNAV on L1). The CL pilot and the CM/CL chip interleave are not needed
-    # for the data-signal closed-loop fix and are left out of Phase 1.
+    # Dataless L5-band pilots (GPS/QZSS Q5, Galileo E5a-Q, BeiDou B2a-P):
+    # registered as their own signals (nav_sym_hz == 0) next to the data
+    # component; the run loop puts them in quadrature and splits the power.
+    if (getattr(sig, "nav_sym_hz", 0) == 0
+            and getattr(sig, "band", "L1") == "L5" and sysc in "GJEC"):
+        return _pilot_spec_for(entry, gain)
+
+    # GPS / QZSS L2C: CM and CL chip-by-chip time-multiplexed at 1.023 Mcps
+    # (IS-GPS-200 3.3.2.4): even slots CM (10230 chips, 20 ms), odd slots
+    # CL (767250 chips, 1.5 s). Built as two components on the same carrier,
+    # each zero in the other's slots: CM carries CNAV (one 50 Hz symbol per
+    # CM period), CL is dataless and aligned to the 1.5 s X1 epoch through
+    # the transmit-time clock (run loop, ``_cl_align``). Geometry is in CM
+    # units (511.5 kcps); ``_chip_scale`` doubles it into TDM slots.
     if sysc in ("G", "J") and getattr(sig, "band", "L1") == "L2":
-        cm, _cl = _lib.code_l2c(entry["prn"])
-        spec = _lib.SvSpec()
-        pbuf = (ctypes.c_int8 * 10230)(*cm.tolist())
-        spec.code = pbuf
-        keep = [pbuf]
-        spec.code_len = 10230
-        spec.chip_rate_hz = 0.5115e6
-        spec.carrier_freq_hz = entry["carrier_doppler_hz"]
-        spec.carrier_phase0_rad = 0.0
-        spec.code_phase0_chips = entry["code_phase_chips"]
-        spec.code_doppler_hz = entry["code_doppler_hz"]
-        spec.nav_mode = 0
-        spec.nav_bits = None
-        spec.nav_nbits = 0
-        spec.nav_sym_rate_hz = 0.0
+        cm_tdm, cl_tdm = _l2c_tdm(entry["prn"])
+        spec = _plain_spec(entry, gain, cm_tdm, 1.023e6)
+        keep = [cm_tdm]
         if nav is not None:
-            nbuf, nbits, sym_rate = nav
-            spec.nav_mode = 1
-            spec.nav_bits = nbuf
-            spec.nav_nbits = nbits
-            spec.nav_sym_rate_hz = float(sym_rate)
-            keep.append(nbuf)
-        spec.gain = gain
-        spec.prn = entry["prn"]
-        spec.sys = _SYS_INT[sysc]
-        spec.sub_carrier_hz = 0.0
-        spec.sec_code = None
-        spec.sec_len = 0
-        spec.sec_rate_hz = 0.0
+            keep.append(_attach_nav(spec, nav))
+        spec._chip_scale = 2.0
+        cl = _plain_spec(entry, gain, cl_tdm, 1.023e6)
+        cl._chip_scale = 2.0
+        cl._cl_align = True
+        spec._companions = [(cl, [cl_tdm])]
         return spec, keep
 
     # GPS / QZSS L5: the I5 ranging code at 10.23 Mcps (10230 chips, 1 ms
@@ -254,9 +335,6 @@ def _sv_spec_for(entry, gain, nav=None):
     # pilot is not needed for the data-signal closed-loop fix and is left
     # out (as the CL pilot is on L2C).
     if sysc in ("G", "J") and getattr(sig, "band", "L1") == "L5":
-        if getattr(sig, "nav_sym_hz", 0) == 0:
-            return None, (f"{sysc}{entry['prn']}: L5 Q5 pilot component "
-                          "not emitted (data-signal fix path), skipped")
         i5, _q5 = _lib.code_l5(entry["prn"])
         spec = _lib.SvSpec()
         pbuf = (ctypes.c_int8 * 10230)(*i5.tolist())
@@ -300,9 +378,6 @@ def _sv_spec_for(entry, gain, nav=None):
     # dataless pilot is not needed for the data-signal closed-loop fix and
     # is left out, mirroring Q5 on L5 and CL on L2C.
     if sysc == "E" and getattr(sig, "band", "L1") == "L5":
-        if getattr(sig, "nav_sym_hz", 0) == 0:
-            return None, (f"{sysc}{entry['prn']}: E5a-Q pilot component "
-                          "not emitted (data-signal fix path), skipped")
         ei, _eq = _lib.code_e5a(entry["prn"])
         spec = _lib.SvSpec()
         pbuf = (ctypes.c_int8 * 10230)(*ei.tolist())
@@ -347,9 +422,6 @@ def _sv_spec_for(entry, gain, nav=None):
     # needed for the data-signal closed-loop fix and is left out, mirroring
     # Q5/E5a-Q/CL.
     if sysc == "C" and getattr(sig, "band", "L1") == "L5":
-        if getattr(sig, "nav_sym_hz", 0) == 0:
-            return None, (f"{sysc}{entry['prn']}: B2a pilot component "
-                          "not emitted (data-signal fix path), skipped")
         bd, _bp = _lib.code_b2a(entry["prn"])
         spec = _lib.SvSpec()
         pbuf = (ctypes.c_int8 * 10230)(*bd.tolist())
@@ -446,6 +518,9 @@ def _sv_spec_for(entry, gain, nav=None):
     spec.prn = entry["prn"]
     spec.sys = _SYS_INT[sysc]
     spec.sub_carrier_hz = sig.sub_carrier_hz
+    if sysc == "E" and sig.sub_carrier_hz > 0.0:
+        # CBOC(6,1,1/11) sign: E1-B takes +sc(6,1), E1-C takes -sc(6,1).
+        spec._cboc = -1 if code_sys == 6 else 1
     if sec_len and sec is not None:
         sbuf = (ctypes.c_int8 * sec_len)(*sec.tolist())
         spec.sec_code = sbuf
@@ -458,8 +533,64 @@ def _sv_spec_for(entry, gain, nav=None):
         spec.sec_code = None
         spec.sec_len = 0
         spec.sec_rate_hz = 0.0
+    if sysc == "E" and nav is not None:
+        # Galileo E1 OS = (E1-B - E1-C) / sqrt(2) on one carrier (OS SIS ICD
+        # 2.3.3): the E1-C pilot + CS25 rides with the E1-B data component,
+        # half the power each, so a receiver tracking the pilot finds it.
+        try:
+            c_prim, c_sec = _lib.code(6, entry["prn"], prim_len, 25)
+        except ValueError:
+            c_prim = None
+        if c_prim is not None:
+            spec.gain = gain * _SQRT_HALF
+            c_prim = np.ascontiguousarray(c_prim, dtype=np.int8)
+            pilot = _plain_spec(entry, -gain * _SQRT_HALF, c_prim,
+                                sig.chip_rate_hz)
+            pilot.sub_carrier_hz = sig.sub_carrier_hz
+            pilot._cboc = -1
+            c_sbuf = _attach_sec(pilot, c_sec, 250.0)
+            spec._companions = [(pilot, [c_prim, c_sbuf])]
     # spec.fading left zeroed: SvSpec() zero-inits and FadingCfg model 0 = off.
     return spec, keep
+
+
+# Galileo E1 CBOC(6,1,1/11): the sc(6,1) term has 12 sub-chips per 1.023 MHz
+# chip (12.276 MHz). Below this rate it aliases, so plain BOC(1,1) is used.
+_CBOC_MIN_FS = 14e6
+
+
+def _finish_component(spec, entry, sow, knots):
+    """Transmit-time clock and trajectory knots for one mixer component of
+    ``entry``. Components may carry (set by ``_sv_spec_for``):
+
+    * ``_phase_off`` -- carrier phase offset (rad), pi/2 for a quadrature
+      pilot;
+    * ``_chip_scale`` -- component chips per geometry chip (L2C TDM: 2, the
+      1.023 Mcps slots of the 511.5 kcps CM geometry);
+    * ``_cl_align`` -- index the code on transmit time (chips since the nav
+      stream's symbol 0, whose epoch is a multiple of 1.5 s) instead of the
+      geometry code phase, for L2C CL whose period exceeds the CM period.
+    """
+    off = float(getattr(spec, "_phase_off", 0.0))
+    scale = float(getattr(spec, "_chip_scale", 1.0))
+    _attach_tx_clock(spec, entry, sow)
+    spec.tx_chips_offset *= scale
+    spec.carrier_phase0_rad += off
+    if scale != 1.0:
+        spec.code_phase0_chips *= scale
+        spec.code_doppler_hz *= scale
+    tx_align = spec.tx_chips_offset if getattr(spec, "_cl_align", False) else 0.0
+    if tx_align:
+        # Mixer code index at sample 0 is -code_phase0 mod L; make it the
+        # transmit-time chip count u0 = eff + tx_chips_offset.
+        L0 = int(entry["signal_id"].code_len * scale)
+        eff = (L0 - spec.code_phase0_chips % L0) % L0
+        spec.code_phase0_chips = -(eff + tx_align) % spec.code_len
+    if knots is not None:
+        cf, cph, cr, kp = knots
+        _lib.attach_trajectory(
+            spec, _BLOCK_SAMPLES, cf, [p + off for p in cph],
+            [r * scale for r in cr], [k * scale + tx_align for k in kp])
 
 
 def _attach_tx_clock(spec, entry, sow):
@@ -870,9 +1001,16 @@ def run(req, progress_cb=None) -> pathlib.Path:
     for plan in plans:
         sv_list = []
         band_sys = set()
+        # (sys, prn, band) with a registered dataless pilot entry: data and
+        # pilot share the satellite's power equally.
+        piloted = {(e["sys"], e["prn"], e["signal_id"].band)
+                   for e in plan.entries
+                   if getattr(e["signal_id"], "nav_sym_hz", 0) == 0}
         for e in plan.entries:
             el_deg = float(e.get("el_deg", 90.0))
             static_gain = _el_gain(el_deg)
+            if (e["sys"], e["prn"], e["signal_id"].band) in piloted:
+                static_gain *= _SQRT_HALF
             spec, keep = _sv_spec_for(
                 e, static_gain,
                 nav=nav_streams.get((e["sys"], e["prn"], e["signal_id"].band)))
@@ -880,11 +1018,12 @@ def run(req, progress_cb=None) -> pathlib.Path:
                 _log.warning("engine.run: %s", keep)
                 warnings.append(str(keep))
                 continue
+            knots = None
             if ((getattr(req, "continuous_doppler", True) or rx_fn is not None)
                     and e.get("_state") is not None):
                 sig0 = e["signal_id"]
                 carr_off = spec.carrier_freq_hz - float(e["carrier_doppler_hz"])
-                cf, cph, cr, kp = _trajectory_knots(
+                knots = _trajectory_knots(
                     e["_state"], rx, sow, plan.fs, _BLOCK_SAMPLES,
                     int(round(plan.fs * req.duration_s)),
                     sig0.chip_rate_hz, e.get("_carrier_hz", sig0.carrier_hz),
@@ -892,14 +1031,17 @@ def run(req, progress_cb=None) -> pathlib.Path:
                     signal=sig0, carrier_offset_hz=carr_off, rx_fn=rx_fn,
                     atmo_fn=e.get("_atmo_fn"),
                     doppler_scale=e.get("_doppler_scale", 1.0))
-                _lib.attach_trajectory(spec, _BLOCK_SAMPLES, cf, cph, cr, kp)
-            _attach_tx_clock(spec, e, sow)
-            spec.fading.model = fading_model_int
-            spec.fading.sigma_db = cfg.sigma_db
-            spec.fading.coherence_s = cfg.coherence_s
-            spec.fading.seed = cfg.seed
-            sv_list.append(spec)
-            keep_alive.append(keep)
+            comps = [(spec, keep)] + list(getattr(spec, "_companions", ()))
+            for c, c_keep in comps:
+                _finish_component(c, e, sow, knots)
+                if plan.fs >= _CBOC_MIN_FS:
+                    c.cboc = int(getattr(c, "_cboc", 0))
+                c.fading.model = fading_model_int
+                c.fading.sigma_db = cfg.sigma_db
+                c.fading.coherence_s = cfg.coherence_s
+                c.fading.seed = cfg.seed
+                sv_list.append(c)
+                keep_alive.append(c_keep)
             band_sys.add(e["sys"])
             sig = e["signal_id"]
             sv_meta = {"sys": e["sys"], "prn": e["prn"],

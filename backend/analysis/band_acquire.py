@@ -86,9 +86,26 @@ def fine_code_phase(iq, fs, code, *, chip_hz, code_len, dopp_hz,
     return float(((p + delta) * chip_hz / fs) % code_len)
 
 
-def acquire_l2c(iq, fs, prn, *, center_hz=0.0) -> dict:
-    """Acquire GPS / QZSS L2C on the CM component (10230 chips, 511.5 kcps,
-    20 ms period)."""
+# L2C is CM and CL time-multiplexed chip by chip at 1.023 Mcps (IS-GPS-200
+# 3.3.2.4): the CM replica holds each CM chip in the even slot and zero in
+# the odd (CL) slot. A continuous 511.5 kcps CM replica against that signal
+# loses 6 dB and biases the code phase by a quarter CM chip (~150 m).
+L2C_TDM_CHIP_HZ = 1.023e6
+L2C_TDM_LEN = 20460
+
+
+def l2c_cm_replica(prn: int) -> np.ndarray:
+    """TDM CM replica (float64, 20460 slots at 1.023 Mcps)."""
     cm, _cl = _lib.code_l2c(int(prn))
-    return acquire(iq, fs, cm.astype(np.float64), chip_hz=0.5115e6,
-                   code_len=10230, center_hz=center_hz, dopp_step=100.0)
+    rep = np.zeros(L2C_TDM_LEN, dtype=np.float64)
+    rep[0::2] = cm
+    return rep
+
+
+def acquire_l2c(iq, fs, prn, *, center_hz=0.0) -> dict:
+    """Acquire GPS / QZSS L2C on the CM component (TDM replica, 20 ms
+    period). ``code_phase_chips`` is reported in CM chips (511.5 kcps)."""
+    r = acquire(iq, fs, l2c_cm_replica(prn), chip_hz=L2C_TDM_CHIP_HZ,
+                code_len=L2C_TDM_LEN, center_hz=center_hz, dopp_step=100.0)
+    r["code_phase_chips"] = r["code_phase_chips"] / 2.0
+    return r

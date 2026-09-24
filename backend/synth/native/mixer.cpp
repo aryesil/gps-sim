@@ -5,6 +5,10 @@
 
 namespace gs {
 
+// CBOC(6,1,1/11) weights: sqrt(10/11), sqrt(1/11).
+static constexpr float kCbocA = 0.95346258924559231f;
+static constexpr float kCbocB = 0.30151134457776363f;
+
 #if defined(__x86_64__) && defined(__GNUC__) && !defined(__APPLE__) && !defined(_WIN32)
 // target_clones needs ifunc (ELF/Mach-O symbol resolvers); MinGW's PE-COFF
 // target does not support it -- the plain function below still compiles
@@ -75,6 +79,7 @@ void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
         // parallel chunks (final review B1 discipline). An independent nominal-
         // rate NCO slipped ~code_doppler chips/s vs the code.
         const bool use_boc = sv.sub_carrier_hz > 0.0;
+        const int cboc = sv.cboc;
         const int8_t *__restrict sec = sv.sec_code;
         const int sec_len = sv.sec_len;
         // Transmit-time modulation clock (ABI 25): u = cp + tx_off counts
@@ -116,7 +121,15 @@ void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
             }
             if (use_boc) {
                 int64_t hc = static_cast<int64_t>(std::floor(2.0 * cp));
-                if (hc & 1) chip = -chip;
+                if (cboc != 0) {
+                    // CBOC(6,1,1/11): sc(6,1) has 12 half-periods per chip.
+                    int64_t hc6 = static_cast<int64_t>(std::floor(12.0 * cp));
+                    const float s11 = (hc & 1) ? -1.0f : 1.0f;
+                    const float s61 = (hc6 & 1) ? -1.0f : 1.0f;
+                    chip *= kCbocA * s11 + static_cast<float>(cboc) * kCbocB * s61;
+                } else if (hc & 1) {
+                    chip = -chip;
+                }
             }
             float navsym = use_tx
                 ? static_cast<float>(nav_symbol_at(

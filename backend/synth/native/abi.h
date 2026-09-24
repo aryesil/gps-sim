@@ -178,6 +178,11 @@ typedef struct {
     // propagation time exactly like the ranging code.
     int    tx_time_valid;
     double tx_chips_offset;
+    // ABI 26 -- Galileo E1 CBOC(6,1,1/11) (OS SIS ICD 2.3.3). With
+    // sub_carrier_hz > 0: cboc == 0 keeps the BOC(1,1) sign sub-carrier;
+    // +1 / -1 multiplies the chip by  a*sc(1,1) +/- b*sc(6,1)  with
+    // a = sqrt(10/11), b = sqrt(1/11) ('+' E1-B data, '-' E1-C pilot).
+    int    cboc;
 } SvSpec;
 // Whole-run spec. Field order frozen -- _lib.py mirrors it exactly.
 typedef struct {
