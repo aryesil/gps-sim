@@ -48,6 +48,59 @@ def viterbi_free_decode(sym) -> list[int]:
     return out
 
 
+def _viterbi_tables():
+    nxt = np.zeros((64, 2), dtype=np.int64)
+    out = np.zeros((64, 2, 2), dtype=np.int64)
+    for st in range(64):
+        for b in (0, 1):
+            r = ((st << 1) | b) & 0x7F
+            nxt[st, b] = r & 0x3F
+            out[st, b] = (_parity(r & _G1), _parity(r & _G2) ^ 1)
+    return nxt, out
+
+
+_NXT, _OUT = _viterbi_tables()
+
+
+def viterbi_decode(sym) -> list[int]:
+    """Hard-decision Viterbi for the K=7 CNAV code (same convention as
+    cnav_encode._Conv). Unlike :func:`viterbi_free_decode` it needs no known
+    starting state: a capture begins mid-stream with the continuous encoder
+    in an unknown state, so every state starts at metric 0. ``sym`` must
+    start on a symbol-pair boundary; callers try both pair offsets."""
+    s = np.asarray([int(x) & 1 for x in sym], dtype=np.int64)
+    n = s.size // 2
+    if n == 0:
+        return []
+    pairs = s[:2 * n].reshape(n, 2)
+    metric = np.zeros(64)
+    # predecessor bookkeeping: for each step, best (prev state, bit) per state
+    prev = np.zeros((n, 64), dtype=np.int64)
+    bit = np.zeros((n, 64), dtype=np.int8)
+    src = np.repeat(np.arange(64), 2)
+    bsrc = np.tile([0, 1], 64)
+    dst = _NXT[src, bsrc]
+    for k in range(n):
+        cost = (metric[src]
+                + (_OUT[src, bsrc, 0] != pairs[k, 0])
+                + (_OUT[src, bsrc, 1] != pairs[k, 1]))
+        order = np.lexsort((cost, dst))            # by dst, then cost
+        first = np.ones(order.size, dtype=bool)
+        first[1:] = dst[order][1:] != dst[order][:-1]
+        win = order[first]
+        new = np.full(64, np.inf)
+        new[dst[win]] = cost[win]
+        prev[k, dst[win]] = src[win]
+        bit[k, dst[win]] = bsrc[win]
+        metric = new
+    st = int(np.argmin(metric))
+    bits = np.zeros(n, dtype=np.int8)
+    for k in range(n - 1, -1, -1):
+        bits[k] = bit[k, st]
+        st = int(prev[k, st])
+    return bits.tolist()
+
+
 def _u(bits, lo, n):
     v = 0
     for b in bits[lo:lo + n]:
@@ -73,9 +126,11 @@ def _decode_payload(msg_type: int, payload: list[int]) -> dict:
 
 def decode_messages(sym01) -> list[dict]:
     sym01 = list(int(x) & 1 for x in sym01)
-    for flip in (0, 1):
-        stream = [x ^ flip for x in sym01]
-        bits = viterbi_free_decode(stream)
+    # A capture starts mid-stream: the symbol-pair phase and the carrier
+    # sign are both unknown, so try all four.
+    for flip, pair_off in ((0, 0), (0, 1), (1, 0), (1, 1)):
+        stream = [x ^ flip for x in sym01[pair_off:]]
+        bits = viterbi_decode(stream)
         msgs: list[dict] = []
         i = 0
         while i + L.MSG_BITS <= len(bits):
@@ -195,11 +250,21 @@ def _demod(iq, fs, code, *, chip_hz, code_len, carrier_ctr_hz, dopp_hz,
 
     n_per_sym = int(round(npp / max(spp, 1)))          # primary periods / symbol
 
+    # Symbols start on a primary-code epoch (ICD), which sits at the
+    # acquisition lag, not at sample 0. Start every integration window
+    # there: a window opened at sample 0 straddles a symbol boundary
+    # (for L2C, one symbol per code period, the whole window straddles it)
+    # and sums through every data sign flip.
+    e0 = int(math.ceil((code_len - cp0) % code_len / chip_hz * fs))
+
     def _build(off_samp, sec_roll, nsym_cap=None):
+        off_samp += e0
         base = iq[off_samp:]
         nsym = base.size // npp
         if nsym_cap is not None:
             nsym = min(nsym, nsym_cap)
+        # replica chip at the (shifted) window start
+        c_start = (cp0 + chip_hz * off_samp / fs) % code_len
         tt = np.arange(nsym * npp, dtype=np.float64) / fs
         seg = base[:nsym * npp]
         srep = None
@@ -211,7 +276,7 @@ def _demod(iq, fs, code, *, chip_hz, code_len, carrier_ctr_hz, dopp_hz,
         def _subcorr(dopp0, drift=0.0):
             ramp = dopp0 * tt + 0.5 * drift * tt * tt
             wipe = np.exp(-2j * np.pi * ramp)
-            cph = cp0 + chip_hz * tt + (chip_hz / carrier_ctr_hz) * ramp
+            cph = c_start + chip_hz * tt + (chip_hz / carrier_ctr_hz) * ramp
             idx = (np.floor(cph).astype(np.int64)) % code_len
             rep = code[idx] if srep is None else code[idx] * srep
             prod = (seg * wipe * rep).reshape(nsym, m, npp // m)

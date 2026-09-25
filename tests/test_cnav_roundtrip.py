@@ -54,3 +54,18 @@ def test_ephemeris_reconstruction_roundtrip(gps_rec):
 def test_reconstruction_needs_10_and_11():
     with pytest.raises(ValueError):
         D.reconstruct_ephemeris([{"type": 30, "crc_ok": True, "fields": {}}])
+
+
+def test_decode_messages_from_a_mid_stream_capture(gps_rec):
+    """A capture starts mid-stream: odd symbol-pair phase, the continuous
+    encoder in an unknown state, inverted carrier, a few symbol errors.
+    The Viterbi decoder must still recover the following messages."""
+    arr, _ = C.nav_stream(gps_rec, {}, _WEEK, _SOW, 60, prn=1)
+    sym = _sym01(arr)[301:]                   # mid-message, odd pair phase
+    sym = [s ^ 1 for s in sym]                # 180 deg carrier ambiguity
+    for k in range(50, len(sym), 400):        # isolated hard errors
+        sym[k] ^= 1
+    msgs = D.decode_messages(sym)
+    types = {m["type"] for m in msgs if m["crc_ok"]}
+    assert {11, 30} <= types, types
+    assert all(m["prn"] == 1 for m in msgs)
