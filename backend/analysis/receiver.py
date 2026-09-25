@@ -47,6 +47,15 @@ _CM_LEN = 10230
 _CM_CHIP_HZ = 0.5115e6
 _L5_LEN = 10230
 _L5_CHIP_HZ = 10.23e6
+# Acquisition threshold for the L5-band blind scan (GPS/QZSS I5, Galileo
+# E5a-I, BeiDou B2a, NavIC L5-SPS). One 1 ms period is fs*1ms code-phase
+# bins x 121 Doppler bins, so the largest noise-only cell already sits
+# ~12-15 dB above the median (measured on absent PRNs at 2.1 and 25 Msps).
+# A 9 dB threshold let every scanned PRN through and each false hit then
+# paid for a full 26-44 s nav demod, which is what kept the L5/E5a/B2a
+# closed-loop tests from finishing. Real satellites measure 21-35 dB, so
+# 18 dB separates the two.
+_L5_ACQ_DB = 18.0
 _NAVIC_LEN = 1023
 _NAVIC_CHIP_HZ = 1.023e6
 
@@ -227,14 +236,14 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
         r = band_acquire.acquire(iq, sample_rate, i5.astype(float),
                                  chip_hz=_L5_CHIP_HZ, code_len=_L5_LEN,
                                  dopp_step=100.0, nperiods=1)
-        if r["metric_db"] > 9.0:
+        if r["metric_db"] > _L5_ACQ_DB:
             acq[("G", prn)] = r
     for prn in gal_scan:
         ei, _eq = _lib.code_e5a(int(prn))
         r = band_acquire.acquire(iq, sample_rate, ei.astype(float),
                                  chip_hz=_L5_CHIP_HZ, code_len=_L5_LEN,
                                  dopp_step=100.0, nperiods=1)
-        if r["metric_db"] > 9.0:
+        if r["metric_db"] > _L5_ACQ_DB:
             acq[("E", prn)] = r
     for prn in navic_scan:
         ni = _lib.code_navic(int(prn))
@@ -244,14 +253,14 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
         r = band_acquire.acquire(iq, sample_rate, ni.astype(float),
                                  chip_hz=_NAVIC_CHIP_HZ, code_len=_NAVIC_LEN,
                                  dopp_step=100.0, nperiods=1)
-        if r["metric_db"] > 9.0:
+        if r["metric_db"] > _L5_ACQ_DB:
             acq[("I", prn)] = r
     for prn in bds_scan:
         bd, _bp = _lib.code_b2a(int(prn))
         r = band_acquire.acquire(iq, sample_rate, bd.astype(float),
                                  chip_hz=_L5_CHIP_HZ, code_len=_L5_LEN,
                                  dopp_step=100.0, nperiods=1)
-        if r["metric_db"] > 9.0:
+        if r["metric_db"] > _L5_ACQ_DB:
             acq[("C", prn)] = r
 
     decoded, nav_decode = {}, {}

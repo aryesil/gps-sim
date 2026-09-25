@@ -36,3 +36,15 @@ def test_fix_from_iq_band_param_guard():
     with pytest.raises(ValueError):
         receiver.fix_from_iq("/nonexistent.bin", "int8", 5e6, {}, 0.0,
                              band="L9")
+
+
+def test_l5_blind_scan_acquires_nothing_on_pure_noise(tmp_path):
+    # The largest of the ~3M noise-only acquisition cells sits ~13-15 dB
+    # above the median; a threshold below that "acquires" every scanned
+    # PRN and sends each one into a full nav demod.
+    rng = np.random.default_rng(7)
+    raw = np.clip(np.round(rng.standard_normal(2 * 75_000) * 20), -127, 127)
+    path = tmp_path / "noise_l5.bin"
+    raw.astype(np.int8).tofile(path)
+    res = receiver.fix_from_iq(path, "int8", 25e6, {}, 0.0, band="L5")
+    assert res["nav_decode"] == {}
