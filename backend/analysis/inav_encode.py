@@ -9,9 +9,9 @@ convolutional coding (G1 = 0o171, G2 = 0o133 with G2 inverted) over a
 
 Implemented word types: 1-5 (ephemeris + clock + iono/BGD/GST) plus type 0
 (spare/time), transmitted one per page in a repeating 6-page cycle so a
-receiver recovers the full ephemeris within 12 s. Reserved / SAR / SISA
-fields are transmitted as zero. A 24-bit CRC-24Q covers the two page
-parts' type+data fields; :func:`check_page_crc` re-verifies it.
+receiver recovers the full ephemeris within 12 s. Reserved / SAR fields
+are transmitted as zero; SISA carries the RINEX value. A 24-bit CRC-24Q
+covers the two page parts' type+data fields; :func:`check_page_crc` re-verifies it.
 
 No Galileo receiver ships in this repo; correctness is covered by the
 encoder unit tests (sync offsets, FEC reference vector, interleaver
@@ -120,6 +120,24 @@ def _iodnav(eph: dict) -> int:
     return int(_f(eph.get("iode", 0))) & 0x3FF
 
 
+def sisa_index(metres) -> int:
+    """SISA (E1,E5b) index for a RINEX SISA value in metres (OS SIS ICD
+    Table 89): 1 cm steps to 0.49 m, 2 cm to 0.99 m, 4 cm to 1.99 m, 16 cm
+    to 6 m. A missing value maps to 107 (3.12 m, the nominal broadcast),
+    never to 255 (NAPA), which receivers treat as unusable."""
+    m = _f(metres)
+    if m <= 0.0:
+        return 107
+    cm = m * 100.0
+    if cm < 50.0:
+        return int(round(cm))
+    if cm < 100.0:
+        return 50 + int(round((cm - 50.0) / 2.0))
+    if cm < 200.0:
+        return 75 + int(round((cm - 100.0) / 4.0))
+    return min(125, 100 + int(round((cm - 200.0) / 16.0)))
+
+
 def word_type_1(eph, tow):
     b = bits_of(1, 6) + bits_of(_iodnav(eph), 10)
     b += bits_of(int(round(_f(eph.get("toe")) / 60.0)) & 0x3FFF, 14)
@@ -148,7 +166,7 @@ def word_type_3(eph, tow):
     b += bits_of(twos(eph.get("cus"), 2 ** -29, 16), 16)
     b += bits_of(twos(eph.get("crc"), 2 ** -5, 16), 16)
     b += bits_of(twos(eph.get("crs"), 2 ** -5, 16), 16)
-    b += bits_of(0, 8)                       # SISA
+    b += bits_of(sisa_index(eph.get("sisa")), 8)             # SISA(E1,E5b)
     return b
 
 
@@ -169,8 +187,10 @@ def word_type_5(eph, tow, week):
     b = bits_of(5, 6)
     b += bits_of(0, 11) + bits_of(0, 11) + bits_of(0, 14)      # iono a_i0..2
     b += bits_of(0, 5)                                          # region flags
-    b += bits_of(twos(eph.get("tgd", 0.0), 2 ** -32, 10), 10)  # BGD E1-E5a
-    b += bits_of(twos(eph.get("tgd", 0.0), 2 ** -32, 10), 10)  # BGD E1-E5b
+    bgd_b = eph.get("tgd", 0.0)
+    bgd_a = eph.get("tgd_e5a", bgd_b)
+    b += bits_of(twos(bgd_a, 2 ** -32, 10), 10)                # BGD E1-E5a
+    b += bits_of(twos(bgd_b, 2 ** -32, 10), 10)                # BGD E1-E5b
     b += bits_of(0, 2) + bits_of(0, 2) + [0] + [0]             # HS/DVS
     b += bits_of(int(week) & 0xFFF, 12)
     b += bits_of(int(tow) & 0xFFFFF, 20)
@@ -179,7 +199,9 @@ def word_type_5(eph, tow, week):
 
 
 def word_type_0(eph, tow, week):
-    b = bits_of(0, 6) + bits_of(0, 2) + bits_of(0, 88)
+    # Time field '10': WN/TOW below are valid (OS SIS ICD Table 50);
+    # '00' told receivers to ignore them.
+    b = bits_of(0, 6) + bits_of(2, 2) + bits_of(0, 88)
     b += bits_of(int(week) & 0xFFF, 12)
     b += bits_of(int(tow) & 0xFFFFF, 20)
     return b

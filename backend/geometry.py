@@ -339,7 +339,8 @@ def group_delay_bias_s(sysc: str, band: str, rec: dict | None) -> float:
     * GPS/QZSS (IS-GPS-200 20.3.3.3.3.2 / 30.3.3.3.1.1, IS-GPS-705):
       L1 C/A ``-TGD``, L2C ``-TGD + ISC_L2C``, L5 I5 ``-TGD + ISC_L5I5``.
     * Galileo (OS SIS ICD 5.1.5): E1 ``-BGD(E1,E5b)``, E5a
-      ``-(f_E1/f_E5a)^2 BGD(E1,E5a)``. Records carry one ``tgd`` field.
+      ``-(f_E1/f_E5a)^2 BGD(E1,E5a)``. Records carry BGD(E1,E5b) as ``tgd``
+      and BGD(E1,E5a) as ``tgd_e5a``.
     * BeiDou: B1I ``-TGD1``; B2a data ``-TGD_B2ap + ISC_B2ad``.
     * NavIC ``-TGD``. GLONASS / SBAS: none.
     """
@@ -360,7 +361,7 @@ def group_delay_bias_s(sysc: str, band: str, rec: dict | None) -> float:
         return -g("tgd")
     if sysc == "E":
         if band == "L5":
-            return -((config.L1_HZ / config.L5_HZ) ** 2) * g("tgd")
+            return -((config.L1_HZ / config.L5_HZ) ** 2) * g("tgd_e5a", g("tgd"))
         return -g("tgd")
     if sysc == "C":
         if band == "L5":

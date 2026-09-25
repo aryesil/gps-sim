@@ -24,7 +24,9 @@ SIGNALS = {
     "SBAS_L1": Signal(config.L1_HZ, 1.023e6, 1023, None, 250.0, "L1", sys="S"),
     "GAL_E1": Signal(config.L1_HZ, 1.023e6, 4092, (1, 1), 250.0, "L1", sys="E",
                      sub_carrier_hz=1.023e6),
-    "BDS_B1I": Signal(config.L1_HZ, 2.046e6, 2046, None, 50.0, "L1", sys="C"),
+    # B1I shares the "L1" band id with GPS/Galileo but sits on its own
+    # carrier; bands.band_centre widens the L1 output to span both.
+    "BDS_B1I": Signal(config.B1I_HZ, 2.046e6, 2046, None, 50.0, "L1", sys="C"),
     "GLO_G1": Signal(1_602_000_000.0, 0.511e6, 511, None, 100.0, "G1", sys="R"),
     # --- L2 band (1227.60 MHz) ---------------------------------------------
     "GPS_L2C": Signal(config.L2_HZ, 0.5115e6, 10230, None, 50.0, "L2"),

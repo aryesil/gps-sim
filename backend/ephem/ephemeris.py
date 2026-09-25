@@ -35,6 +35,17 @@ _VARMAP_KEPLER = dict(_VARMAP)   # GPS map; QZSS + Galileo + BeiDou share it
 # TGD1/TGD2, AODE/AODC, SatH1); without this TGD1 was silently dropped.
 _VARMAP_BDS = dict(_VARMAP_KEPLER, tgd="TGD1", tgd2="TGD2", iode="AODE",
                    iodc="AODC", health="SatH1")
+# Galileo records (RINEX 3 GAL): IODnav, BGD(E1,E5b) for I/NAV E1 users,
+# BGD(E1,E5a) for F/NAV E5a users, SISA in metres, GALWeek. Without this
+# map IODnav/BGD/SISA were silently absent and every word went out as 0.
+_VARMAP_GAL = dict(_VARMAP_KEPLER, iode="IODnav", tgd="BGDe5b",
+                   tgd_e5a="BGDe5a", sisa="SISA", gps_week="GALWeek")
+_VARMAP_GAL.pop("iodc")
+
+# RINEX week field per Keplerian system, and its offset to the GPS week.
+# GALWeek is already aligned to the GPS week (RINEX 3.04 Table A8); BDTWeek
+# counts from 2006-01-01 and BDT runs 14 s behind GPS time.
+_WEEK_VAR = {"E": ("GALWeek", 0, 0.0), "C": ("BDTWeek", 1356, 14.0)}
 
 # ECEF-state systems (GLONASS "R", SBAS "S"): position/velocity/accel vector
 # plus clock terms, expressed directly in km / km s^-1 / km s^-2 by RINEX 3.
@@ -240,8 +251,9 @@ def _pick_epoch(sub, noon_gps: float, sysc: str):
         best_i, best_d = 0, None
         for i in range(int(sub.time.size)):
             r = sub.isel(time=i)
-            wk = float(r["GPSWeek"].values) if "GPSWeek" in r else 0.0
-            toe = float(r["Toe"].values) if "Toe" in r else 0.0
+            var, wk_off, t_off = _WEEK_VAR.get(sysc, ("GPSWeek", 0, 0.0))
+            wk = float(r[var].values) + wk_off if var in r else 0.0
+            toe = float(r["Toe"].values) + t_off if "Toe" in r else 0.0
             d = abs(wk * _WEEK_SECONDS + toe - noon_gps)
             if best_d is None or d < best_d:
                 best_i, best_d = i, d
@@ -407,7 +419,7 @@ def _parse_rinex_multi(path: str | pathlib.Path, systems=("G",),
             continue
         rec = _pick_epoch(sub, noon_gps, s)
         e: dict = {"system": s, "prn": prn}
-        vmap = (_VARMAP_BDS if s == "C" else
+        vmap = (_VARMAP_BDS if s == "C" else _VARMAP_GAL if s == "E" else
                 _VARMAP_KEPLER if s in _KEPLER_SYS else _VARMAP_STATE)
         for key, var in vmap.items():
             if var is None or var not in rec:

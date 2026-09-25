@@ -21,7 +21,9 @@ def _run(tmp_path, monkeypatch, systems, nav=True):
     req = ScenarioRequest(
         rinex_path=_MIXED, lat=41.0, lon=29.0, alt=100.0,
         start=dt.datetime(2026, 9, 1, 12), duration_s=3,
-        sample_rate=6_000_000.0, sample_format="int16", engine="native",
+        # BeiDou B1I on one output with GPS L1 must span both carriers
+        sample_rate=20_000_000.0 if "C" in systems else 6_000_000.0,
+        sample_format="int16", engine="native",
         systems=systems, nav_message=nav)
     return engine.run(req)
 

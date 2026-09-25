@@ -100,3 +100,18 @@ def test_signals_for_l1_still_drops_glonass_no_alias_regression():
     bands=["L1"] contributes nothing for GLONASS -- only G1's own-default
     path does. The new L2->G2 alias must not also alias L1->G1."""
     assert signals.signals_for("R", ("L1",)) == []
+
+
+def test_b1i_sits_on_its_own_carrier_and_widens_the_l1_output():
+    assert signals.SIGNALS["BDS_B1I"].carrier_hz == 1561.098e6
+    both = ["BDS_B1I", "GAL_E1", "GPS_L1CA"]
+    assert bands.band_centre("L1", both) == pytest.approx(1568.259e6)
+    assert bands.band_centre("L1", ["BDS_B1I"]) == 1561.098e6
+    assert bands.band_centre("L1", ["GAL_E1", "GPS_L1CA"]) == 1575.42e6
+    # 14.322 MHz carrier span + a 2.046 MHz main lobe on each side
+    assert fs_policy.fs_min(both) == pytest.approx(18.5e6)
+    assert fs_policy.default_fs(both) == 20.0e6
+    with pytest.raises(ValueError, match="BeiDou B1I"):
+        fs_policy.validate_fs(2.6e6, both)
+    # BeiDou alone keeps the narrow default
+    assert fs_policy.fs_min(["BDS_B1I"]) == pytest.approx(2.046e6)

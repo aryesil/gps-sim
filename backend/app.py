@@ -145,7 +145,7 @@ def _resolved_band_output(internal_band: str, systems: list[str],
         for sysc in systems
         for sig in signals.signals_for(sysc, (internal_band,))})
     fs = _bandsmod._band_fs(internal_band, sig_ids, req)
-    centre_hz = _bandsmod.full_band_registry()[internal_band].centre_hz
+    centre_hz = _bandsmod.band_centre(internal_band, sig_ids)
     return fs, centre_hz
 
 
@@ -197,7 +197,14 @@ def native_band_centre(systems: str = "G", bands: str = ""):
     needed = _internal_bands_for(systems_list, bands_req)
     from backend.synth import bands as _bandsmod
     reg = _bandsmod.full_band_registry()
-    return {"bands": {b: reg[b].centre_hz for b in sorted(needed) if b in reg}}
+    out = {}
+    for b in sorted(needed):
+        if b not in reg:
+            continue
+        sig_ids = sorted({_bandsmod._signal_key(sig) for sysc in systems_list
+                          for sig in signals.signals_for(sysc, (b,))})
+        out[b] = _bandsmod.band_centre(b, sig_ids)
+    return {"bands": out}
 
 
 # TX1/TX2 -- the AD9361/AD9363's two TX ports (KNOWN hardware fact, not an
@@ -308,10 +315,15 @@ def _signal_bandwidth_hz(internal_band: str, systems: list[str]) -> int:
     2.046 MHz). Falls back to rf_frontend's own default when the band/
     systems combination resolves no signal (shouldn't happen for a band
     that was actually resolved, but never worth a crash over)."""
-    widths = [2 * (sig.chip_rate_hz + sig.sub_carrier_hz)
-              for sysc in systems
-              for sig in signals.signals_for(sysc, (internal_band,))]
-    return int(max(widths)) if widths else rf_frontend.DEFAULT_SIGNAL_BANDWIDTH_HZ
+    sigs = [sig for sysc in systems
+            for sig in signals.signals_for(sysc, (internal_band,))]
+    if not sigs:
+        return rf_frontend.DEFAULT_SIGNAL_BANDWIDTH_HZ
+    widths = [2 * (sig.chip_rate_hz + sig.sub_carrier_hz) for sig in sigs]
+    # BeiDou B1I sharing L1 with GPS/Galileo: the occupied band spans both
+    # carriers, not just one signal's main lobe.
+    span = (max(s.carrier_hz for s in sigs) - min(s.carrier_hz for s in sigs))
+    return int(max(widths) + span)
 
 
 def _tx_level_kwargs(body: dict) -> dict:
@@ -1389,6 +1401,11 @@ def live_start(body: dict, request: Request):
     except rf_frontend.RFFrontendError as ex:
         _release_tx_slot(slot)
         raise HTTPException(400, str(ex)) from ex
+    except ValueError as ex:
+        # e.g. a sample rate below the band floor (BeiDou B1I + GPS/Galileo
+        # on one L1 output needs >= 18.5 Msps)
+        _release_tx_slot(slot)
+        raise HTTPException(422, str(ex)) from ex
     except Exception:
         _release_tx_slot(slot)
         raise

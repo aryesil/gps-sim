@@ -47,7 +47,8 @@ def test_ephemeris_reconstruction_roundtrip(gal_rec):
     assert rec["omega"] == pytest.approx(gal_rec["omega"], abs=1e-8)
     assert rec["i0"] == pytest.approx(gal_rec["i0"], abs=1e-8)
     assert rec["af0"] == pytest.approx(gal_rec["af0"], abs=1e-9)
-    assert rec["tgd"] == pytest.approx(gal_rec.get("tgd", 0.0), abs=1e-10)
+    # F/NAV carries BGD(E1,E5a)
+    assert rec["tgd"] == pytest.approx(gal_rec.get("tgd_e5a", 0.0), abs=1e-10)
     assert rec["toe"] == pytest.approx(gal_rec["toe"], abs=60.0)
     assert rec["cic"] == pytest.approx(gal_rec.get("cic", 0.0), abs=1e-9)
 

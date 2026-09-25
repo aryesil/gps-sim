@@ -14,6 +14,7 @@ def _float(name: str, default: float) -> float:
     return float(os.environ.get(name, default))
 
 L1_HZ = 1575.42e6
+B1I_HZ = 1561.098e6  # BeiDou B1I (BDS-SIS-ICD-B1I 3.1), 14.322 MHz below L1
 L2_HZ = 1227.60e6   # 120 * 10.23 MHz  -- GPS L2 / GLONASS L2 band centre
 L5_HZ = 1176.45e6   # 115 * 10.23 MHz  -- GPS L5 / E5a / B2a / NavIC L5 band centre
 CA_CHIP_HZ = 1.023e6

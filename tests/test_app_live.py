@@ -1,4 +1,5 @@
 # tests/test_app_live.py
+import datetime as dt
 import json
 
 import numpy as np
@@ -453,6 +454,40 @@ def test_live_start_uses_the_resolved_bands_real_sample_rate(monkeypatch):
     assert r.status_code == 200
     assert seen["sample_rate"] == pytest.approx(20_500_000.0)
     assert seen["lo_hz"] == pytest.approx(config.L5_HZ)
+
+
+def test_live_start_rejects_beidou_with_l1_below_the_spanning_rate(monkeypatch):
+    """BeiDou B1I (1561.098 MHz) with GPS/Galileo on one L1 output needs a
+    sample rate spanning both carriers; 2.6 Msps must 422 with the reason,
+    not 500, and free the slot."""
+    import pathlib
+    monkeypatch.setattr(config, "ALLOW_TX", True)
+    from backend import app as app_module
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_mixed.rnx"
+    r = client.post("/api/live/start", json={
+        "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
+        "start_utc": "2026-09-01T06:00:00", "confirm_isolated": True,
+        "engine": "native", "systems": ["G", "E", "C"],
+        "sample_rate": 2.6e6, "dry_run": True, "max_duration_s": 0.05})
+    assert r.status_code == 422
+    assert "BeiDou B1I" in r.json()["detail"]
+    assert app_module._tx_slots["TX1"] is None
+
+
+def test_beidou_with_l1_moves_the_rf_centre_between_the_carriers():
+    from backend import app as app_module
+    from backend.scenario import ScenarioRequest
+    req = ScenarioRequest(rinex_path="x", lat=0, lon=0, alt=0,
+                          start=dt.datetime(2026, 9, 1), duration_s=1,
+                          sample_rate=20e6, sample_format="int16",
+                          engine="native", systems=["G", "E", "C"])
+    fs, centre = app_module._resolved_band_output("L1", ["G", "E", "C"], req)
+    assert fs == 20e6
+    assert centre == pytest.approx(1568.259e6)
+    r = client.get("/api/native/band_centre", params={"systems": "G,E,C"})
+    assert r.json()["bands"]["L1"] == pytest.approx(1568.259e6)
+    bw = app_module._signal_bandwidth_hz("L1", ["G", "E", "C"])
+    assert bw == pytest.approx(14.322e6 + 4.092e6, abs=1.0)
 
 
 def test_live_start_auto_stops_after_max_duration(monkeypatch):

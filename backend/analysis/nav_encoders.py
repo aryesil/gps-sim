@@ -57,7 +57,8 @@ def nav_stream_for(sysc, signal, eph, header, week, sow, duration_s,
         # I/NAV -- word types 1-4 only (see fnav_encode's module docstring).
         from backend.analysis import fnav_encode
         p = int(prn if prn is not None else (eph.get("prn", 1) or 1))
-        arr, rate = fnav_encode.nav_stream(eph, p, week, sow, duration_s,
+        arr, rate = fnav_encode.nav_stream(eph, p, week - GST_WEEK_OFFSET,
+                                           sow, duration_s,
                                            eph_by_prn=eph_by_prn)
         return arr, rate
     if band == "L5" and sysc == "C":
@@ -80,7 +81,8 @@ def nav_stream_for(sysc, signal, eph, header, week, sow, duration_s,
                                             eph_by_prn=eph_by_prn)
         return arr, rate
     if sysc == "E":
-        arr = inav_encode.nav_stream(eph, week, sow, duration_s,
+        arr = inav_encode.nav_stream(eph, week - GST_WEEK_OFFSET, sow,
+                                     duration_s,
                                      eph_by_prn=eph_by_prn)
         return arr, inav_encode.SYM_RATE_HZ
     if sysc == "C":
@@ -104,6 +106,12 @@ def nav_stream_for(sysc, signal, eph, header, week, sow, duration_s,
                                       eph_by_prn=eph_by_prn)
     return None
 
+
+# Galileo System Time counts weeks from 1999-08-22, GPS week 1024 (OS SIS ICD
+# 5.1.2); its seconds-of-week equal GPS time. Broadcasting the GPS week put
+# every Galileo ephemeris ~20 years in the future, so receivers tracked
+# Galileo but never used it in a fix.
+GST_WEEK_OFFSET = 1024
 
 # BeiDou Time runs 14 s behind GPS time and its week count starts 1356 GPS
 # weeks later (BDS-SIS-ICD 5.1.2).

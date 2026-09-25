@@ -13,8 +13,10 @@ _MIXED = str(pathlib.Path(__file__).parent.parent / "fixtures" / "brdc_mixed.rnx
 def _run(tmp_path, monkeypatch, systems):
     monkeypatch.setattr(config, "OUT_DIR", tmp_path)
     req = ScenarioRequest(rinex_path=_MIXED, lat=41.0, lon=29.0, alt=100.0,
-                          start=dt.datetime(2026, 9, 1, 12), duration_s=4,
-                          sample_rate=6_000_000.0, sample_format="int16",
+                          start=dt.datetime(2026, 9, 1, 12), duration_s=1,
+                          # BeiDou B1I (1561.098 MHz) shares the L1 output
+                          # with GPS/Galileo: the band must span both carriers
+                          sample_rate=20_000_000.0, sample_format="int16",
                           engine="native", systems=["G", "J", "E", "C", "S"],
                           nav_message=False)
     return engine.run(req)
@@ -46,6 +48,7 @@ def test_each_l1_system_acquires_in_one_correlated_capture(tmp_path, monkeypatch
             continue
         r = _corr.acquire(iq, l1["fs"], e["sys"], e["prn"],
                           code_len=e["code_len"], chip_hz=e["chip_hz"],
+                          center_hz=e["if_hz"],
                           boc=(e["sys"] == "E"))
         hits.setdefault(e["sys"], 0)
         metrics.setdefault(e["sys"], []).append(round(r["metric_db"], 1))
@@ -92,7 +95,8 @@ def test_qzss_range_is_geostationary_order(tmp_path, monkeypatch):
     hits = 0
     for e in jsvs:
         r = _corr.acquire(iq, l1["fs"], "J", e["prn"],
-                          code_len=e["code_len"], chip_hz=e["chip_hz"])
+                          code_len=e["code_len"], chip_hz=e["chip_hz"],
+                          center_hz=e["if_hz"])
         if r["metric_db"] > _METRIC_DB:
             hits += 1
     assert hits >= 1, "QZSS did not acquire"
@@ -141,7 +145,8 @@ def test_galileo_e1_needs_boc_replica(tmp_path, monkeypatch):
 
     checked = 0
     for e in esvs:
-        common = dict(code_len=e["code_len"], chip_hz=e["chip_hz"])
+        common = dict(code_len=e["code_len"], chip_hz=e["chip_hz"],
+                      center_hz=e["if_hz"])
         with_boc = _corr.acquire(iq, l1["fs"], "E", e["prn"], boc=True, **common)
         no_boc = _corr.acquire(iq, l1["fs"], "E", e["prn"], boc=False, **common)
         if with_boc["metric_db"] < _METRIC_DB:
@@ -296,8 +301,8 @@ def test_precise_capture_all_systems_acquire(tmp_path, monkeypatch):
     payload = {"precise_provider": provider, "week": mid.week,
                "sow": mid.sow, "systems": want}
     req = ScenarioRequest(rinex_path=_MIXED, lat=lat, lon=lon, alt=alt,
-                          start=dt.datetime(2026, 9, 1, 1, 30, 0), duration_s=4,
-                          sample_rate=6_000_000.0, sample_format="int16",
+                          start=dt.datetime(2026, 9, 1, 1, 30, 0), duration_s=1,
+                          sample_rate=20_000_000.0, sample_format="int16",
                           engine="native", systems=list(want),
                           nav_override=payload)
     outdir = engine.run(req)
@@ -324,6 +329,7 @@ def test_precise_capture_all_systems_acquire(tmp_path, monkeypatch):
             continue
         r = _corr.acquire(iq_l1, l1["fs"], s, e["prn"],
                           code_len=e["code_len"], chip_hz=e["chip_hz"],
+                          center_hz=e["if_hz"],
                           boc=(s == "E"))
         assert r["metric_db"] > _METRIC_DB, (s, e["prn"], r["metric_db"])
 

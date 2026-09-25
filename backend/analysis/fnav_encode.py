@@ -114,7 +114,7 @@ def _values_word1(eph: dict, prn: int, week: int, tow: int) -> dict:
         "type": 1, "prn": prn, "iodnav": _iodnav(eph),
         "toc": eph.get("toc", eph.get("toe", 0.0)),
         "af0": eph.get("af0", 0.0), "af1": eph.get("af1", 0.0),
-        "af2": eph.get("af2", 0.0), "tgd": eph.get("tgd", 0.0),
+        "af2": eph.get("af2", 0.0), "tgd": eph.get("tgd_e5a", eph.get("tgd", 0.0)),
         "week": int(week), "tow": int(tow),
     }
 

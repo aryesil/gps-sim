@@ -175,8 +175,8 @@ def test_precise_multi_covers_every_requested_constellation(tmp_path, monkeypatc
     payload = {"precise_provider": provider, "week": mid.week,
                "sow": mid.sow, "systems": ("G", "E", "C")}
     req = ScenarioRequest(rinex_path="AUTO", lat=lat, lon=lon, alt=alt,
-                          start=dt.datetime(2026, 9, 1, 1, 30, 0), duration_s=2,
-                          sample_rate=6_000_000.0, sample_format="int16",
+                          start=dt.datetime(2026, 9, 1, 1, 30, 0), duration_s=1,
+                          sample_rate=20_000_000.0, sample_format="int16",
                           engine="native", systems=["G", "E", "C"],
                           nav_override=payload)
     outdir = engine.run(req)                        # must not touch "AUTO"

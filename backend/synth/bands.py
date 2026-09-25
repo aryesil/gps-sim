@@ -40,6 +40,18 @@ def _signal_key(sig) -> str:
     return _KEY_BY_SIGNAL[sig]
 
 
+def band_centre(band_id: str, sig_ids: list[str]) -> float:
+    """RF centre of one output band. Normally the registry centre; when the
+    band's signals sit on different carriers (BeiDou B1I with GPS/Galileo on
+    L1) the centre moves to the midpoint so both fit in the smallest fs."""
+    cs = [signals.SIGNALS[k].carrier_hz for k in sig_ids]
+    if cs and max(cs) != min(cs):
+        return 0.5 * (max(cs) + min(cs))
+    if cs and band_id == "L1":
+        return cs[0]                  # B1I alone: centre on its own carrier
+    return full_band_registry()[band_id].centre_hz
+
+
 def _band_fs(band_id: str, sig_ids: list[str], req) -> float:
     """Resolve the sample rate for one band: an explicit per-band override
     on the request (floored by the policy), else the policy default."""
@@ -79,6 +91,6 @@ def plan_bands(entries, req) -> list[BandPlan]:
             continue
         sig_ids = sorted({_signal_key(e["signal_id"]) for e in group})
         fs = _band_fs(band_id, sig_ids, req)
-        plans.append(BandPlan(band_id, band.centre_hz, fs, quant, group,
-                              band.out_file))
+        plans.append(BandPlan(band_id, band_centre(band_id, sig_ids), fs,
+                              quant, group, band.out_file))
     return plans

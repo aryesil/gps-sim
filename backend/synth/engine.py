@@ -555,8 +555,10 @@ def _sv_spec_for(entry, gain, nav=None):
 
 
 # Galileo E1 CBOC(6,1,1/11): the sc(6,1) term has 12 sub-chips per 1.023 MHz
-# chip (12.276 MHz). Below this rate it aliases, so plain BOC(1,1) is used.
-_CBOC_MIN_FS = 14e6
+# chip (12.276 MHz), its main lobes reaching ~7 MHz from the carrier. CBOC is
+# used only when that fits below Nyquist at the carrier's offset from the
+# band centre; otherwise it would alias, so plain BOC(1,1) is used.
+_CBOC_HALF_BW_HZ = 7.0e6
 
 
 def _finish_component(spec, entry, sow, knots):
@@ -1018,6 +1020,14 @@ def run(req, progress_cb=None) -> pathlib.Path:
                 _log.warning("engine.run: %s", keep)
                 warnings.append(str(keep))
                 continue
+            comps = [(spec, keep)] + list(getattr(spec, "_companions", ()))
+            # Offset of this signal's carrier from the band centre: non-zero
+            # for BeiDou B1I (1561.098 MHz) and GPS/Galileo sharing a widened
+            # L1 output; GLONASS FDMA offsets are already in carrier_freq_hz.
+            if_hz = float(e["signal_id"].carrier_hz) - plan.centre_hz
+            if if_hz:
+                for c, _k in comps:
+                    c.carrier_freq_hz += if_hz
             knots = None
             if ((getattr(req, "continuous_doppler", True) or rx_fn is not None)
                     and e.get("_state") is not None):
@@ -1031,10 +1041,9 @@ def run(req, progress_cb=None) -> pathlib.Path:
                     signal=sig0, carrier_offset_hz=carr_off, rx_fn=rx_fn,
                     atmo_fn=e.get("_atmo_fn"),
                     doppler_scale=e.get("_doppler_scale", 1.0))
-            comps = [(spec, keep)] + list(getattr(spec, "_companions", ()))
             for c, c_keep in comps:
                 _finish_component(c, e, sow, knots)
-                if plan.fs >= _CBOC_MIN_FS:
+                if plan.fs >= 2.0 * (abs(if_hz) + _CBOC_HALF_BW_HZ):
                     c.cboc = int(getattr(c, "_cboc", 0))
                 c.fading.model = fading_model_int
                 c.fading.sigma_db = cfg.sigma_db
@@ -1053,6 +1062,9 @@ def run(req, progress_cb=None) -> pathlib.Path:
                        "band": sig.band,
                        "code_len": sig.code_len,
                        "chip_hz": sig.chip_rate_hz,
+                       # carrier offset from the band centre in the IQ
+                       # (BeiDou B1I vs GPS/Galileo on a widened L1 output)
+                       "if_hz": if_hz,
                        "code_doppler_hz": e["code_doppler_hz"],
                        "el_deg": round(el_deg, 2),
                        "az_deg": round(float(e.get("az_deg", 0.0)), 2),
