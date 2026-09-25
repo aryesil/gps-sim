@@ -204,6 +204,9 @@ _NH10 = np.array([1 if b == "0" else -1 for b in "0000110101"], dtype=np.float64
 _SUBCHUNKS = 20            # sub-symbol partials -> +/-500 Hz residual search room
 
 
+_CHUNK_SAMPLES = 1 << 22          # ~4 M samples per _demod work chunk
+
+
 def _concentration(corr):
     """Fraction of correlator energy on the real axis after the best
     constant-phase rotation -- ~1 for a locked BPSK stream, ~0.5 for a
@@ -265,24 +268,31 @@ def _demod(iq, fs, code, *, chip_hz, code_len, carrier_ctr_hz, dopp_hz,
             nsym = min(nsym, nsym_cap)
         # replica chip at the (shifted) window start
         c_start = (cp0 + chip_hz * off_samp / fs) % code_len
-        tt = np.arange(nsym * npp, dtype=np.float64) / fs
-        seg = base[:nsym * npp]
-        srep = None
-        if sec is not None and sec_rate_hz > 0.0:
-            sidx = (np.floor(tt * sec_rate_hz).astype(np.int64) + sec_roll
-                    ) % sec.size
-            srep = sec[sidx]
+        # Symbols per chunk: an L5 capture is ~750 M samples, and building
+        # the replica/wipe for all of it at once took tens of GB. Chunks
+        # use absolute time, so phase and code stay continuous across them.
+        per = max(1, _CHUNK_SAMPLES // npp)
 
-        def _subcorr(dopp0, drift=0.0):
-            ramp = dopp0 * tt + 0.5 * drift * tt * tt
-            wipe = np.exp(-2j * np.pi * ramp)
-            cph = c_start + chip_hz * tt + (chip_hz / carrier_ctr_hz) * ramp
-            idx = (np.floor(cph).astype(np.int64)) % code_len
-            rep = code[idx] if srep is None else code[idx] * srep
-            prod = (seg * wipe * rep).reshape(nsym, m, npp // m)
-            return prod.sum(axis=2)
+        def _subcorr(dopp0, drift=0.0, nlim=None):
+            n_use = nsym if nlim is None else min(nsym, nlim)
+            out = np.empty((n_use, m), dtype=np.complex128)
+            for k0 in range(0, n_use, per):
+                k1 = min(n_use, k0 + per)
+                tt = np.arange(k0 * npp, k1 * npp, dtype=np.float64) / fs
+                ramp = dopp0 * tt + 0.5 * drift * tt * tt
+                wipe = np.exp(-2j * np.pi * ramp)
+                cph = c_start + chip_hz * tt + (chip_hz / carrier_ctr_hz) * ramp
+                rep = code[np.floor(cph).astype(np.int64) % code_len]
+                if sec is not None and sec_rate_hz > 0.0:
+                    sidx = (np.floor(tt * sec_rate_hz).astype(np.int64)
+                            + sec_roll) % sec.size
+                    rep = rep * sec[sidx]
+                seg = base[k0 * npp:k1 * npp]
+                out[k0:k1] = (seg * wipe * rep).reshape(
+                    k1 - k0, m, npp // m).sum(axis=2)
+            return out
 
-        return nsym, tt, _subcorr
+        return nsym, None, _subcorr
 
     # --- 0. search the CNAV symbol boundary. Acquisition pins the primary
     # code phase only within one primary period; a 20 ms integration window
@@ -316,14 +326,14 @@ def _demod(iq, fs, code, *, chip_hz, code_len, carrier_ctr_hz, dopp_hz,
     # Hz. A linear data-wiped-phase fit then trims the rest.
     pn = min(nsym, 200)
     for _ in range(3):
-        sq = (_subcorr(d)[:pn].reshape(-1)) ** 2
+        sq = (_subcorr(d, nlim=pn).reshape(-1)) ** 2
         fr = np.fft.fftfreq(sq.size, d=sym_s / m)
         step = float(fr[np.argmax(np.abs(np.fft.fft(sq)))]) / 2.0
         d += step
         if abs(step) < 1.0:
             break
     for _ in range(6):
-        corr = _subcorr(d)[:pn].sum(axis=1)
+        corr = _subcorr(d, nlim=pn).sum(axis=1)
         slope = np.polyfit(np.arange(pn, dtype=np.float64),
                            np.unwrap(np.angle(corr ** 2)), 1)[0] / 2.0
         dfr = slope / (2.0 * np.pi * sym_s)
@@ -368,7 +378,9 @@ def demod_symbols(iq, fs, prn, *, dopp_hz=None, code_phase_chips=None):
     """Hard {0,1} convolutional symbols (50 sym/s) from a GPS L2C capture."""
     from backend.analysis import band_acquire
 
-    iq = np.asarray(iq, dtype=np.complex128)
+    iq = np.asarray(iq)
+    if iq.dtype != np.complex64:
+        iq = iq.astype(np.complex64)
     if dopp_hz is None or code_phase_chips is None:
         a = band_acquire.acquire_l2c(iq, fs, prn)
         dopp_hz = a["doppler_hz"] if dopp_hz is None else dopp_hz

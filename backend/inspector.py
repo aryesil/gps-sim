@@ -34,9 +34,14 @@ def read_iq(path, sample_format: str, max_samples: int | None = None,
     itemsize = np.dtype(dtype).itemsize
     count = -1 if max_samples is None else 2 * max_samples
     raw = np.fromfile(path, dtype=dtype, count=count,
-                      offset=offset_samples * 2 * itemsize).astype(np.float32)
+                      offset=offset_samples * 2 * itemsize)
     raw = raw[: len(raw) - (len(raw) % 2)]
-    return (raw[0::2] + 1j * raw[1::2]).astype(np.complex64)
+    # Fill the complex64 output in place: the old float32 copy plus a
+    # complex128 temporary tripled the peak on a multi-GB L5 capture.
+    out = np.empty(raw.size // 2, dtype=np.complex64)
+    out.real = raw[0::2]
+    out.imag = raw[1::2]
+    return out
 
 
 def iq_sample_count(path, sample_format: str) -> int:
