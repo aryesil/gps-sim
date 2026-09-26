@@ -132,6 +132,7 @@ def test_signal_engine_panel_present_and_opt_in():
     # opt-in: default engine is gps-sdr-sim and an untouched panel adds nothing
     assert "value=\"gps-sdr-sim\"" in js
     assert '<option value="keyed">' in js
+    assert '${id}-fade-keygen' in js and 'crypto.getRandomValues' in js
     assert 'if (_engineBody() === null) ' in js or 'const _eng = _engineBody();' in js
 
 

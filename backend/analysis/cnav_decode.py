@@ -201,7 +201,13 @@ _L5_LEN = 10230
 _NH10 = np.array([1 if b == "0" else -1 for b in "0000110101"], dtype=np.float64)
 
 
-_SUBCHUNKS = 20            # sub-symbol partials -> +/-500 Hz residual search room
+# Sub-symbol partials per symbol. The coarse Doppler pull-in squares them
+# (cancelling data and secondary-code signs), so the residual it can find is
+# +/- _SUBCHUNKS / (4 * sym_s): 80 over a 20 ms symbol is 0.25 ms partials
+# and +/- 1 kHz, which covers a 1 ms acquisition's Doppler error. That error
+# reaches several hundred Hz on L5, because a 1 ms acquisition block
+# straddles an NH10 sign flip.
+_SUBCHUNKS = 80
 
 
 _CHUNK_SAMPLES = 1 << 22          # ~4 M samples per _demod work chunk
@@ -294,44 +300,83 @@ def _demod(iq, fs, code, *, chip_hz, code_len, carrier_ctr_hz, dopp_hz,
 
         return nsym, None, _subcorr
 
-    # --- 0. search the CNAV symbol boundary. Acquisition pins the primary
-    # code phase only within one primary period; a 20 ms integration window
-    # straddling a true symbol boundary sums through a data sign flip. The
-    # NH10 secondary is synchronised to the symbol in the ICD, so once the
-    # boundary offset is known the secondary roll is fixed at ``off % 10``.
-    # Score each of the ``n_per_sym`` boundary hypotheses by the data-wiped
-    # concentration of a short prefix at the acquired Doppler.
-    if sec is not None and n_per_sym > 1:
-        best = (-1.0, 0)
-        for off in range(n_per_sym):
-            ns, _tt, _sc = _build(off * spp, off % sec.size, nsym_cap=60)
-            if ns < 8:
-                continue
-            sc = _concentration(_sc(dopp_hz).sum(axis=1))
-            if sc > best[0]:
-                best = (sc, off)
-        off = best[1]
-        sec_roll = off % sec.size
-    else:
-        off, sec_roll = 0, 0
-    nsym, tt, _subcorr = _build(off * spp, sec_roll)
-    if nsym < 4:
-        return np.zeros(0, dtype=np.int8)
     d = float(dopp_hz)
 
-    # --- 1. lock Doppler on a prefix. A per-symbol concentration metric is
-    # ambiguous at multiples of 25 Hz, so the coarse pull-in runs on the
-    # sub-symbol partials: squaring cancels the +/-1 symbol and leaves a
-    # tone at twice the residual carrier, alias-free out to +/- m/(2*sym_s)
-    # Hz. A linear data-wiped-phase fit then trims the rest.
-    pn = min(nsym, 200)
-    for _ in range(3):
-        sq = (_subcorr(d, nlim=pn).reshape(-1)) ** 2
+    # --- 0. coarse Doppler pull-in, before anything that needs the symbol
+    # boundary. Squaring the sub-symbol partials cancels the data and
+    # secondary-code signs (every partial lies inside one primary period,
+    # and the windows start on a code epoch), so this works at any boundary
+    # hypothesis. It must come first: at the raw acquisition Doppler the
+    # carrier spins through the boundary-search prefix and that search
+    # picks at random.
+    ns0, _tt0, _sc0 = _build(0, 0)
+    if ns0 < 4:
+        return np.zeros(0, dtype=np.int8)
+    pn = min(ns0, 200)
+    for _ in range(4):
+        sq = (_sc0(d, nlim=pn).reshape(-1)) ** 2
         fr = np.fft.fftfreq(sq.size, d=sym_s / m)
         step = float(fr[np.argmax(np.abs(np.fft.fft(sq)))]) / 2.0
         d += step
         if abs(step) < 1.0:
             break
+
+    # --- 1. secondary-code alignment and symbol boundary. Acquisition pins
+    # the primary code phase only within one primary period. The secondary
+    # code (NH10 on L5, CS20 on E5a, "00010" on B2a) is synchronised to the
+    # symbol in the ICDs, so data signs only change on a secondary-period
+    # edge. Find that edge first, from one-per-epoch partials: matching the
+    # secondary code over each period sums in phase only at the true
+    # alignment, whatever the data. Then pick the symbol boundary among the
+    # few candidate periods by coherent per-symbol energy. (The old search
+    # tied the secondary roll to the boundary guess and scored it by
+    # real-axis concentration, which a wrong roll does not lower, so it
+    # picked at random on most satellites.)
+    S = sec.size if sec is not None else 0
+    if (sec is not None and n_per_sym > 1 and n_per_sym % S == 0
+            and m % n_per_sym == 0):
+        pe = min(ns0, 100)
+        ep = _sc0(d, nlim=pe).reshape(pe * n_per_sym,
+                                      m // n_per_sym).sum(axis=1)
+        j = np.arange(ep.size)
+        raw = ep * sec[j % S]            # undo the roll-0 wipe _build applied
+        best_a, best_e = 0, -1.0
+        for a0 in range(S):
+            q = (raw.size - a0) // S
+            v = (raw[a0:a0 + q * S].reshape(q, S) * sec).sum(axis=1)
+            e = float(np.mean(np.abs(v) ** 2))
+            if e > best_e:
+                best_a, best_e = a0, e
+        aligned = raw * sec[(j - best_a) % S]
+        best = (-1.0, best_a)
+        for off in range(best_a, n_per_sym, S):
+            q = (aligned.size - off) // n_per_sym
+            v = aligned[off:off + q * n_per_sym].reshape(
+                q, n_per_sym).sum(axis=1)
+            e = float(np.mean(np.abs(v) ** 2))
+            if e > best[0]:
+                best = (e, off)
+        off = best[1]
+        sec_roll = (off - best_a) % S    # == 0: window opens on chip 0
+    elif sec is not None and n_per_sym > 1:
+        best = (-1.0, 0)
+        for off in range(n_per_sym):
+            ns, _tt, _sc = _build(off * spp, off % S, nsym_cap=60)
+            if ns < 8:
+                continue
+            sc = float(np.mean(np.abs(_sc(d).sum(axis=1)) ** 2))
+            if sc > best[0]:
+                best = (sc, off)
+        off = best[1]
+        sec_roll = off % S
+    else:
+        off, sec_roll = 0, 0
+    nsym, tt, _subcorr = _build(off * spp, sec_roll)
+    if nsym < 4:
+        return np.zeros(0, dtype=np.int8)
+
+    # --- 1b. fine lock: a linear fit of the data-wiped phase.
+    pn = min(nsym, 200)
     for _ in range(6):
         corr = _subcorr(d, nlim=pn).sum(axis=1)
         slope = np.polyfit(np.arange(pn, dtype=np.float64),

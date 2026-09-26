@@ -174,7 +174,7 @@ window.addChannel = function () {
           <label>coherence s <input id="${id}-fade-coh" type="number" step="0.5" value="2"></label>
           <label class="fade-seeded">seed <input id="${id}-fade-seed" type="number" step="1" value="1"></label>
           <label class="fade-keyed">key (64 hex) <input id="${id}-fade-key" type="password" autocomplete="off" spellcheck="false" size="20" placeholder="empty = random per run"></label>
-          <button type="button" class="fade-keyed" id="${id}-fade-keygen" title="Fill in a new random 256-bit key (to reuse the same fading later)">new key</button>
+          <button type="button" class="fade-keyed" id="${id}-fade-keygen" title="Fill in a new random 256-bit key (crypto.getRandomValues), so the same fading can be reused later">random key</button>
           <label class="fade-keyed" title="Write the key into meta.json so the run can be reproduced and its fading plotted. Anyone with meta.json can then predict this run's fading."><input type="checkbox" id="${id}-fade-record"> record key in meta</label>
         </section>
         </div>
