@@ -77,6 +77,16 @@ def offset_s(cfg: ReceiverClockConfig, gps_sow: float) -> float:
     return off
 
 
+def rate_s_per_s(cfg: ReceiverClockConfig, gps_sow: float) -> float:
+    """d(offset)/dt at ``gps_sow``: the fractional frequency error that
+    shifts every carrier by ``-f * rate``. The sawtooth resets are time
+    steps, not frequency, so they do not enter it."""
+    if not cfg.enabled:
+        return 0.0
+    t = gps_sow - cfg.ref_epoch_s
+    return cfg.drift_s_per_s + cfg.drift_rate_s_per_s2 * t
+
+
 def state(cfg: ReceiverClockConfig, gps_sow: float) -> dict:
     """Full breakdown for one epoch.
 

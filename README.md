@@ -433,7 +433,7 @@ All via environment variables (see `backend/config.py`).
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `ALLOW_TX` | `0` | Master switch for every transmit endpoint. Off ⇒ HTTP 403. |
-| `DEVICE_URI` | `ip:192.168.2.1` | Default SDR URI (`pyadi-iio` for `kind=pluto`, a bladeRF device identifier for `kind=bladerf`, e.g. `*:serial=...`). |
+| `DEVICE_URI` | `ip:192.168.3.1` | Default SDR URI: LibreSDR over GbE; `ip:192.168.2.1` is its USB-NCM link (`pyadi-iio` for `kind=pluto`, a bladeRF device identifier for `kind=bladerf`, e.g. `*:serial=...`). |
 | `RF_FRONTEND_ENABLED` | `0` | Enables the LO-offset planner + auto TX quadrature calibration (`target_rf_frequency_hz`/`lo_offset_mode`/`lo_offset_hz` on transmit/live-start). |
 | `DEFAULT_SAMPLE_RATE` | `2600000` | Default IQ sample rate (Hz). |
 | `DEFAULT_FORMAT` | `int16` | Default sample format (`int16` / `int8`). |
@@ -548,9 +548,15 @@ A set of software-only checks that do not need hardware or the real
   fit arc, but the clock comes from the SP3 product's coarse clock
   (linearly interpolated) fitted to `af0/af1/af2` — good to a few ns, not
   a sub-nanosecond source. Iono/tropo/multipath are not part of the fit;
-  they reach the IQ only through the opt-in channel models (ionosphere via
-  `gps-sdr-sim`'s `-i`, receiver-clock + multipath via the quasi-static
-  `_apply_channel` post-process, troposphere not at all).
+  they reach the IQ only through the opt-in channel models. On
+  `gps-sdr-sim`, ionosphere comes via its `-i` flag, receiver clock and
+  multipath via the quasi-static `_apply_channel` post-process, and
+  troposphere does not reach the IQ at all. On the native engine,
+  ionosphere and troposphere are always in the IQ, per satellite and per
+  band. The receiver clock is exact per satellite and band through the
+  trajectory knots. Multipath and the RF impairments are streamed over
+  every band file by `backend/synth/postproc.py`, and no clean copy is
+  kept, because the same request without them regenerates it.
 - **The fit arc is 4 h.** Precise generation needs an SP3 product whose
   epochs cover the scenario start ± 2 h; outside that it returns HTTP 422.
 - **L1 band only** — no L2/L5. The `gps-sdr-sim` engine is GPS L1 C/A
@@ -585,7 +591,7 @@ separate opt-in — see *Channel models in the IQ* below.
 | `backend/models/receiver_clock.py` | Receiver clock offset: bias + drift + drift-rate polynomial, optional sawtooth | Distinct from satellite clock and propagation delay; adds a common `c·offset` to simultaneous pseudoranges and a common `−f_L1·drift` carrier offset. No RNG. |
 | `backend/models/multipath.py` | Specular: direct + N reflections (delay, amplitude<1, phase, Doppler) | `channel_taps()` for convolving clean IQ; `tracking_bias()` is a closed-form narrow-correlator DLL/Costas approximation, **not** a substitute for filtering the IQ. |
 | `backend/models/channel_models.py` | Glue: parses the three request dicts, applies them to the preview/truth observables, produces the UI summary | The three model modules stay standalone; this is the only place that binds them to a request. |
-| `backend/models/impairments.py` | RF impairment layer over complex IQ: CFO, sample-clock ppm, phase noise, I/Q imbalance, DC offset, AWGN (SNR or noise power), clipping, requantisation | All randomness from one seeded `default_rng`; `(config, seed, input) → output` is bit-for-bit reproducible. Wired into `generator.run` via `ScenarioRequest.impairments` (default `None`); the clean file is kept as `gpssim.clean.bin`. Reachable from the browser UI via the per-channel *RF impairments (advanced)* panel (collapsed and opt-in; an untouched panel leaves the `/api/generate` body unchanged). The panel has a **Preset** selector — *Bench cable test*, *Field test — typical*, *Field test — degraded/urban* — that fills every field with representative SDR-replay values and ticks the enable box; hand-editing any field reverts it to *Custom*. Presets are frontend-only starting points, not a calibrated device model. |
+| `backend/models/impairments.py` | RF impairment layer over complex IQ: CFO, sample-clock ppm, phase noise, I/Q imbalance, DC offset, AWGN (SNR or noise power), clipping, requantisation | All randomness from one seeded `default_rng`; `(config, seed, input) → output` is bit-for-bit reproducible. Wired into `generator.run` via `ScenarioRequest.impairments` (default `None`); the clean file is kept as `gpssim.clean.bin`. The native engine applies the same chain streamed per band file (`backend/synth/postproc.py`, independent noise per band, no clean copy). Reachable from the browser UI via the per-channel *RF impairments (advanced)* panel (collapsed and opt-in; an untouched panel leaves the `/api/generate` body unchanged). The panel has a **Preset** selector — *Bench cable test*, *Field test — typical*, *Field test — degraded/urban* — that fills every field with representative SDR-replay values and ticks the enable box; hand-editing any field reverts it to *Custom*. Presets are frontend-only starting points, not a calibrated device model. |
 | `backend/models/wls.py` | Elevation-weighted least-squares fix + GDOP/PDOP/HDOP/VDOP/TDOP + formal covariance | Standalone; the legacy unweighted `receiver.solve_position` is unchanged. |
 | `backend/models/error_budget.py` | Per-PRN 1-σ range error budget, RSS to a UERE | Nominal figures are **documentation-grade, not a calibration** of this simulator. |
 

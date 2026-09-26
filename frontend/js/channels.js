@@ -26,7 +26,7 @@ window.addChannel = function () {
     <div class="channel-top">
       <div class="col-hw">
         <h4>Hardware Config</h4>
-        <label>Device URI <input id="${id}-uri" value="ip:192.168.2.1"></label>
+        <label>Device URI <input id="${id}-uri" value="ip:192.168.3.1"></label>
         <label>SDR kind <select id="${id}-kind">
           <option value="pluto">Pluto / IIO clone</option>
           <option value="bladerf">bladeRF</option>
@@ -59,7 +59,7 @@ window.addChannel = function () {
         <label title="Live Start only: run on the real current GPS time (needed by phones / A-GPS receivers)"><input type="checkbox" id="${id}-start-now"> Live: now</label>
         <label>Duration s <input type="number" id="${id}-duration" value="300"></label>
         <label>Sample rate <select id="${id}-rate">
-          <option>2600000</option><option>4000000</option><option>5000000</option><option>8000000</option>
+          <option>2600000</option><option>4000000</option><option>5000000</option><option>8000000</option><option>10000000</option><option>15000000</option>
         </select></label>
         <label>Format <select id="${id}-fmt"><option>int16</option><option>int8</option></select></label>
         <label>RINEX <input id="${id}-rinex-path" value="AUTO" size="26"></label>
@@ -85,7 +85,7 @@ window.addChannel = function () {
           <div id="${id}-sp3-status" class="hint"></div>
         </section>
         <section class="adv-tab" data-adv="imp" hidden>
-          <p class="adv-head">RF impairments (advanced) <span class="info" title="Deterministic, seeded. Post-processes the gps-sdr-sim output; a clean copy is kept as gpssim.clean.bin. All-zero fields = no-op.">i</span></p>
+          <p class="adv-head">RF impairments (advanced) <span class="info" title="Deterministic, seeded. Post-processes the generated IQ. gps-sdr-sim keeps a clean copy as gpssim.clean.bin; the native engine impairs every band file in place (the same request without impairments regenerates the clean file) with independent noise per band. All-zero fields = no-op.">i</span></p>
           <label>Preset <select id="${id}-imp-preset">
             <option value="manual">Custom (enter values below)</option>
             <option value="bench">Bench cable test (near-ideal)</option>
@@ -106,7 +106,7 @@ window.addChannel = function () {
           <label>Quantizer bits <input id="${id}-imp-bits" type="number" value="0" min="0" max="16"></label>
         </section>
         <section class="adv-tab" data-adv="mdl" hidden>
-          <p class="adv-head">Propagation &amp; receiver models (advanced) <span class="info" title="Deterministic, RNG-free. These always shape the Preview / truth observables. They alter the generated IQ only when 'apply to IQ' is ticked: ionosphere then rides gps-sdr-sim's own broadcast Klobuchar, and a quasi-static receiver-clock + multipath channel is convolved onto the composite signal (clean copy kept as gpssim.prechannel.bin). Troposphere stays truth-only. All 'off' = no change.">i</span></p>
+          <p class="adv-head">Propagation &amp; receiver models (advanced) <span class="info" title="Deterministic, RNG-free. These always shape the Preview / truth observables. They alter the generated IQ only when 'apply to IQ' is ticked. gps-sdr-sim: ionosphere rides its own broadcast Klobuchar, a quasi-static receiver-clock + multipath channel is convolved onto the composite signal (clean copy kept as gpssim.prechannel.bin), troposphere stays truth-only. native: ionosphere and troposphere are always in the IQ; the receiver clock is applied exactly per satellite and band (offset, drift, sawtooth), and multipath is convolved per band file with each reflection's Doppler rotating per sample. All 'off' = no change.">i</span></p>
           <label>Preset <select id="${id}-mdl-preset">
             <option value="manual">Custom (set fields below)</option>
             <option value="open-sky">Open sky — mid-latitude, clean</option>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import dataclasses
 import datetime as dt
 import functools
 import json
@@ -14,9 +15,10 @@ from backend import config, geometry
 from backend.analysis import nav_encoders
 from backend.ephem import ephemeris, ephemeris_fit, ephemeris_source
 from backend.gpstime import GPSTime
-from backend.synth import _lib, bands, pilot_codes, signals
+from backend.synth import _lib, bands, pilot_codes, postproc, signals
 from backend.synth.fading import MODEL_INT, FadingConfig
-from backend.models import atmosphere
+from backend.models import atmosphere, channel_models, receiver_clock as rc_mod
+from backend.models import impairments as imp_mod, multipath as mp_mod
 
 # Keplerian toe/toc grid (s) used when re-labelling broadcast records to the
 # run epoch: a multiple of every nav message's toe resolution (see
@@ -134,7 +136,7 @@ def _route_rx_fn(route, duration_s):
 def _trajectory_knots(state, rx, sow, fs, block_samples, total_samples,
                       chip_rate_hz, carrier_hz, code_phase0_chips, code_len,
                       signal=None, carrier_offset_hz=0.0, rx_fn=None,
-                      atmo_fn=None, doppler_scale=1.0):
+                      atmo_fn=None, doppler_scale=1.0, clk_fn=None):
     """SP-B per-mixer-block trajectory knots for one satellite.
 
     Samples ``geometry.observables`` at every mixer-block boundary and turns
@@ -154,7 +156,9 @@ def _trajectory_knots(state, rx, sow, fs, block_samples, total_samples,
     (``doppler_scale`` rescales the observables' nominal-band Doppler to
     it). ``atmo_fn(az_rad, el_rad, t_rel) -> (iono_m, tropo_m)`` adds the
     time-varying atmospheric delay: group delay on the code, phase advance
-    of the ionosphere on the carrier.
+    of the ionosphere on the carrier. ``clk_fn(t_rel) -> (offset_s, rate)``
+    is the receiver-clock model: a common range term ``c * offset`` on code
+    and carrier alike, and ``-f * rate`` on the carrier Doppler / code rate.
     """
     # A broadcast record dict must be dispatched to its system's propagator
     # (GLONASS/SBAS are not Keplerian); geometry.observables' own as_state_fn
@@ -169,6 +173,7 @@ def _trajectory_knots(state, rx, sow, fs, block_samples, total_samples,
     cf, cph, cr, kp = [], [], [], []
     r0 = None
     a0 = None
+    k0 = clk_fn(0.0)[0] if clk_fn is not None else 0.0
     for j in range(nk):
         tj = (j * block_samples) / fs
         if rx_fn is not None:
@@ -189,7 +194,10 @@ def _trajectory_knots(state, rx, sow, fs, block_samples, total_samples,
         iono = iono_abs - (a0[0] if a0 else 0.0)
         tropo = tropo_abs - (a0[1] if a0 else 0.0)
         dr_code = dr + iono + tropo
-        cf.append(o["carrier_doppler_hz"] * doppler_scale + carrier_offset_hz)
+        clk_abs, clk_rate = clk_fn(tj) if clk_fn is not None else (0.0, 0.0)
+        dr_code += config.C * (clk_abs - k0)
+        cf.append(o["carrier_doppler_hz"] * doppler_scale + carrier_offset_hz
+                  - carrier_hz * clk_rate)
         # ABSOLUTE carrier phase (a function of GPS time and the absolute
         # carrier range only), not phase relative to this run's start: two
         # runs that abut in time (live segments) then join without a
@@ -199,9 +207,10 @@ def _trajectory_knots(state, rx, sow, fs, block_samples, total_samples,
         # reduced in float64 before scaling to radians.
         cyc = (math.fmod(carrier_offset_hz * (sow + tj), 1.0)
                - math.fmod(carrier_hz / config.C
-                           * (o["geo_range_m"] - iono_abs + tropo_abs), 1.0))
+                           * (o["geo_range_m"] - iono_abs + tropo_abs), 1.0)
+               - math.fmod(carrier_hz * clk_abs, 1.0))
         cph.append(2.0 * math.pi * cyc)
-        cr.append(chip_rate_hz + o["code_doppler_hz"])
+        cr.append(chip_rate_hz + o["code_doppler_hz"] - chip_rate_hz * clk_rate)
         kp.append(eff + chip_rate_hz * tj
                   - (chip_rate_hz / config.C) * dr_code)
     return cf, cph, cr, kp
@@ -889,6 +898,18 @@ def run(req, progress_cb=None) -> pathlib.Path:
         else:
             hdr["iono_alpha"] = list(atmo_cfg.klobuchar_alpha)
             hdr["iono_beta"] = list(atmo_cfg.klobuchar_beta)
+    # Receiver-clock model, opted into the IQ by ``models_to_iq`` exactly as
+    # on the gps-sdr-sim path. Here it is exact per satellite and per band
+    # (common range term on code and carrier, drift on every Doppler),
+    # rather than one quasi-static shift of the composite signal.
+    chan = channel_models.ChannelModels.from_request(req)
+    to_iq = bool(getattr(req, "models_to_iq", False))
+    rc_cfg = chan.receiver_clock
+    clk_fn = None
+    if to_iq and rc_cfg.enabled:
+        def clk_fn(t_rel, _c=rc_cfg):
+            return (rc_mod.offset_s(_c, sow + t_rel),
+                    rc_mod.rate_s_per_s(_c, sow + t_rel))
     rx_lat_rad = math.radians(float(req.lat))
     rx_lon_rad = math.radians(float(req.lon))
     rx_h_m = float(req.alt)
@@ -934,6 +955,11 @@ def run(req, progress_cb=None) -> pathlib.Path:
                           0.0) if fa is not None else (0.0, 0.0))
         svb = geometry.group_delay_bias_s(sysc, sig.band, rec)
         e["pseudorange_m"] += -config.C * svb + iono + tropo
+        if clk_fn is not None:
+            c_off, c_rate = clk_fn(0.0)
+            e["pseudorange_m"] += config.C * c_off
+            e["carrier_doppler_hz"] -= f_car * c_rate
+            e["code_doppler_hz"] -= sig.chip_rate_hz * c_rate
         e["code_phase_chips"] = ((e["pseudorange_m"] / config.C
                                   * sig.chip_rate_hz) % sig.code_len)
 
@@ -1042,7 +1068,8 @@ def run(req, progress_cb=None) -> pathlib.Path:
                     e["code_phase_chips"], sig0.code_len,
                     signal=sig0, carrier_offset_hz=carr_off, rx_fn=rx_fn,
                     atmo_fn=e.get("_atmo_fn"),
-                    doppler_scale=e.get("_doppler_scale", 1.0))
+                    doppler_scale=e.get("_doppler_scale", 1.0),
+                    clk_fn=clk_fn)
             for c, c_keep in comps:
                 _finish_component(c, e, sow, knots)
                 if plan.fs >= 2.0 * (abs(if_hz) + _CBOC_HALF_BW_HZ):
@@ -1107,6 +1134,7 @@ def run(req, progress_cb=None) -> pathlib.Path:
 
     if not band_specs:
         raise RuntimeError("no satellites survived band planning")
+    plans_by_id = {p.id: p for p in plans}
 
     cb = None
     if progress_cb is not None:
@@ -1116,6 +1144,33 @@ def run(req, progress_cb=None) -> pathlib.Path:
     rc = _lib.run_bands(band_specs, cb)
     if rc != 0:
         raise RuntimeError(f"synth_run_bands failed ({rc})")
+
+    # Composite-signal models, per band file, streamed (see postproc):
+    # multipath under models_to_iq like the gps-sdr-sim path, then the RF
+    # impairments (random_seed overrides their seed, as there).
+    channel_report = None
+    if to_iq and (rc_cfg.enabled or chan.multipath.enabled):
+        channel_report = {
+            "receiver_clock": (rc_mod.state(rc_cfg, sow) | {
+                "applied": "per satellite, per band (trajectory knots)"})
+            if rc_cfg.enabled else None,
+            "multipath": None,
+        }
+    imp_cfg = imp_mod.ImpairmentConfig.from_dict(getattr(req, "impairments", None))
+    if getattr(req, "random_seed", None) is not None and req.impairments:
+        imp_cfg = dataclasses.replace(imp_cfg, seed=req.random_seed)
+    impairment_report = {}
+    for bi, mb in enumerate(meta_bands):
+        path = outdir / mb["file"]
+        if to_iq and chan.multipath.enabled:
+            r = postproc.apply_multipath(path, mb["fs"], plans_by_id[mb["id"]].quant,
+                                         chan.multipath)
+            r["tracking_bias"] = mp_mod.tracking_bias(chan.multipath, 0.0)
+            channel_report["multipath"] = (channel_report["multipath"] or {}) | {
+                mb["id"]: r}
+        if imp_cfg.enabled:
+            impairment_report[mb["id"]] = postproc.apply_impairments(
+                path, mb["fs"], plans_by_id[mb["id"]].quant, imp_cfg, band_idx=bi)
 
     l1_plan = next((p for p in plans if p.id == "L1"), plans[0])
     l1_total = int(round(l1_plan.fs * req.duration_s))
@@ -1149,6 +1204,8 @@ def run(req, progress_cb=None) -> pathlib.Path:
                     e["signal_id"], f"{e['sys']}/{e['signal_id'].band}")
                 for e in entries}),
             "fading": cfg.model,
+            "channel_models": channel_report,
+            "impairments": impairment_report or None,
             "svs": meta_svs,
             "systems": sorted({e["sys"] for e in entries}),
             "warnings": warnings,
