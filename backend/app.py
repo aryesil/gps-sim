@@ -398,10 +398,9 @@ def _preview_multi(body: dict, start: dt.datetime, rx,
     product via per-key state-fn interpolants."""
     mode = ephemeris_source.normalise_mode(body.get("ephemeris_mode"))
     if mode == "precise":
-        want_mgnss = len({s for s in systems if s != "G"}) > 0
         precise_warns = list(_ensure_precise_loaded(
             start, bool(body.get("fallback_to_broadcast")),
-            want_multignss=want_mgnss))
+            want_systems=systems))
         if _precise_provider.loaded:
             return _preview_multi_precise(body, start, rx, systems, week, sow,
                                           precise_warns)
@@ -655,14 +654,20 @@ def _resolve_rinex(body: dict, start: dt.datetime) -> str:
 
 
 def _ensure_precise_loaded(start: dt.datetime, fallback: bool, *,
-                           want_multignss: bool = False) -> list[str]:
-    """Make ``_precise_provider`` hold an SP3 product that covers ``start``.
+                           want_multignss: bool = False,
+                           want_systems=None) -> list[str]:
+    """Make ``_precise_provider`` hold an SP3 product that covers ``start``
+    and, where one exists, every system in ``want_systems`` (or all of
+    GRECJ with ``want_multignss``).
 
     Called on the ``ephemeris_mode == "precise"`` paths. If nothing is
-    loaded, or the loaded product does not cover the requested epoch, this
-    downloads the best free IGS product for that GPS day
-    (``config.PRECISE_SP3_MIRRORS``: rapid tried before final) and loads
-    it -- so the operator never has to place a file or click "Fetch".
+    loaded, or the loaded product does not cover the requested epoch or
+    systems, this downloads the best free product for that GPS day
+    (``config.PRECISE_SP3_MIRRORS``, probed until one carries the wanted
+    systems) and loads it; for epochs too recent for any daily product it
+    falls back to the newest ultra-rapid solution
+    (``config.PRECISE_SP3_ULTRA_MIRRORS``) -- so the operator never has to
+    place a file or click "Fetch".
 
     Returns advisory warnings. Raises ``ephemeris_source.EphemerisModeError``
     (HTTP 422) when precise data cannot be obtained and ``fallback`` is
@@ -671,34 +676,34 @@ def _ensure_precise_loaded(start: dt.datetime, fallback: bool, *,
     gps_start = start + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
     week, sow = ephemeris.gps_week_and_sow(gps_start)
     t_want = GPSTime(week, sow).seconds
+    want = precise._wanted(want_systems, want_multignss)
+
+    def _missing() -> set[str]:
+        if not _precise_provider.loaded:
+            return set(want)
+        return want - set(_precise_provider.product.systems())
 
     def _coverage_warns() -> list[str]:
-        # Fires on both the manual-load and auto-download paths: a GPS-only
-        # SP3 means the precise path OMITS the other requested systems (with a
-        # per-system warning) -- it does NOT fall back to broadcast for them.
-        if _precise_provider.loaded and _precise_provider.product.systems() == ["G"]:
-            if want_multignss:
-                return ["precise: no multi-GNSS SP3 (MGEX) product could be "
-                        "fetched for this epoch; fell back to a GPS-only "
-                        "product — R/E/C/J are omitted. Set PRECISE_SP3_MIRRORS "
-                        "to a working MGEX mirror or load one via "
-                        "/api/precise/load."]
-            return ["precise: SP3 product covers GPS only; other requested "
-                    "systems are omitted from this run"]
-        return []
+        # Fires on both the manual-load and auto-download paths: systems the
+        # SP3 lacks are OMITTED from the precise run (with a per-system
+        # warning) -- they do NOT fall back to broadcast.
+        miss = _missing()
+        if not miss:
+            return []
+        names = ",".join(c for c in "GRECJ" if c in miss)
+        return [f"precise: no SP3 product with {names} could be fetched for "
+                f"this epoch; {names} are omitted from this run. Load a "
+                "multi-GNSS (MGEX) product via /api/precise/load or set "
+                "PRECISE_SP3_MIRRORS to a mirror that serves one."]
 
     if _precise_provider.loaded:
-        gps_only_loaded = _precise_provider.product.systems() == ["G"]
         lo, hi = _precise_provider.product.coverage_seconds
         # keep clear of the interpolation-window edges (~11-point Lagrange
         # over 15-min epochs); if inside, the loaded product is fine --
-        # unless multi-GNSS is needed and all we have is a GPS-only product
-        # from an earlier GPS-only request: fall through and (re)download so
-        # it can be upgraded to an MGEX product.
+        # unless it lacks a wanted system: fall through and try to fetch a
+        # product that has it.
         loaded_covers = lo + 1800.0 <= t_want <= hi - 1800.0
-        upgrade_gps_only = (want_multignss and gps_only_loaded
-                            and bool(config.PRECISE_SP3_MIRRORS))
-        if loaded_covers and not upgrade_gps_only:
+        if loaded_covers and (not _missing() or not config.PRECISE_SP3_MIRRORS):
             return _coverage_warns()
     else:
         loaded_covers = False
@@ -711,10 +716,15 @@ def _ensure_precise_loaded(start: dt.datetime, fallback: bool, *,
             "and PRECISE_SP3_MIRRORS is empty (load one via /api/precise/load)")
 
     dow = int(sow // 86400)
+    now_gps = GPSTime(*ephemeris.gps_week_and_sow(
+        dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+        + dt.timedelta(seconds=config.GPS_UTC_LEAP_S))).seconds
     # Fetch the day before and after as well and merge: a one-day SP3 file
     # cannot supply a centred ~11-point interpolation window when the start
     # sits within ~3 h of its 00:00 / 24:00 edge (the fit arc is toe +/- 2 h
-    # and the window needs several more samples beyond that).
+    # and the window needs several more samples beyond that). Days that
+    # have not ended yet cannot have a daily product: skip them rather than
+    # wait on every mirror.
     days = []
     for d in (dow - 1, dow, dow + 1):
         w, dd = week, d
@@ -722,25 +732,46 @@ def _ensure_precise_loaded(start: dt.datetime, fallback: bool, *,
             w, dd = week - 1, 6
         elif dd > 6:
             w, dd = week + 1, 0
-        days.append((w, dd))
+        if (w * 7 + dd + 1) * 86400.0 <= now_gps:
+            days.append((w, dd))
 
-    products, got, central_ok = [], [], False
+    products, got, central = [], [], None
     for w, dd in days:
         try:
             p = precise.download_sp3(w, dd, config.PRECISE_DIR,
                                      config.PRECISE_SP3_MIRRORS,
-                                     want_multignss=want_multignss)
-            products.append(precise.parse_sp3(pathlib.Path(p)))
-            got.append(f"{w}:{dd}")
-            if (w, dd) == (week, dow):
-                central_ok = True
-        except (precise.PreciseProductError, OSError):
+                                     want_multignss=want_multignss,
+                                     want_systems=want)
+            prod = precise.parse_sp3(pathlib.Path(p))
+        except (precise.PreciseProductError, OSError, ValueError):
             continue  # a neighbour day may simply not be published yet
+        products.append(prod)
+        got.append(f"{w}:{dd}")
+        if (w, dd) == (week, dow):
+            central = prod
 
-    if not central_ok:
-        # A GPS-only product was already loaded and covers this epoch; the
-        # MGEX (re)download just failed. Keep the working product rather than
-        # failing the run -- surface the louder "no MGEX" warning instead.
+    # Too recent for a daily product, or the daily one lacks a wanted
+    # system: an ultra-rapid solution may do better.
+    ultra = None
+    central_miss = want - set(central.systems()) if central is not None else want
+    if central_miss and config.PRECISE_SP3_ULTRA_MIRRORS \
+            and now_gps - t_want < 3 * 86400.0:
+        try:
+            u = precise.parse_sp3(pathlib.Path(precise.download_sp3_ultra(
+                t_want, config.PRECISE_DIR, config.PRECISE_SP3_ULTRA_MIRRORS,
+                want_systems=want)))
+            ulo, uhi = u.coverage_seconds
+            if ulo + 1800.0 <= t_want <= uhi - 1800.0 and (
+                    central is None
+                    or len(want & set(u.systems())) > len(want - central_miss)):
+                ultra = u
+        except (precise.PreciseProductError, OSError, ValueError):
+            pass
+
+    if central is None and ultra is None:
+        # A product was already loaded and covers this epoch; the upgrade
+        # download just failed. Keep the working product rather than
+        # failing the run -- surface the missing-systems warning instead.
         if loaded_covers:
             return _coverage_warns()
         msg = (f"precise: could not obtain an SP3 product for {start.date()} "
@@ -749,7 +780,13 @@ def _ensure_precise_loaded(start: dt.datetime, fallback: bool, *,
             return [msg + "; used broadcast"]
         raise ephemeris_source.EphemerisModeError(msg)
 
-    _precise_provider.set_product(precise.merge_sp3(products))
+    if ultra is not None:
+        # One solution spans the whole window; mixing it with daily products
+        # of other centres would splice orbits at the day edges.
+        _precise_provider.set_product(ultra)
+        got = ["ultra-rapid"]
+    else:
+        _precise_provider.set_product(precise.merge_sp3(products))
     st = _precise_provider.status()
     audit.log_event("precise_autoload", source=st.get("source"),
                     satellites=st.get("satellites"), epochs=st.get("epochs"),
@@ -758,8 +795,8 @@ def _ensure_precise_loaded(start: dt.datetime, fallback: bool, *,
     warns = [f"precise: auto-downloaded SP3 for GPS week {week} "
              f"day(s) {','.join(got)}"]
     warns.extend(_coverage_warns())
-    if "ULT" in src:
-        warns.append("precise: only an ultra-rapid (IGU) product was available "
+    if "ULT" in src or ultra is not None:
+        warns.append("precise: only an ultra-rapid product was available "
                      "for this epoch; its predicted portion is less accurate "
                      "than rapid/final orbits")
     lo, hi = _precise_provider.product.coverage_seconds
@@ -784,9 +821,8 @@ def _precise_nav_override(body: dict, start: dt.datetime):
     if mode != "precise":
         return None, []
     fallback = bool(body.get("fallback_to_broadcast"))
-    want_mgnss = len({s for s in (body.get("systems") or ["G"]) if s != "G"}) > 0
     auto_warns = _ensure_precise_loaded(start, fallback,
-                                        want_multignss=want_mgnss)
+                                        want_systems=body.get("systems") or ["G"])
     if not _precise_provider.loaded:
         # fallback path: auto-download disabled or failed, warning already set
         return None, auto_warns

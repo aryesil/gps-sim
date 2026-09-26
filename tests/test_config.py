@@ -22,26 +22,27 @@ def test_l2_l5_band_centres_are_integer_multiples_of_1023():
 
 
 def test_precise_defaults():
-    cfg = importlib.import_module("backend.config")
+    # reload: the autouse _offline_sp3 fixture points PRECISE_DIR at a tmp dir
+    cfg = importlib.reload(importlib.import_module("backend.config"))
     assert cfg.PRECISE_DIR == cfg.DATA_DIR / "precise"
     assert cfg.PRECISE_DIR.is_dir()
     # Ships free, anonymous (no-login) IGS product mirrors by default; a
     # download is still only performed on an explicit request.
     assert len(cfg.PRECISE_SP3_MIRRORS) >= 2
-    # All entries are HTTP(S) URLs. HTTPS is preferred; the ESA
-    # navigation-office operational archive is served over plain HTTP only
-    # (its TLS chain does not verify) and carries public orbit products
-    # with no credentials, so http:// is allowed for that host.
-    assert all(m.startswith(("https://", "http://")) for m in cfg.PRECISE_SP3_MIRRORS)
-    assert all(
-        m.startswith("https://") or "navigation-office.esa.int" in m
-        for m in cfg.PRECISE_SP3_MIRRORS
-    )
+    # All entries are HTTP(S) or anonymous FTP URLs. Plain http:// is
+    # allowed only for the ESA navigation-office archive (its TLS chain does
+    # not verify), ftp:// only for GFZ (the one anonymous GRECJ source).
+    for m in cfg.PRECISE_SP3_MIRRORS + cfg.PRECISE_SP3_ULTRA_MIRRORS:
+        assert (m.startswith("https://")
+                or (m.startswith("http://") and "navigation-office.esa.int" in m)
+                or (m.startswith("ftp://") and "ftp.gfz-potsdam.de" in m)), m
     assert all("cddis" not in m for m in cfg.PRECISE_SP3_MIRRORS)  # needs Earthdata login
     assert any("RAP" in m for m in cfg.PRECISE_SP3_MIRRORS)       # rapid
     assert any("FIN" in m for m in cfg.PRECISE_SP3_MIRRORS)       # final
     assert any("ULT" in m for m in cfg.PRECISE_SP3_MIRRORS)       # ultra-rapid
     assert "RAP" in cfg.PRECISE_SP3_MIRRORS[0]                    # rapid tried first
+    assert "MGX" in cfg.PRECISE_SP3_MIRRORS[0]                    # multi-GNSS first
+    assert len(cfg.PRECISE_SP3_ULTRA_MIRRORS) >= 1
     # ultra-rapid is the last-resort tier
     tags = [t for m in cfg.PRECISE_SP3_MIRRORS for t in ("RAP", "FIN", "ULT") if t in m]
     assert tags.index("RAP") < tags.index("FIN") < tags.index("ULT")

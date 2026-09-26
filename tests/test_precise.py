@@ -361,3 +361,155 @@ def test_download_sp3_want_multignss_does_not_serve_stale_gps_only_cache(
     (tmp_path / f"IGS_{WEEK:04d}_6.sp3").write_bytes(SP3.read_bytes())
     leg = _p.download_sp3(WEEK, 6, tmp_path, mirrors)
     assert pathlib.Path(leg).name == f"IGS_{WEEK:04d}_6.sp3"
+
+
+# --- honest coverage tags, system-aware probing, FTP, dead hosts ----------
+def _sp3_only(systems: str) -> bytes:
+    return "".join(l + "\n" for l in _SP3_MGEX.splitlines()
+                   if not l.startswith("P") or l[1] in systems).encode()
+
+
+def test_cov_tag_lists_real_systems():
+    from backend.ephem.precise import _cov_tag
+    assert _cov_tag({"G"}) == "G"
+    assert _cov_tag({"R", "G"}) == "GR"          # was "GRECJ" before the fix
+    assert _cov_tag(set("JCERG")) == "GRECJ"
+
+
+def test_download_sp3_probes_past_gr_product_for_wanted_systems(
+        tmp_path, monkeypatch):
+    # ESA operational orbits carry G+R only: a Galileo request must keep
+    # probing to the MGEX product instead of stopping at the first non-GPS
+    # file and silently dropping E.
+    import gzip
+    from backend.ephem import precise as _p
+    import requests as _rq
+
+    def _fake_get(url, timeout=0):
+        if "ESA" in url:
+            return _Resp(gzip.compress(_sp3_only("GR")))
+        return _Resp(gzip.compress(_SP3_MGEX.encode()))
+
+    monkeypatch.setattr(_rq, "get", _fake_get)
+    mirrors = ["http://esa/{gpsweek}/ESA0OPSRAP_{yyyy}{doy}.SP3.gz",
+               "https://m/{gpsweek}/GBM0MGXRAP_{yyyy}{doy}.SP3.gz"]
+    out = _p.download_sp3(WEEK, 4, tmp_path, mirrors, want_systems=["G", "E"])
+    assert pathlib.Path(out).name.endswith("_RAP_GRECJ.sp3")
+    assert (tmp_path / f"IGS_{WEEK:04d}_4_RAP_GR.sp3").is_file()
+
+    # a G+R request is happy with the (now cached) G+R product ... or the
+    # GRECJ one; either way it must contain R
+    out = _p.download_sp3(WEEK, 4, tmp_path, mirrors, want_systems=["G", "R"])
+    assert "R" in _p.parse_sp3(pathlib.Path(out)).systems()
+
+
+def test_download_sp3_returns_best_partial_when_none_complete(
+        tmp_path, monkeypatch):
+    import gzip
+    from backend.ephem import precise as _p
+    import requests as _rq
+
+    def _fake_get(url, timeout=0):
+        return _Resp(gzip.compress(_sp3_only("G" if "a/" in url else "GRE")))
+
+    monkeypatch.setattr(_rq, "get", _fake_get)
+    mirrors = ["https://a/{gpsweek}_{doy}.gz", "https://b/{gpsweek}_{doy}.gz"]
+    out = _p.download_sp3(WEEK, 4, tmp_path, mirrors,
+                          want_systems=["G", "E", "C"])
+    assert set(_p.parse_sp3(pathlib.Path(out)).systems()) == {"G", "R", "E"}
+
+
+def test_download_sp3_legacy_grecj_named_gr_cache_is_not_trusted(
+        tmp_path, monkeypatch):
+    # Pre-fix caches were named _GRECJ while holding G+R: read the content.
+    import gzip
+    from backend.ephem import precise as _p
+    import requests as _rq
+
+    (tmp_path / f"IGS_{WEEK:04d}_4_RAP_GRECJ.sp3").write_bytes(_sp3_only("GR"))
+    seen = []
+
+    def _fake_get(url, timeout=0):
+        seen.append(url)
+        return _Resp(gzip.compress(_SP3_MGEX.encode()))
+
+    monkeypatch.setattr(_rq, "get", _fake_get)
+    out = _p.download_sp3(WEEK, 4, tmp_path, ["https://m/{doy}.gz"],
+                          want_systems=["G", "C"])
+    assert seen, "a G+R file named _GRECJ must not satisfy a BeiDou request"
+    assert "C" in _p.parse_sp3(pathlib.Path(out)).systems()
+
+
+def test_download_sp3_ftp_mirror_uses_urllib(tmp_path, monkeypatch):
+    import gzip
+    import io
+    import urllib.request
+    from backend.ephem import precise as _p
+
+    seen = []
+
+    def _fake_urlopen(url, timeout=0):
+        seen.append(url)
+        return io.BytesIO(gzip.compress(_SP3_MGEX.encode()))
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    out = _p.download_sp3(
+        WEEK, 4, tmp_path,
+        ["ftp://ftp.gfz-potsdam.de/pub/GNSS/products/mgex/{gpsweek}_IGS20/"
+         "GBM0MGXRAP_{yyyy}{doy}0000_01D_05M_ORB.SP3.gz"],
+        want_multignss=True)
+    assert seen[0].startswith("ftp://ftp.gfz-potsdam.de/pub/GNSS/products/"
+                              "mgex/2433_IGS20/GBM0MGXRAP_2026")
+    assert pathlib.Path(out).name.endswith("_GRECJ.sp3")
+
+
+def test_unreachable_host_is_skipped_after_first_failure(tmp_path, monkeypatch):
+    import gzip
+    from backend.ephem import precise as _p
+    import requests as _rq
+
+    seen = []
+
+    def _fake_get(url, timeout=0):
+        seen.append(url)
+        if "dead" in url:
+            raise _rq.ConnectTimeout("timed out")
+        return _Resp(gzip.compress(_SP3_MGEX.encode()))
+
+    monkeypatch.setattr(_rq, "get", _fake_get)
+    mirrors = ["https://dead/a_{doy}.gz", "https://dead/b_{doy}.gz",
+               "https://ok/c_{doy}.gz"]
+    _p.download_sp3(WEEK, 4, tmp_path, mirrors, want_multignss=True)
+    assert [u for u in seen if "dead" in u] == [seen[0]]
+
+
+def test_download_sp3_ultra_picks_newest_listed_solution(tmp_path, monkeypatch):
+    import gzip
+    from backend.ephem import precise as _p
+    import requests as _rq
+
+    t = WEEK * 604800.0 + 4 * 86400.0 + 12 * 3600.0        # day 4, 12:00
+    listing = "gfu24333_00.sp3.gz gfu24333_21.sp3.gz gfu24334_06.sp3.gz"
+    seen = []
+
+    def _fake_get(url, timeout=0):
+        seen.append(url)
+        if url.endswith("/"):
+            return _Resp(listing.encode())
+        return _Resp(gzip.compress(_sp3_only("GRE")))
+
+    monkeypatch.setattr(_rq, "get", _fake_get)
+    out = _p.download_sp3_ultra(
+        t, tmp_path, ["https://g/w{gpsweek}/gfu{gpsweek}{dow}_{hh}.sp3.gz"],
+        want_systems=["G", "E"])
+    # newest solution >= 3 h before the epoch that the listing has: 06 h
+    # (09 h is too close, and not listed anyway)
+    assert pathlib.Path(out).name == "ULT_gfu24334_06.sp3"
+    got = [u for u in seen if not u.endswith("/")]
+    assert got == ["https://g/w2433/gfu24334_06.sp3.gz"]
+    # cached: a second call downloads nothing
+    seen.clear()
+    assert _p.download_sp3_ultra(t, tmp_path,
+                                 ["https://g/w{gpsweek}/gfu{gpsweek}{dow}_{hh}.sp3.gz"],
+                                 want_systems=["G", "E"]) == out
+    assert not [u for u in seen if not u.endswith("/")]

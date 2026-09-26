@@ -59,7 +59,7 @@ def synth_iq():
 
 
 @pytest.fixture(autouse=True)
-def _offline_sp3(monkeypatch):
+def _offline_sp3(monkeypatch, tmp_path_factory):
     """The suite is offline. Any real SP3 mirror fetch (now that
     PRECISE_SP3_MIRRORS ships defaults, the precise paths auto-download)
     fails fast instead of touching the network. Tests that deliberately
@@ -72,3 +72,17 @@ def _offline_sp3(monkeypatch):
         raise requests.RequestException("network disabled in tests")
 
     monkeypatch.setattr(requests, "get", _blocked)
+    # ftp:// mirrors go through urllib, not requests
+    import urllib.request
+
+    def _blocked_urlopen(*a, **k):
+        raise OSError("network disabled in tests")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _blocked_urlopen)
+    from backend.ephem import precise
+    monkeypatch.setattr(precise, "_DEAD_HOSTS", {})
+    # ... and never serves the developer's real SP3 cache (data/precise),
+    # which would make "no product available" paths depend on its contents.
+    from backend import config
+    monkeypatch.setattr(config, "PRECISE_DIR",
+                        tmp_path_factory.mktemp("precise"))

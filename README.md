@@ -281,14 +281,23 @@ Set with `ephemeris_mode` on `/api/generate`, `/api/live/start`, and
 When precise mode is requested and no loaded SP3 product covers the start
 time, the server auto-downloads the best free product for that GPS day *and
 the day either side* (`PRECISE_SP3_MIRRORS`), merges them, and loads the
-result — no file to place, no button to press. When more than GPS is
-requested the fetch prefers a multi-GNSS (MGEX, GRECJ) product and only
-falls back to a GPS-only archive as a last resort; the cache is tagged with
-its coverage (`…_GRECJ.sp3` vs `…_G.sp3`) so a GPS-only file never
-shadows a later multi-GNSS request. If only a GPS-only product can be
-obtained, the non-GPS systems are dropped with a warning that says so.
-Ultra-rapid products are only reached for epochs too recent for
-rapid/final; their second day is *predicted*, so a warning is added.
+result — no file to place, no button to press. Mirrors are probed until a
+product carries every requested system; GFZ's MGEX rapid
+(`GBM0MGXRAP`, anonymous FTP, full GRECJ, published the next day) comes
+first, then ESA's operational orbits (GPS + GLONASS only), IGN and the
+GPS-only IGS archives. The systems are read from the file, and the cache
+name lists them (`…_GRECJ.sp3`, `…_GR.sp3`, `…_G.sp3`), so a partial
+product never shadows a later request for more. Systems no product carries
+are dropped with a warning that names them. Days that have not ended are
+not requested, and a host that refuses or times out a connection is
+skipped for 10 minutes instead of costing a 30 s timeout per file.
+
+For epochs too recent for a daily product (today, usually yesterday) the
+newest ultra-rapid solution issued at least 3 h before the start is used
+instead (`PRECISE_SP3_ULTRA_MIRRORS`: GFZ every 3 h with GPS + GLONASS +
+Galileo, ESA every 6 h with GPS + GLONASS); its second day is *predicted*,
+so a warning is added. No anonymous ultra-rapid product carries BeiDou or
+QZSS.
 
 The three-day merge matters because a single one-day SP3 file
 cannot supply a centred ~11-point interpolation window when the start
@@ -457,7 +466,8 @@ All via environment variables (see `backend/config.py`).
 | `OUT_DIR` | `./out` | Generated IQ + `meta.json`, recordings. Served at `/out`. |
 | `LOG_DIR` | `./logs` | `audit.jsonl`. |
 | `PRECISE_DIR` | `./data/precise` | SP3 product cache / load directory. Git-ignored — products are downloaded at run time, never committed. |
-| `PRECISE_SP3_MIRRORS` | free anonymous mirrors: ESA navigation-office + MGEX (GRECJ) rapid → final, then GPS-only IGS0OPS rapid → final → ultra-rapid | Comma-separated SP3 URL templates (`{gpsweek}`/`{gps_week}`/`{dow}`/`{yyyy}`/`{doy}`/`{wwwwd}`/`{hh}`). Tried in order, first hit wins. A request for more than GPS prefers a multi-GNSS (MGEX) product and only falls back to a GPS-only archive as a last resort. Used by an explicit `POST /api/precise/load` with `download` and by the auto-fetch on the precise `/api/preview` and `/api/generate` paths. Cached per day, tier and coverage (`IGS_wwww_d_{RAP,FIN,ULT}_{GRECJ,G}.sp3`); delete the file to force a refresh. Set to `""` to disable all downloads. |
+| `PRECISE_SP3_MIRRORS` | free anonymous mirrors: GFZ MGEX rapid (GRECJ, FTP), ESA navigation-office, IGN MGEX rapid → final, then GPS-only IGS0OPS rapid → final → ultra-rapid | Comma-separated SP3 URL templates (`{gpsweek}`/`{gps_week}`/`{dow}`/`{yyyy}`/`{doy}`/`{wwwwd}`/`{hh}`). Tried in order until a product carries every requested system, else the one covering most is kept (`ftp://` templates are fetched with urllib). Used by an explicit `POST /api/precise/load` with `download` and by the auto-fetch on the precise `/api/preview` and `/api/generate` paths. Cached per day, tier and coverage (`IGS_wwww_d_{RAP,FIN,ULT}_<systems>.sp3`, e.g. `_GRECJ`, `_GR`); delete the file to force a refresh. Set to `""` to disable all downloads. |
+| `PRECISE_SP3_ULTRA_MIRRORS` | GFZ ultra-rapid (FTP, 3-hourly, G/R/E), ESA ultra-rapid (6-hourly, G/R) | Ultra-rapid templates (`{gpsweek}`/`{dow}`/`{yyyy}`/`{doy}`/`{hh}` of the solution's first epoch) for epochs no daily product covers yet; the newest listed solution issued ≥ 3 h before the start wins. `""` disables the fallback. |
 | `GPS_SDR_SIM_BIN` | `./gps-sdr-sim/gps-sdr-sim` | Path to the built binary. |
 | `API_KEYS_JSON` | `""` | JSON `{"<key>": "operator"｜"viewer"}`. Empty ⇒ auth disabled. |
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | uvicorn bind (via `run_server.sh`). |

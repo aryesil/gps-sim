@@ -47,31 +47,25 @@ RINEX_MIRRORS = [
 
 # Precise-ephemeris analysis subsystem (backend/precise.py). SP3 products
 # are loaded from a local path by default. PRECISE_SP3_MIRRORS defaults to
-# anonymous, no-login product mirrors (ESA navigation-office, IGN, BKG); a download is still
-# only performed when the operator explicitly requests one (the
-# /api/precise/load "download" field). Set the env var to override the
-# list, or to "" to disable SP3 downloads entirely. Templates may use
-# {gpsweek}/{gps_week}, {dow}, {yyyy}, {doy}, {wwwwd}, {hh} (ultra-rapid
-# solution hour, defaults to "00"). Tried in order: the multi-GNSS (MGEX,
-# GRECJ) products come first -- download_sp3(want_multignss=True) keeps
-# probing past a GPS-only hit until it finds one of these -- then the
-# GPS-only IGS Operational products as a fallback:
-# rapid (~17 h latency, final-grade orbits) -> final (~12 d, best) ->
-# ultra-rapid (IGU, ~3-9 h, 2-day file whose second half is *predicted*)
-# as the last resort for epochs too recent for rapid/final.
+# anonymous, no-login product mirrors (GFZ, ESA navigation-office, IGN,
+# BKG); a download is still only performed when the operator explicitly
+# requests one (the /api/precise/load "download" field) or runs a
+# precise-ephemeris scenario. Set the env var to override the list, or to
+# "" to disable SP3 downloads entirely. Templates (http, https or ftp) may
+# use {gpsweek}/{gps_week}, {dow}, {yyyy}, {doy}, {wwwwd}, {hh}
+# (ultra-rapid solution hour, defaults to "00"). download_sp3 probes them
+# in order until a product carries every requested system (it reads the
+# systems from the file, not the name), else keeps the one covering most.
+# Tiers: rapid (~17 h latency, final-grade orbits) -> final (~12 d, best)
+# -> ultra-rapid (2-day file whose second half is *predicted*).
 _DEFAULT_SP3_MIRRORS = (
-    # --- multi-GNSS products (GPS+GLONASS+Galileo+BeiDou) -- tried first so
-    # the precise path never settles for a GPS-only orbit when a mixed one
-    # exists (download_sp3(want_multignss=True) keeps probing past a
-    # GPS-only hit). ESA/ESOC's operational solution (navigation-office.esa
-    # .int) is a plain-HTTP, no-login archive that is reachable from many
-    # networks where igs.ign.fr times out and where BKG only carries the
-    # GPS-only IGS Operational combination; its ESA0OPS orbits carry
-    # G/R/E (and C on recent days). The IGN MGEX copies (GFZ0MGXRAP,
-    # WUM0MGXFIN, true GRECJ) follow as a secondary for deployments with
-    # the opposite reachability. Networks that can reach neither should set
-    # PRECISE_SP3_MIRRORS to a reachable MGEX mirror or load an SP3 by hand
-    # via /api/precise/load.
+    # --- multi-GNSS. GFZ's MGEX rapid (GBM0MGXRAP) is the only anonymous
+    # full-GRECJ daily product reachable from most networks: GFZ's FTP
+    # server serves it the day after. ESA/ESOC's operational orbits
+    # (plain HTTP) carry GPS+GLONASS only. The IGN MGEX copies (GFZ0MGXRAP,
+    # WUM0MGXFIN) follow for networks that reach igs.ign.fr.
+    "ftp://ftp.gfz-potsdam.de/pub/GNSS/products/mgex/{gpsweek}_IGS20/"
+    "GBM0MGXRAP_{yyyy}{doy}0000_01D_05M_ORB.SP3.gz,"
     "http://navigation-office.esa.int/products/gnss-products/{gpsweek}/"
     "ESA0OPSRAP_{yyyy}{doy}0000_01D_05M_ORB.SP3.gz,"
     "http://navigation-office.esa.int/products/gnss-products/{gpsweek}/"
@@ -98,6 +92,21 @@ PRECISE_DIR = pathlib.Path(_str("PRECISE_DIR", str(DATA_DIR / "precise")))
 PRECISE_SP3_MIRRORS = [m.strip() for m in
                        _str("PRECISE_SP3_MIRRORS", _DEFAULT_SP3_MIRRORS).split(",")
                        if m.strip()]
+# Ultra-rapid products for epochs no daily product covers yet (today and
+# usually yesterday): precise.download_sp3_ultra picks the newest solution
+# issued >= 30 min before the epoch. {gpsweek}/{dow}/{yyyy}/{doy}/{hh} are
+# the solution's first epoch. GFZ issues every 3 h with G/R/E, ESA every
+# 6 h with G/R. "" disables the fallback.
+_DEFAULT_SP3_ULTRA_MIRRORS = (
+    "ftp://ftp.gfz-potsdam.de/pub/GNSS/products/ultra/w{gpsweek}/"
+    "gfu{gpsweek}{dow}_{hh}.sp3.gz,"
+    "http://navigation-office.esa.int/products/gnss-products/{gpsweek}/"
+    "ESA0OPSULT_{yyyy}{doy}{hh}00_02D_05M_ORB.SP3.gz"
+)
+PRECISE_SP3_ULTRA_MIRRORS = [
+    m.strip() for m in
+    _str("PRECISE_SP3_ULTRA_MIRRORS", _DEFAULT_SP3_ULTRA_MIRRORS).split(",")
+    if m.strip()]
 
 ALLOW_TX = _flag("ALLOW_TX", False)
 RF_FRONTEND_ENABLED = _flag("RF_FRONTEND_ENABLED", False)

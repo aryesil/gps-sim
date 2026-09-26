@@ -51,7 +51,7 @@ def test_load_download_delegates_to_fetcher(monkeypatch):
     from backend import app as appmod
     calls = {}
 
-    def _fake(gps_week, dow, cache_dir, mirrors):
+    def _fake(gps_week, dow, cache_dir, mirrors, **kw):
         calls["args"] = (gps_week, dow, list(mirrors))
         return SP3
 
@@ -248,18 +248,20 @@ def test_preview_precise_gps_only_product_warns(monkeypatch):
         return gps_product
 
     def _fake_download_sp3(gps_week, dow, cache_dir, mirrors, *,
-                           want_multignss=False):
+                           want_multignss=False, want_systems=None):
         return SP3  # return the fixture path so it exists
 
     monkeypatch.setattr(appmod.precise, "download_sp3", _fake_download_sp3)
     monkeypatch.setattr(appmod.precise, "parse_sp3", _fake_parse_sp3)
 
     # Trigger the download path to hit _ensure_precise_loaded with a fresh product.
-    # Use a date outside the current loaded fixture to trigger auto-download.
+    # Use a (past) date outside the current loaded fixture to trigger
+    # auto-download; a future date is not fetched at all.
     r = client.post("/api/preview", json={
-        **RX, "start_utc": "2027-01-01T00:00:00", "rinex_path": BRDC,
+        **RX, "start_utc": "2026-01-01T00:00:00", "rinex_path": BRDC,
+        "systems": ["G", "E"],
         "ephemeris_mode": "precise", "fallback_to_broadcast": True})
     assert r.status_code == 200
     ws = r.json()["warnings"]
-    assert any("covers GPS only" in w and "omitted" in w for w in ws), \
+    assert any("omitted" in w and "E" in w for w in ws), \
         f"Expected GPS-only coverage warning in {ws}"

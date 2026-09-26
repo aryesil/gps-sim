@@ -474,24 +474,108 @@ def _sp3_systems(data: bytes) -> set[str]:
 
 
 def _cov_tag(systems: set[str]) -> str:
-    return "GRECJ" if (systems - {"G"}) else "G"
+    """Cache-name tag listing the systems a product really carries, in
+    ``GRECJ`` order (``"G"``, ``"GR"``, ``"GRE"``, ``"GRECJ"``...). Before
+    this, any non-GPS letter tagged the file ``GRECJ``, so a GPS+GLONASS-only
+    product (ESA's operational orbits) passed as a full multi-GNSS one and
+    Galileo/BeiDou were silently dropped."""
+    return "".join(c for c in _SP3_SYS_LETTERS if c in systems) or "G"
+
+
+def _wanted(want_systems, want_multignss: bool) -> set[str]:
+    """Systems a product must carry. Only letters an SP3 can hold count."""
+    if want_systems:
+        w = {s for s in want_systems if s in _SP3_SYS_LETTERS}
+        return w | {"G"}
+    return set(_SP3_SYS_LETTERS) if want_multignss else {"G"}
+
+
+# Hosts that refused or timed out a connection recently: host -> retry-after
+# (time.monotonic()). An unreachable mirror (igs.ign.fr from many networks)
+# otherwise cost a 30 s connect timeout per URL, per day, per request.
+_DEAD_HOSTS: dict[str, float] = {}
+_DEAD_FOR_S = 600.0
+_CONNECT_TIMEOUT_S = 6.0
+_READ_TIMEOUT_S = 60.0
+
+
+class _FetchError(Exception):
+    pass
+
+
+def _host(url: str) -> str:
+    from urllib.parse import urlsplit
+    return urlsplit(url).netloc
+
+
+def _fetch(url: str) -> bytes:
+    """GET ``url`` (http/https via requests, ftp via urllib). Raises
+    _FetchError; a connection failure also marks the host dead for a while
+    so the remaining URLs on it are skipped."""
+    import time as _t
+
+    host = _host(url)
+    if _DEAD_HOSTS.get(host, 0.0) > _t.monotonic():
+        raise _FetchError(f"{host} unreachable (skipped)")
+    if url.startswith("ftp://"):
+        import socket
+        import urllib.error
+        import urllib.request
+        try:
+            with urllib.request.urlopen(url, timeout=_CONNECT_TIMEOUT_S * 2) as r:
+                return r.read()
+        except urllib.error.URLError as e:
+            reason = getattr(e, "reason", e)
+            if isinstance(reason, (socket.timeout, TimeoutError,
+                                   ConnectionError, OSError)) and \
+                    "550" not in str(reason):
+                _DEAD_HOSTS[host] = _t.monotonic() + _DEAD_FOR_S
+            raise _FetchError(f"{url}: {reason}") from None
+        except (OSError, EOFError) as e:
+            _DEAD_HOSTS[host] = _t.monotonic() + _DEAD_FOR_S
+            raise _FetchError(f"{url}: {e}") from None
+    import requests as _rq
+    try:
+        r = _rq.get(url, timeout=(_CONNECT_TIMEOUT_S, _READ_TIMEOUT_S))
+        r.raise_for_status()
+    except (_rq.ConnectionError, _rq.Timeout) as e:
+        _DEAD_HOSTS[host] = _t.monotonic() + _DEAD_FOR_S
+        raise _FetchError(f"{url}: {e}") from None
+    except _rq.RequestException as e:
+        raise _FetchError(f"{url}: {e}") from None
+    return r.content
+
+
+def _sp3_payload(url: str) -> bytes:
+    """Fetch and gunzip one SP3 product; raises _FetchError if it is not
+    SP3."""
+    import gzip as _gz
+
+    data = _fetch(url)
+    if data[:2] == b"\x1f\x8b":
+        data = _gz.decompress(data)
+    if data[:2] not in (b"#c", b"#d", b"#a", b"#b"):
+        raise _FetchError(f"{url}: not an SP3 file")
+    return data
 
 
 def download_sp3(gps_week: int, dow: int, cache_dir, mirrors: list[str],
-                 *, want_multignss: bool = False) -> str:
-    """Best-effort SP3 fetch. Disabled unless ``mirrors`` is non-empty
-    (config.PRECISE_SP3_MIRRORS). Mirror templates may use any of
-    ``{gpsweek}`` / ``{gps_week}`` (4-digit GPS week), ``{dow}`` (day of
-    week 0-6), ``{yyyy}`` (calendar year), ``{doy}`` (3-digit day of year)
-    ``{wwwwd}`` (GPS week + dow, the legacy short-name stem) and ``{hh}``
-    (ultra-rapid solution hour, always ``"00"`` here -- the 00:00 IGU
-    solution's 2-day span covers the whole GPS day).
+                 *, want_multignss: bool = False,
+                 want_systems=None) -> str:
+    """Best-effort SP3 fetch for one GPS day. Disabled unless ``mirrors`` is
+    non-empty (config.PRECISE_SP3_MIRRORS). Mirror templates (http, https
+    or ftp) may use any of ``{gpsweek}`` / ``{gps_week}`` (4-digit GPS
+    week), ``{dow}`` (day of week 0-6), ``{yyyy}`` (calendar year), ``{doy}``
+    (3-digit day of year), ``{wwwwd}`` (GPS week + dow, the legacy
+    short-name stem) and ``{hh}`` (ultra-rapid solution hour, always
+    ``"00"`` here -- the 00:00 solution's 2-day span covers the whole day).
 
-    The default list ships anonymous, no-login IGS mirrors (BKG, IGN); a
-    download is still only performed when the caller explicitly asks for
-    one. Returns the cached local path. Raises PreciseProductError on any
-    network failure or if no mirror yields a plausible SP3 file -- the
-    caller never gets a stale or unrelated file.
+    ``want_systems`` (or ``want_multignss`` = all of GRECJ) names the
+    systems the product must carry: mirrors are probed in order until one
+    covers them all, else the product covering the most of them is
+    returned. Returns the cached local path. Raises PreciseProductError if
+    no mirror yields a plausible SP3 file -- the caller never gets a stale
+    or unrelated file.
     """
     import datetime as _dt
     import pathlib as _pl
@@ -505,6 +589,7 @@ def download_sp3(gps_week: int, dow: int, cache_dir, mirrors: list[str],
     if not mirrors:
         raise PreciseProductError(
             "SP3 download requested but PRECISE_SP3_MIRRORS is not configured")
+    want = _wanted(want_systems, want_multignss)
     cache = _pl.Path(cache_dir)
     cache.mkdir(parents=True, exist_ok=True)
 
@@ -518,66 +603,123 @@ def download_sp3(gps_week: int, dow: int, cache_dir, mirrors: list[str],
 
     stem = f"IGS_{gps_week:04d}_{dow}"
 
-    def _cache_hit_ok(path) -> bool:
-        """A cached file is usable unless we need multi-GNSS and this file
-        is known/observed to be GPS-only."""
-        if not want_multignss:
-            return True
-        name = path.name
-        if name.endswith("_G.sp3"):
-            return False                           # coverage-tagged GPS-only
-        if name.endswith("_GRECJ.sp3"):
-            return True
-        try:                                       # legacy/un-tagged: peek
-            return _sp3_systems(path.read_bytes()) != {"G"}
+    def _systems_of(path) -> set[str]:
+        # Read the content, never trust the name: pre-fix caches were
+        # tagged _GRECJ while holding GPS+GLONASS only.
+        try:
+            return _sp3_systems(path.read_bytes())
         except OSError:
-            return False
+            return set()
 
-    # Serve the best already-cached tier for this day (final > rapid >
-    # ultra-rapid); coverage-tagged names are preferred, the legacy
-    # un-tagged name counts as rapid-grade.
+    # Serve the best already-cached product for this day: full coverage of
+    # the wanted systems first, then tier (final > rapid > ultra-rapid).
+    best_cached = None
     for tag in ("FIN", "RAP", "ULT"):
-        names = [f"{stem}_{tag}_GRECJ.sp3", f"{stem}_{tag}_G.sp3",
-                 f"{stem}_{tag}.sp3"]
-        if tag == "RAP":
-            names.append(f"{stem}.sp3")
-        for name in names:
-            p = cache / name
-            if p.is_file() and p.stat().st_size > 0 and _cache_hit_ok(p):
+        for p in sorted(cache.glob(f"{stem}_{tag}*.sp3")) + (
+                [cache / f"{stem}.sp3"] if tag == "RAP" else []):
+            if not (p.is_file() and p.stat().st_size > 0):
+                continue
+            if want <= _systems_of(p):
                 return str(p)
-
-    import gzip as _gz
-
-    import requests as _rq
+            if best_cached is None:
+                best_cached = p
 
     last = None
-    gps_only_fallback: str | None = None
+    best: tuple[int, str] | None = None        # (wanted systems covered, path)
     for tmpl in mirrors:
         url = tmpl.format(**_fmt)
         try:
-            r = _rq.get(url, timeout=30)
-            r.raise_for_status()
-        except _rq.RequestException as e:
+            data = _sp3_payload(url)
+        except (_FetchError, OSError) as e:
             last = e
             continue
-        data = r.content
-        if data[:2] == b"\x1f\x8b":
-            data = _gz.decompress(data)
-        if not data[:2] in (b"#c", b"#d", b"#a", b"#b"):
-            last = f"{url}: not an SP3 file"
-            continue
-        cov = _cov_tag(_sp3_systems(data))
-        dest = cache / f"{stem}_{_tier(url)}_{cov}.sp3"
+        systems = _sp3_systems(data)
+        dest = cache / f"{stem}_{_tier(url)}_{_cov_tag(systems)}.sp3"
         dest.write_bytes(data)
-        if not want_multignss or cov == "GRECJ":
+        if want <= systems:
             return str(dest)
-        # GPS-only product while multi-GNSS was asked for: remember it but
-        # keep probing the remaining mirrors for a real MGEX product.
-        if gps_only_fallback is None:
-            gps_only_fallback = str(dest)
-    if gps_only_fallback is not None:
-        return gps_only_fallback
+        score = len(want & systems)
+        if best is None or score > best[0]:
+            best = (score, str(dest))
+    if best is not None:
+        return best[1]
+    if best_cached is not None:
+        return str(best_cached)
     raise PreciseProductError(f"all SP3 mirrors failed ({last})")
+
+
+def download_sp3_ultra(t_gps_s: float, cache_dir, mirrors: list[str], *,
+                       want_systems=None, max_age_h: float = 46.0,
+                       lead_s: float = 10800.0) -> str:
+    """Newest ultra-rapid product whose 2-day span covers ``t_gps_s``
+    (continuous GPS seconds) with interpolation margin -- for epochs too
+    recent for any rapid product (today, and usually yesterday). Its first
+    day is estimated, its second predicted.
+
+    ``mirrors`` templates take ``{gpsweek}``, ``{dow}``, ``{yyyy}``,
+    ``{doy}`` and ``{hh}`` of the solution's first epoch; solutions are
+    looked for on a 3-hourly grid from ``t - lead_s`` back ``max_age_h``
+    hours (the lead keeps the interpolation window centred). Each template's directory is listed once, so only files that
+    exist are downloaded. Coverage of ``want_systems`` decides between
+    mirrors as in :func:`download_sp3`."""
+    import datetime as _dt
+    import pathlib as _pl
+
+    if not mirrors:
+        raise PreciseProductError("no ultra-rapid SP3 mirrors configured")
+    want = _wanted(want_systems, bool(want_systems))
+    cache = _pl.Path(cache_dir)
+    cache.mkdir(parents=True, exist_ok=True)
+    gps0 = _dt.datetime(1980, 1, 6)
+    newest = int((t_gps_s - lead_s) // 10800) * 10800
+    listings: dict[str, str | None] = {}
+
+    def _listed(url: str) -> bool:
+        d, name = url.rsplit("/", 1)
+        if d not in listings:
+            try:
+                listings[d] = _fetch(d + "/").decode("latin-1", "replace")
+            except (_FetchError, OSError):
+                listings[d] = None
+        text = listings[d]
+        return text is None or name in text    # no listing: just try it
+
+    best: tuple[int, str] | None = None
+    last = None
+    t = newest
+    while t >= t_gps_s - max_age_h * 3600.0:
+        ep = gps0 + _dt.timedelta(seconds=t)
+        wk, rem = divmod(int(t), 604800)
+        fmt = dict(gpsweek=wk, gps_week=wk, dow=rem // 86400, yyyy=ep.year,
+                   doy=f"{ep.timetuple().tm_yday:03d}", hh=f"{ep.hour:02d}")
+        for tmpl in mirrors:
+            url = tmpl.format(**fmt)
+            name = url.rsplit("/", 1)[1]
+            dest = cache / ("ULT_" + name.replace(".gz", "").replace(".GZ", ""))
+            if dest.is_file() and dest.stat().st_size > 0:
+                data = dest.read_bytes()
+            else:
+                if not _listed(url):
+                    continue
+                try:
+                    data = _sp3_payload(url)
+                except (_FetchError, OSError) as e:
+                    last = e
+                    continue
+                dest.write_bytes(data)
+            systems = _sp3_systems(data)
+            if want <= systems:
+                return str(dest)
+            score = len(want & systems)
+            if best is None or score > best[0]:
+                best = (score, str(dest))
+        if best is not None:
+            # the newest solution that exists wins; an older one with more
+            # systems is not worth a day-older prediction
+            return best[1]
+        t -= 10800
+    raise PreciseProductError(
+        f"no ultra-rapid SP3 covers this epoch ({last})")
 
 
 def _interp_clock(rows, ts, j, t, prn, source) -> tuple[float, float]:

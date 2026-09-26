@@ -57,8 +57,9 @@ def test_precise_auto_downloads_sp3_for_start_utc(no_sp3, monkeypatch):
     fitted nav from it."""
     calls = []
 
-    def fake_dl(week, dow, cache_dir, mirrors, *, want_multignss=False):
-        calls.append((week, dow, want_multignss))
+    def fake_dl(week, dow, cache_dir, mirrors, *, want_multignss=False,
+                want_systems=None):
+        calls.append((week, dow, set(want_systems or ())))
         return SP3
 
     monkeypatch.setattr(app_mod.precise, "download_sp3", fake_dl)
@@ -66,7 +67,7 @@ def test_precise_auto_downloads_sp3_for_start_utc(no_sp3, monkeypatch):
     # central day + the day either side are fetched and merged
     assert len(calls) == 3
     assert any(w == 2433 for w, *_ in calls)              # GPS week of 2026-08-28
-    assert all(wm is False for *_, wm in calls)           # GPS-only request
+    assert all(ws == {"G"} for *_, ws in calls)           # GPS-only request
     assert set(ov) == set(range(1, 11))
     assert any("auto-downloaded" in w.lower() for w in warns)
     app_mod._precise_provider._sp3 = None
@@ -104,21 +105,22 @@ def test_precise_nav_override_threads_want_multignss(no_sp3, monkeypatch):
     cache-shadowed."""
     calls = []
 
-    def fake_dl(week, dow, cache_dir, mirrors, *, want_multignss=False):
-        calls.append(want_multignss)
+    def fake_dl(week, dow, cache_dir, mirrors, *, want_multignss=False,
+                want_systems=None):
+        calls.append(set(want_systems or ()))
         return SP3
 
     monkeypatch.setattr(app_mod.precise, "download_sp3", fake_dl)
     app_mod._precise_nav_override(
         {"ephemeris_mode": "precise", "engine": "native",
          "systems": ["G", "E", "C"]}, START)
-    assert calls and all(wm is True for wm in calls)
+    assert calls and all(ws == {"G", "E", "C"} for ws in calls)
 
     calls.clear()
     app_mod._precise_provider._sp3 = None
     app_mod._precise_nav_override(
         {"ephemeris_mode": "precise", "systems": ["G"]}, START)
-    assert calls and all(wm is False for wm in calls)
+    assert calls and all(ws == {"G"} for ws in calls)
     app_mod._precise_provider._sp3 = None
 
 
@@ -128,7 +130,8 @@ def test_ensure_precise_loaded_refetches_gps_only_when_multignss_wanted(
     short-circuit the early return when multi-GNSS coverage is needed."""
     calls = []
 
-    def fake_dl(week, dow, cache_dir, mirrors, *, want_multignss=False):
+    def fake_dl(week, dow, cache_dir, mirrors, *, want_multignss=False,
+                want_systems=None):
         calls.append(want_multignss)
         return SP3  # still GPS-only; loaded product stays, louder warn fires
 
