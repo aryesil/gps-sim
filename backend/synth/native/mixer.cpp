@@ -91,6 +91,10 @@ void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
         const double tx_off = sv.tx_chips_offset;
         const double chips_per_sym =
             sv.code_rate_hz / nav_rate(nav);
+        // ABI 28 channel gain: knot j covers [(j0+j)*dt, (j0+j+1)*dt).
+        const bool use_gk = sv.gain_nknots >= 2 && sv.gain_knots;
+        const double inv_gdt = use_gk ? 1.0 / sv.gain_knot_dt : 0.0;
+        const int64_t gk_last = sv.gain_nknots - 2;
 
         for (int k = 0; k < n; ++k) {
             double t = abs_t0 + k * dt;
@@ -136,6 +140,19 @@ void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
                       nav, static_cast<int64_t>(std::floor(u / chips_per_sym))))
                 : static_cast<float>(nav_symbol(nav, t));
             std::complex<float> c = carr.next();
+            if (use_gk) {
+                const double x = t * inv_gdt - static_cast<double>(sv.gain_knot_j0);
+                int64_t j = static_cast<int64_t>(std::floor(x));
+                if (j < 0) j = 0;
+                if (j > gk_last) j = gk_last;
+                float f = static_cast<float>(x - static_cast<double>(j));
+                f = f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
+                const float *gp = sv.gain_knots + 2 * j;
+                const float gr = gp[0] + f * (gp[2] - gp[0]);
+                const float gi = gp[1] + f * (gp[3] - gp[1]);
+                c = std::complex<float>(c.real() * gr - c.imag() * gi,
+                                        c.real() * gi + c.imag() * gr);
+            }
             float d = g * chip * navsym;
             iq[2 * k]     += d * c.real();
             iq[2 * k + 1] += d * c.imag();
@@ -209,6 +226,21 @@ void synth_debug_mix_traj(const int8_t *code, double code_rate,
     sv.traj_code_rate = code_rate_knots;
     sv.traj_code_phase = code_phase_knots;
     gs::mix_block(&sv, 1, fs, sample0, n, iq);
+}
+
+// ABI 28 debug shim: one SV through gs::mix_block_parallel with complex
+// channel-gain knots, so tests can check the per-sample interpolation.
+void synth_debug_mix_gain(const int8_t *code, double code_rate,
+                          double code_phase0, double carrier_freq, double fs,
+                          uint64_t sample0, int n, int nthreads, int nknots,
+                          int64_t knot_j0, double knot_dt, const float *knots,
+                          float *iq) {
+    gs::SvChannel sv = debug_sv(code, code_rate, code_phase0, 0.0, carrier_freq);
+    sv.gain_nknots = nknots;
+    sv.gain_knot_j0 = knot_j0;
+    sv.gain_knot_dt = knot_dt;
+    sv.gain_knots = knots;
+    gs::mix_block_parallel(&sv, 1, fs, sample0, n, iq, nthreads);
 }
 
 // Debug shim: one SV through gs::mix_block_parallel (which zeroes iq itself),

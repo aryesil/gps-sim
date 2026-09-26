@@ -6,11 +6,13 @@
 using gs::FadingCfg;
 #else
 typedef struct {
-    int model;
-    double sigma_db;
-    double coherence_s;
+    int model;            // 0 off, 1 seeded, 2 keyed
+    int env;              // 0 open, 1 rural, 2 suburban, 3 urban
+    double speed_mps;
+    double carrier_hz;
+    double el_deg;
     uint64_t seed;
-    uint8_t key[32];      // ABI 27 -- keyed model
+    uint8_t key[32];
     int domain;
 } FadingCfg;
 #endif
@@ -18,11 +20,21 @@ typedef struct {
 extern "C" {
 #endif
 int synth_abi_version(void);
-// Deterministic per-SV fading gain (linear), C-linkage shim over
-// gs::fading_gain_linear (see fading.hpp for the lognormal and keyed models).
-float fading_gain_linear(const FadingCfg *c, int prn, double t_s);
-// ABI 27 -- RFC 8439 ChaCha20 block (key 32 B, nonce 12 B, out 64 B), the
-// PRF behind the keyed fading model; exported for test vectors.
+// ABI 28 -- land-mobile-satellite channel (see fading.hpp). Each call builds
+// a fresh gs::ChannelProcess, so results depend only on the arguments.
+// Complex gain at t_s: out[0] re, out[1] im.
+void fading_gain_complex(const FadingCfg *c, int prn, double t_s, double *out);
+// n complex gains at t0_s + i*dt_s, interleaved re/im into out[0..2n).
+void fading_gain_series(const FadingCfg *c, int prn, double t0_s, double dt_s,
+                        int n, double *out);
+// out[0..8): state z, shadowing x, direct amplitude, diffuse re, diffuse im,
+// mu_db, sigma_db, mp_db.
+void fading_components(const FadingCfg *c, int prn, double t_s, double *out);
+// out[0..9): doppler_hz, dt_state_s, dt_shadow_s, dt_diffuse_s, dt_knot_s,
+// p_los, p_shadow, z_los, z_shadow.
+void fading_params(const FadingCfg *c, int prn, double *out);
+// RFC 8439 ChaCha20 block (key 32 B, nonce 12 B, out 64 B), the PRF behind
+// the channel model; exported for test vectors.
 void fading_chacha20_block(const uint8_t *key, uint32_t counter,
                            const uint8_t *nonce, uint8_t *out);
 // Fills out[0..8] with: l1_hz, ca_chip_hz, ca_code_len, nav_bit_hz, mu,
@@ -107,6 +119,13 @@ void synth_debug_mix_traj(const int8_t *code, double code_rate,
                           const double *carr_freq, const double *carr_phase,
                           const double *code_rate_knots,
                           const double *code_phase_knots, float *iq);
+// ABI 28 debug shim: one SV through gs::mix_block_parallel with complex
+// channel-gain knots (interleaved re/im, knot j at (knot_j0 + j) * knot_dt).
+void synth_debug_mix_gain(const int8_t *code, double code_rate,
+                          double code_phase0, double carrier_freq, double fs,
+                          uint64_t sample0, int n, int nthreads, int nknots,
+                          int64_t knot_j0, double knot_dt, const float *knots,
+                          float *iq);
 // Task 10 debug shims: like the three above but taking the five new SvSpec
 // fields (sys / sub_carrier_hz / sec_code / sec_len / sec_rate_hz) so tests can
 // exercise the BOC sign + secondary-code XOR path. Passing 0/nullptr for the

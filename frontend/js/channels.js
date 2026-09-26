@@ -140,7 +140,7 @@ window.addChannel = function () {
           <div id="${id}-mdl-summary" class="hint"></div>
         </section>
         <section class="adv-tab" data-adv="eng" hidden>
-          <p class="adv-head">Signal engine <span class="info" title="gps-sdr-sim is the default external generator (GPS L1 C/A only). native is the built-in C++ engine: same GPS L1 C/A output plus a seeded per-satellite fading model baked into the IQ. Leave on gps-sdr-sim for the unchanged workflow.">i</span></p>
+          <p class="adv-head">Signal engine <span class="info" title="gps-sdr-sim is the default external generator (GPS L1 C/A only). native is the built-in C++ engine: same GPS L1 C/A output plus a per-satellite land-mobile-satellite channel model (blockage, shadowing, Doppler-spread multipath) baked into the IQ. Leave on gps-sdr-sim for the unchanged workflow.">i</span></p>
           <label>Engine <select id="${id}-engine">
             <option value="gps-sdr-sim">gps-sdr-sim (default)</option>
             <option value="native">native (C++ engine, GPS L1 C/A + fading)</option>
@@ -165,13 +165,18 @@ window.addChannel = function () {
             <option value="int12">int12</option>
             <option value="int8">int8</option>
           </select></label>
-          <label>Fading model <span class="info" title="log-normal (seeded): reproducible from the seed; anyone who knows or guesses the seed can predict the fading. keyed (ChaCha20): values, knot timing and per-satellite grid come from a 256-bit key; without the key the fading cannot be predicted from the IQ. Leave the key empty to draw a fresh random key for every run.">i</span> <select id="${id}-fade-model">
+          <label>Channel model <span class="info" title="Land-mobile-satellite channel per satellite: line-of-sight / shadowed / blocked states with elevation-dependent probabilities, log-normal shadowing of the direct path and Rayleigh diffuse multipath with a Jakes Doppler spread (speed / wavelength). Blockage is shared by all bands of a satellite; the diffuse part is independent per carrier. seeded: reproducible from the seed. keyed (ChaCha20): drawn under a 256-bit key; without the key the channel cannot be predicted from the IQ. Leave the key empty to draw a fresh random key for every run.">i</span> <select id="${id}-fade-model">
             <option value="off">off</option>
-            <option value="lognormal">log-normal (seeded)</option>
+            <option value="seeded">seeded</option>
             <option value="keyed">keyed (ChaCha20, unpredictable)</option>
           </select></label>
-          <label>sigma dB <input id="${id}-fade-sigma" type="number" step="0.5" value="3"></label>
-          <label>coherence s <input id="${id}-fade-coh" type="number" step="0.5" value="2"></label>
+          <label class="fade-on">environment <select id="${id}-fade-env">
+            <option value="open">open sky</option>
+            <option value="rural">rural / trees</option>
+            <option value="suburban" selected>suburban</option>
+            <option value="urban">urban</option>
+          </select></label>
+          <label class="fade-on" title="Receiver speed. Sets the diffuse Doppler spread (speed / wavelength) and how fast blockage and shadowing change; 0 = static (slow changes from satellite motion only).">speed m/s <input id="${id}-fade-speed" type="number" min="0" step="0.5" value="0"></label>
           <label class="fade-seeded">seed <input id="${id}-fade-seed" type="number" step="1" value="1"></label>
           <label class="fade-keyed">key (64 hex) <input id="${id}-fade-key" type="password" autocomplete="off" spellcheck="false" size="20" placeholder="empty = random per run"></label>
           <button type="button" class="fade-keyed" id="${id}-fade-keygen" title="Fill in a new random 256-bit key (crypto.getRandomValues), so the same fading can be reused later">random key</button>
@@ -397,11 +402,13 @@ function wireChannelActions(id) {
   document.getElementById(`${id}-engine`).addEventListener('change', _updateEngineConstellationState);
   _updateEngineConstellationState();
 
-  // Fading model: show the seed for log-normal, the key controls for keyed.
+  // Channel model: environment/speed when on, the seed for seeded, the key
+  // controls for keyed.
   function _updateFadingFields() {
     const fm = document.getElementById(`${id}-fade-model`).value;
     const sec = document.getElementById(`${id}-fade-model`).closest('section');
-    sec.querySelectorAll('.fade-seeded').forEach(el => { el.style.display = fm === 'lognormal' ? '' : 'none'; });
+    sec.querySelectorAll('.fade-on').forEach(el => { el.style.display = fm === 'off' ? 'none' : ''; });
+    sec.querySelectorAll('.fade-seeded').forEach(el => { el.style.display = fm === 'seeded' ? '' : 'none'; });
     sec.querySelectorAll('.fade-keyed').forEach(el => { el.style.display = fm === 'keyed' ? '' : 'none'; });
   }
   document.getElementById(`${id}-fade-model`).addEventListener('change', _updateFadingFields);
@@ -872,8 +879,8 @@ function wireChannelActions(id) {
     if (fm && fm !== 'off') {
       out.fading = {
         model: fm,
-        sigma_db: Number(document.getElementById(`${id}-fade-sigma`).value),
-        coherence_s: Number(document.getElementById(`${id}-fade-coh`).value),
+        environment: document.getElementById(`${id}-fade-env`).value,
+        speed_mps: Number(document.getElementById(`${id}-fade-speed`).value),
       };
       if (fm === 'keyed') {
         const key = document.getElementById(`${id}-fade-key`).value.trim();
@@ -965,7 +972,7 @@ function wireChannelActions(id) {
               if (corrLabel) {
                 corrLabel.textContent = gpsOnlyInspect
                   ? 'Acquisition metric (dB)'
-                  : 'Per-SV signal power (gain + fading, dB)';
+                  : 'Per-SV signal power (gain + channel, dB)';
               }
               // Multi-GNSS: let the scrubber drive the power bars (fading vs t).
               setSvPowerModel(id, gpsOnlyInspect ? null : msg.done.svs);

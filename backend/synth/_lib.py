@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-ABI_VERSION = 27
+ABI_VERSION = 28
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 if sys.platform == "darwin":
     _EXT = "dylib"
@@ -48,13 +48,14 @@ def glo_struct(record: dict) -> "GloEph":
 class FadingCfg(ctypes.Structure):
     # Field order MUST match `FadingCfg` in native/fading.hpp exactly.
     _fields_ = [
-        ("model", ctypes.c_int),         # 0 = off, 1 = lognormal, 2 = keyed
-        ("sigma_db", ctypes.c_double),
-        ("coherence_s", ctypes.c_double),
+        ("model", ctypes.c_int),         # 0 = off, 1 = seeded, 2 = keyed
+        ("env", ctypes.c_int),           # 0 open, 1 rural, 2 suburban, 3 urban
+        ("speed_mps", ctypes.c_double),
+        ("carrier_hz", ctypes.c_double),
+        ("el_deg", ctypes.c_double),
         ("seed", ctypes.c_uint64),
-        # ABI 27 -- keyed model: ChaCha20 key and constellation domain tag.
-        ("key", ctypes.c_uint8 * 32),
-        ("domain", ctypes.c_int),
+        ("key", ctypes.c_uint8 * 32),    # keyed model: ChaCha20 key
+        ("domain", ctypes.c_int),        # ASCII system letter
     ]
 
 
@@ -276,9 +277,16 @@ def glonass_state(glo_struct: "GloEph", t: float):
 
 
 def bind_fading(lib: ctypes.CDLL) -> None:
-    lib.fading_gain_linear.restype = ctypes.c_float
-    lib.fading_gain_linear.argtypes = [
-        ctypes.POINTER(FadingCfg), ctypes.c_int, ctypes.c_double]
+    cfg, dp = ctypes.POINTER(FadingCfg), ctypes.POINTER(ctypes.c_double)
+    lib.fading_gain_complex.restype = None
+    lib.fading_gain_complex.argtypes = [cfg, ctypes.c_int, ctypes.c_double, dp]
+    lib.fading_gain_series.restype = None
+    lib.fading_gain_series.argtypes = [
+        cfg, ctypes.c_int, ctypes.c_double, ctypes.c_double, ctypes.c_int, dp]
+    lib.fading_components.restype = None
+    lib.fading_components.argtypes = [cfg, ctypes.c_int, ctypes.c_double, dp]
+    lib.fading_params.restype = None
+    lib.fading_params.argtypes = [cfg, ctypes.c_int, dp]
     lib.fading_chacha20_block.restype = None
     lib.fading_chacha20_block.argtypes = [
         ctypes.c_char_p, ctypes.c_uint32, ctypes.c_char_p,
@@ -540,6 +548,30 @@ def debug_mix_traj(code, code_rate, code_phase0, carrier_freq, fs, sample0, n,
     lib.synth_debug_mix_traj(cptr, code_rate, code_phase0, carrier_freq, fs,
                              int(sample0), int(n), int(nk), int(knot_samples),
                              cf, cph, cr, cph2, out)
+    a = np.array(list(out), dtype=np.float32)
+    return a[0::2] + 1j * a[1::2]
+
+
+def debug_mix_gain(code, code_rate, code_phase0, carrier_freq, fs, sample0, n,
+                   knot_j0, knot_dt, knots, nthreads=1):
+    """ABI 28 channel-gain mixer shim over gs::mix_block_parallel. `knots` is
+    a complex sequence, knot j at (knot_j0 + j) * knot_dt seconds. Returns
+    complex64, length n."""
+    lib = load_lib()
+    lib.synth_debug_mix_gain.restype = None
+    lib.synth_debug_mix_gain.argtypes = [
+        _I8, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double,
+        ctypes.c_uint64, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int64, ctypes.c_double, _F32, _F32]
+    cptr, _kc = _as_i8(code)
+    k = np.asarray(knots, dtype=np.complex64)
+    kf = np.ascontiguousarray(np.stack([k.real, k.imag], axis=1).ravel(),
+                              dtype=np.float32)
+    out = (ctypes.c_float * (2 * int(n)))()
+    lib.synth_debug_mix_gain(cptr, code_rate, code_phase0, carrier_freq, fs,
+                             int(sample0), int(n), int(nthreads), int(k.size),
+                             int(knot_j0), float(knot_dt),
+                             kf.ctypes.data_as(_F32), out)
     a = np.array(list(out), dtype=np.float32)
     return a[0::2] + 1j * a[1::2]
 

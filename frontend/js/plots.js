@@ -20,8 +20,8 @@ window.drawInspectTable = function (tableId, rows) {
 // Per-SV signal-power table. inspector.compare is GPS L1 C/A only, so for a
 // multi-constellation run the status panel would otherwise show nothing but
 // GPS. This renders every generated satellite (all systems) straight from
-// meta.json, with the static elevation taper gain and the configured fading
-// sigma so the per-SV power spread is visible.
+// meta.json, with the static elevation taper gain and the configured channel
+// model (environment, speed) so the per-SV power spread is explained.
 window.drawSvPowerTable = function (tableId, svs, bands) {
   const t = document.getElementById(tableId);
   if (!t) return;
@@ -42,12 +42,12 @@ window.drawSvPowerTable = function (tableId, svs, bands) {
     || (a.band || '').localeCompare(b.band || ''));
   t.innerHTML =
     '<tr><th>SV</th><th>sys</th><th>band</th><th>el °</th><th>az °</th>'
-    + '<th>gain dB</th><th>fade σ dB</th><th>code Doppler Hz</th></tr>'
+    + '<th>gain dB</th><th>channel</th><th>code Doppler Hz</th></tr>'
     + rows.map(s => {
         const gdb = (typeof s.gain_db === 'number') ? s.gain_db.toFixed(2)
           : (typeof s.gain === 'number' ? (20 * Math.log10(s.gain)).toFixed(2) : '—');
-        const sig = (typeof s.fading_sigma_db === 'number' && s.fading_sigma_db > 0)
-          ? s.fading_sigma_db.toFixed(1) : '0';
+        const sig = (s.fading_model && s.fading_env)
+          ? `${s.fading_env} ${Number(s.fading_speed_mps || 0).toFixed(1)} m/s` : 'off';
         const el = (typeof s.el_deg === 'number') ? s.el_deg.toFixed(1) : '—';
         const az = (typeof s.az_deg === 'number') ? s.az_deg.toFixed(1) : '—';
         const cd = (typeof s.code_doppler_hz === 'number') ? s.code_doppler_hz.toFixed(1) : '—';

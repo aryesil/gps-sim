@@ -1070,12 +1070,16 @@ def run(req, progress_cb=None) -> pathlib.Path:
                     atmo_fn=e.get("_atmo_fn"),
                     doppler_scale=e.get("_doppler_scale", 1.0),
                     clk_fn=clk_fn)
+            # Carrier of this signal (per-channel for GLONASS FDMA): the
+            # wavelength that sets the diffuse multipath Doppler spread.
+            fade_carrier_hz = float(e.get("_carrier_hz",
+                                          e["signal_id"].carrier_hz))
             for c, c_keep in comps:
                 _finish_component(c, e, sow, knots)
                 if plan.fs >= 2.0 * (abs(if_hz) + _CBOC_HALF_BW_HZ):
                     c.cboc = int(getattr(c, "_cboc", 0))
                 if fading_model_int:
-                    cfg.fill(c.fading, e["sys"])
+                    cfg.fill(c.fading, e["sys"], fade_carrier_hz, el_deg)
                 sv_list.append(c)
                 keep_alive.append(c_keep)
             band_sys.add(e["sys"])
@@ -1096,19 +1100,24 @@ def run(req, progress_cb=None) -> pathlib.Path:
                        "el_deg": round(el_deg, 2),
                        "az_deg": round(float(e.get("az_deg", 0.0)), 2),
                        # static elevation amplitude taper applied to this SV;
-                       # per-block lognormal fading (sigma_db below) rides on
-                       # top of it in the C++ mixer, so the realised power is
-                       # time-varying around this level.
+                       # the channel model (fading_* below) multiplies it by
+                       # a time-varying complex gain in the C++ mixer.
                        "gain": round(static_gain, 4),
                        "gain_db": round(20.0 * math.log10(static_gain), 2),
-                       # fading model parameters, so a client can reproduce the
-                       # exact per-block lognormal gain the C++ mixer applied
-                       # (backend/synth/native/fading.cpp) at any run time t and
-                       # show the per-SV power varying as the IQ is scrubbed.
-                       "fading_model": fading_model_int,
-                       "fading_sigma_db": cfg.sigma_db if fading_model_int else 0.0,
-                       "fading_coherence_s": cfg.coherence_s,
-                       "fading_seed": int(cfg.seed)}
+                       # channel model inputs, so a client can reproduce the
+                       # exact gain the C++ mixer applied
+                       # (backend/synth/native/fading.cpp, frontend/js/
+                       # fading.js) at any run time t and show the per-SV
+                       # power varying as the IQ is scrubbed.
+                       "fading_model": fading_model_int}
+            if fading_model_int:
+                sv_meta.update({
+                    "fading_env": cfg.environment,
+                    "fading_speed_mps": cfg.speed_mps,
+                    "fading_carrier_hz": fade_carrier_hz,
+                    "fading_el_deg": el_deg})
+            if fading_model_int == MODEL_INT["seeded"]:
+                sv_meta["fading_seed"] = int(cfg.seed)
             if fading_model_int == MODEL_INT["keyed"]:
                 # The key stays secret unless the caller asked to keep it;
                 # the fingerprint only says which key a run used.
@@ -1203,7 +1212,9 @@ def run(req, progress_cb=None) -> pathlib.Path:
                 {v: k for k, v in signals.SIGNALS.items()}.get(
                     e["signal_id"], f"{e['sys']}/{e['signal_id'].band}")
                 for e in entries}),
-            "fading": cfg.model,
+            "fading": ({"model": cfg.model, "environment": cfg.environment,
+                        "speed_mps": cfg.speed_mps}
+                       if cfg.enabled() else "off"),
             "channel_models": channel_report,
             "impairments": impairment_report or None,
             "svs": meta_svs,

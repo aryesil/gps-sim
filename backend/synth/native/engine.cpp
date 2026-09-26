@@ -52,9 +52,12 @@ static int run_one_band(const BandSpec &b,
         ch[i].tx_chips_offset = specs[i].tx_chips_offset;
         ch[i].cboc = specs[i].cboc;
     }
-    // Static per-SV gain, before any per-block fading is folded in.
-    std::vector<float> base_gain(static_cast<size_t>(nsv));
-    for (int i = 0; i < nsv; ++i) base_gain[i] = specs[i].gain;
+    // Per-SV channel process (fading model 0 = off => no gain knots).
+    std::vector<gs::ChannelProcess> chan(static_cast<size_t>(nsv));
+    std::vector<std::vector<float>> knots(static_cast<size_t>(nsv));
+    for (int i = 0; i < nsv; ++i)
+        if (specs[i].fading.model != 0)
+            chan[i] = gs::ChannelProcess(specs[i].fading, specs[i].prn);
 
     const int blk = b.block_samples > 0 ? b.block_samples : 65536;
     std::vector<float> fbuf(static_cast<size_t>(2 * blk));
@@ -75,14 +78,29 @@ static int run_one_band(const BandSpec &b,
         const int n = static_cast<int>(
             std::min<uint64_t>(static_cast<uint64_t>(blk),
                                b.total_samples - done));
-        // Recompute deterministic per-SV fading at the block midpoint every
-        // block (do not hoist -- it is time-varying). Off model => factor 1.0f.
-        const double block_mid_t_seconds =
-            (static_cast<double>(done) + n / 2.0) / b.fs;
+        // Complex channel gain on the model's knot grid, covering every
+        // sample of this block; the mixer interpolates between knots. Knot
+        // values depend only on (config, prn, knot time), so the IQ does not
+        // depend on fs, block size or thread count.
+        const double t_first = static_cast<double>(done) / b.fs;
+        const double t_last = static_cast<double>(done + n - 1) / b.fs;
         for (int i = 0; i < nsv; ++i) {
-            const float fade = gs::fading_gain_linear(
-                &specs[i].fading, specs[i].prn, block_mid_t_seconds);
-            ch[i].gain = base_gain[i] * fade;
+            if (!chan[i].enabled()) continue;
+            const double dt = chan[i].params().dt_knot_s;
+            const int64_t j0 = static_cast<int64_t>(std::floor(t_first / dt));
+            const int64_t j1 = static_cast<int64_t>(std::floor(t_last / dt)) + 1;
+            const int nk = static_cast<int>(j1 - j0 + 1);
+            knots[i].resize(static_cast<size_t>(2 * nk));
+            for (int j = 0; j < nk; ++j) {
+                const std::complex<double> g =
+                    chan[i].gain(static_cast<double>(j0 + j) * dt);
+                knots[i][2 * j] = static_cast<float>(g.real());
+                knots[i][2 * j + 1] = static_cast<float>(g.imag());
+            }
+            ch[i].gain_nknots = nk;
+            ch[i].gain_knot_j0 = j0;
+            ch[i].gain_knot_dt = dt;
+            ch[i].gain_knots = knots[i].data();
         }
         gs::mix_block_parallel(ch.data(), nsv, b.fs, done, n, fbuf.data(),
                                b.nthreads);

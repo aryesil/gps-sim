@@ -32,6 +32,14 @@ struct SvChannel {
     double tx_chips_offset = 0.0;
     // ABI 26 -- CBOC(6,1,1/11) sign (see SvSpec in abi.h); 0 = BOC(1,1).
     int cboc = 0;
+    // ABI 28 -- complex channel gain knots (interleaved re/im) at times
+    // (gain_knot_j0 + j) * gain_knot_dt, linearly interpolated per sample and
+    // applied on top of `gain`. gain_nknots < 2 keeps mix_block
+    // byte-identical (real gain only).
+    int gain_nknots = 0;
+    int64_t gain_knot_j0 = 0;
+    double gain_knot_dt = 0.0;
+    const float *gain_knots = nullptr;
 };
 void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
                uint64_t sample0, int n, float *__restrict iq);

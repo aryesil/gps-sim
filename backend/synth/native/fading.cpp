@@ -2,43 +2,14 @@
 #include "fading.hpp"
 #include "abi.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace {
-// splitmix64 finalizer
-inline uint64_t mix(uint64_t x) {
-    x += 0x9E3779B97F4A7C15ULL;
-    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
-    return x ^ (x >> 31);
-}
-inline double u01(uint64_t h) { return (h >> 11) * (1.0 / 9007199254740992.0); }
+constexpr double kC = 299792458.0;
 
-// Standard normal at a coherence knot via Box-Muller from two hashed uniforms.
-// Keyed on (seed, prn, knot) only -> reproducible regardless of caller cadence.
-inline double gauss(uint64_t seed, int prn, long knot) {
-    uint64_t base = mix(seed ^ (static_cast<uint64_t>(prn) << 40)
-                        ^ (static_cast<uint64_t>(knot) * 0x100000001B3ULL));
-    double u1 = u01(mix(base)) + 1e-12;
-    double u2 = u01(mix(base ^ 0xABCDEFULL));
-    return std::sqrt(-2.0 * std::log(u1)) * std::cos(2.0 * M_PI * u2);
-}
-
-// Smoothstep interpolation between adjacent knots blends two independent unit
-// normals, so the time-averaged variance of the blend is
-// mean_{f in [0,1)} [ (1-w)^2 + w^2 ]  with  w = f*f*(3-2f)  ==  26/35.
-// Without correction the realised dB std would sit at sqrt(26/35)*sigma_db,
-// biased low. kSmoothVarComp = sqrt(35/26) restores the requested std. The
-// average is per interval, so it holds for the keyed model's unequal
-// (jittered) intervals too.
-constexpr double kSmoothVarComp = 1.1602387022306428;  // sqrt(35/26)
-
-inline double smooth_blend(double g0, double g1, double frac) {
-    double w = frac * frac * (3.0 - 2.0 * frac);  // smoothstep, C1 continuity
-    return g0 * (1.0 - w) + g1 * w;
-}
-
-// ---- keyed model -----------------------------------------------------------
+// ---- ChaCha20 --------------------------------------------------------------
 
 inline uint32_t rotl32(uint32_t v, int c) { return (v << c) | (v >> (32 - c)); }
 inline uint32_t le32(const uint8_t *p) {
@@ -52,68 +23,143 @@ inline void qr(uint32_t &a, uint32_t &b, uint32_t &c, uint32_t &d) {
     c += d; b ^= c; b = rotl32(b, 7);
 }
 
-// Eight 53-bit uniforms in [0,1) from one ChaCha20 block. The nonce carries
-// (domain, purpose, prn, knot), so every (SV, knot) pair gets its own
-// independent block under the key.
-struct Draw { double u[8]; };
-inline Draw keyed_draw(const uint8_t key[32], int domain, int purpose,
-                       int prn, int64_t knot) {
+// ---- model tables ------------------------------------------------------------
+//
+// Representative L-band land-mobile-satellite values in the spirit of the
+// Perez-Fontan / ITU-R P.681 three-state model: per state the Loo direct-path
+// mean and spread (dB) and the diffuse multipath power (dB, relative to an
+// unobstructed direct path), the state and shadowing correlation distances,
+// and the line-of-sight / shadowed probabilities at 10, 30, 50, 70, 90 deg
+// elevation (blocked takes the rest). They are not a reproduction of any one
+// published measurement campaign.
+struct EnvPreset {
+    double st[3][3];          // [LOS, shadowed, blocked][mu, sigma, mp]
+    double d_state_m, d_shadow_m;
+    double p_los[5], p_sh[5];
+};
+constexpr EnvPreset kEnv[4] = {
+    // open sky
+    {{{0.0, 0.3, -22.0}, {-4.0, 1.5, -18.0}, {-15.0, 2.0, -18.0}}, 30.0, 5.0,
+     {0.97, 0.99, 1.0, 1.0, 1.0}, {0.03, 0.01, 0.0, 0.0, 0.0}},
+    // rural / tree-shadowed
+    {{{0.0, 0.8, -18.0}, {-7.0, 2.5, -15.0}, {-18.0, 3.0, -15.0}}, 12.0, 3.0,
+     {0.55, 0.70, 0.80, 0.88, 0.92}, {0.35, 0.25, 0.17, 0.10, 0.07}},
+    // suburban
+    {{{0.0, 1.0, -16.0}, {-8.0, 3.0, -14.0}, {-20.0, 3.0, -14.0}}, 15.0, 3.0,
+     {0.45, 0.65, 0.78, 0.87, 0.92}, {0.30, 0.22, 0.15, 0.09, 0.06}},
+    // urban
+    {{{0.0, 1.0, -14.0}, {-9.0, 3.0, -12.0}, {-22.0, 3.0, -13.0}}, 20.0, 2.0,
+     {0.15, 0.35, 0.55, 0.72, 0.80}, {0.25, 0.30, 0.25, 0.18, 0.12}},
+};
+// A static receiver still decorrelates as the satellite moves across the sky;
+// these bound the correlation times and the Doppler spread at low speed.
+constexpr double kTauStateMax = 300.0;
+constexpr double kTauShadowMax = 60.0;
+constexpr double kDopplerMin = 0.01;
+constexpr double kKnotMax = 0.05;
+// Width (in z) of the blend across a state threshold, so a state change is a
+// short transition instead of a step.
+constexpr double kStateBlend = 0.2;
+
+// Grid points per correlation time / per Doppler period.
+constexpr int kPerTau = 32;
+constexpr int kArTaps = 192;          // AR(1) truncated at rho^192 = e^-6
+constexpr int kSos = 32;              // diffuse: sinusoids per (SV, carrier)
+
+constexpr int kPurposeState = 0;
+constexpr int kPurposeShadow = 1;
+constexpr int kPurposeDiffuse = 2;
+
+// Unit-energy exponential (AR(1)) taps: x_m = sum_j a_j w_{m-j}.
+const double *ar_taps() {
+    static const std::vector<double> t = [] {
+        std::vector<double> a(kArTaps);
+        const double rho = std::exp(-1.0 / kPerTau);
+        double e = 0.0;
+        for (int j = 0; j < kArTaps; ++j) {
+            a[j] = std::pow(rho, j);
+            e += a[j] * a[j];
+        }
+        const double s = 1.0 / std::sqrt(e);
+        for (int j = 0; j < kArTaps; ++j) a[j] *= s;
+        return a;
+    }();
+    return t.data();
+}
+
+// Acklam's inverse standard normal CDF (relative error < 1.2e-9).
+double inv_norm(double p) {
+    static const double a[] = {-3.969683028665376e+01, 2.209460984245205e+02,
+                               -2.759285104469687e+02, 1.383577518672690e+02,
+                               -3.066479806614716e+01, 2.506628277459239e+00};
+    static const double b[] = {-5.447609879822406e+01, 1.615858368580409e+02,
+                               -1.556989798598866e+02, 6.680131188771972e+01,
+                               -1.328068155288572e+01};
+    static const double c[] = {-7.784894002430293e-03, -3.223964580411365e-01,
+                               -2.400758277161838e+00, -2.549732539343734e+00,
+                               4.374664141464968e+00, 2.938163982698783e+00};
+    static const double d[] = {7.784695709041462e-03, 3.224671290700398e-01,
+                               2.445134137142996e+00, 3.754408661907416e+00};
+    const double pl = 0.02425;
+    if (p < pl || p > 1.0 - pl) {
+        const double q = std::sqrt(-2.0 * std::log(p < pl ? p : 1.0 - p));
+        const double v = (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+                         ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0);
+        return p < pl ? v : -v;
+    }
+    const double q = p - 0.5, r = q * q;
+    return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q /
+           (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0);
+}
+
+inline double smooth01(double x) {
+    if (x <= 0.0) return 0.0;
+    if (x >= 1.0) return 1.0;
+    return x * x * (3.0 - 2.0 * x);
+}
+
+inline int64_t floor_div(int64_t a, int64_t b) {
+    int64_t q = a / b;
+    if ((a % b != 0) && ((a < 0) != (b < 0))) --q;
+    return q;
+}
+
+// Eight 53-bit uniforms from ChaCha20 block `b` of one stream. Nonce:
+// (system << 24 | purpose << 16 | prn), b bits 0..31, b bits 32..47 | band << 16.
+void block_uniforms(const uint8_t key[32], uint32_t n0, uint32_t band,
+                    int64_t b, double u[8]) {
+    const uint64_t bi = static_cast<uint64_t>(b);
+    const uint32_t w[3] = {n0, static_cast<uint32_t>(bi),
+                           static_cast<uint32_t>((bi >> 32) & 0xFFFFu) | (band << 16)};
     uint8_t nonce[12];
-    const uint32_t n0 = (static_cast<uint32_t>(domain & 0xFF) << 24) |
-                        (static_cast<uint32_t>(purpose & 0xFF) << 16) |
-                        (static_cast<uint32_t>(prn) & 0xFFFFu);
-    const uint64_t k = static_cast<uint64_t>(knot);
-    const uint32_t w[3] = {n0, static_cast<uint32_t>(k),
-                           static_cast<uint32_t>(k >> 32)};
     for (int i = 0; i < 3; ++i)
         for (int j = 0; j < 4; ++j)
             nonce[4 * i + j] = static_cast<uint8_t>(w[i] >> (8 * j));
     uint8_t blk[64];
     gs::chacha20_block(key, 0, nonce, blk);
-    Draw d;
     for (int i = 0; i < 8; ++i) {
-        uint64_t v = static_cast<uint64_t>(le32(blk + 8 * i)) |
-                     (static_cast<uint64_t>(le32(blk + 8 * i + 4)) << 32);
-        d.u[i] = u01(v);
+        const uint64_t v = static_cast<uint64_t>(le32(blk + 8 * i)) |
+                           (static_cast<uint64_t>(le32(blk + 8 * i + 4)) << 32);
+        u[i] = (v >> 11) * (1.0 / 9007199254740992.0);
     }
-    return d;
 }
 
-constexpr int kPurposeKnot = 0;
-constexpr int kPurposeSv = 1;
-// Knot k sits at (k + jitter) grid units, jitter in [-kJitter, kJitter].
-// kJitter < 0.5 keeps the knots strictly increasing, so the interval holding
-// any x is found within one step of floor(x).
-constexpr double kJitter = 0.35;
-
-struct Knot { double pos, g; };
-inline Knot keyed_knot(const gs::FadingCfg *c, int prn, int64_t k) {
-    Draw d = keyed_draw(c->key, c->domain, kPurposeKnot, prn, k);
-    double u1 = d.u[1] + 1e-12;
-    double g = std::sqrt(-2.0 * std::log(u1)) * std::cos(2.0 * M_PI * d.u[2]);
-    return {static_cast<double>(k) + (2.0 * d.u[0] - 1.0) * kJitter, g};
+inline uint32_t stream_n0(int domain, int purpose, int prn) {
+    return (static_cast<uint32_t>(domain & 0xFF) << 24) |
+           (static_cast<uint32_t>(purpose & 0xFF) << 16) |
+           (static_cast<uint32_t>(prn) & 0xFFFFu);
 }
 
-double keyed_gain_db(const gs::FadingCfg *c, int prn, double t_s) {
-    // Per-SV grid phase and spacing (0.75..1.25 x coherence_s), so the
-    // satellites share no common knot grid and no knot lands on t = 0.
-    Draw sv = keyed_draw(c->key, c->domain, kPurposeSv, prn, 0);
-    const double spacing = c->coherence_s * (0.75 + 0.5 * sv.u[1]);
-    const double x = t_s / spacing + sv.u[0];
-    int64_t k = static_cast<int64_t>(std::floor(x));
-    Knot a = keyed_knot(c, prn, k);
-    if (x < a.pos) {
-        --k;
-        a = keyed_knot(c, prn, k);
-    }
-    Knot b = keyed_knot(c, prn, k + 1);
-    if (x >= b.pos) {
-        ++k;
-        a = b;
-        b = keyed_knot(c, prn, k + 1);
-    }
-    const double frac = (x - a.pos) / (b.pos - a.pos);
-    return c->sigma_db * kSmoothVarComp * smooth_blend(a.g, b.g, frac);
+// Seeded model: the key is one ChaCha20 block under the all-zero key with the
+// seed (little-endian) and "SEED" as nonce, so both models share one path.
+void seed_key(uint64_t seed, uint8_t key[32]) {
+    uint8_t zero[32] = {};
+    uint8_t nonce[12];
+    for (int i = 0; i < 8; ++i) nonce[i] = static_cast<uint8_t>(seed >> (8 * i));
+    nonce[8] = 'S'; nonce[9] = 'E'; nonce[10] = 'E'; nonce[11] = 'D';
+    uint8_t blk[64];
+    gs::chacha20_block(zero, 0, nonce, blk);
+    std::memcpy(key, blk, 32);
 }
 }  // namespace
 
@@ -143,27 +189,200 @@ void chacha20_block(const uint8_t key[32], uint32_t counter,
     }
 }
 
-float fading_gain_linear(const FadingCfg *c, int prn, double t_s) {
-    if (!c || c->model == 0 || c->sigma_db <= 0.0 || c->coherence_s <= 0.0)
-        return 1.0f;
-    double gain_db;
-    if (c->model == 2) {
-        gain_db = keyed_gain_db(c, prn, t_s);
-    } else {
-        double x = t_s / c->coherence_s;
-        long k0 = static_cast<long>(std::floor(x));
-        double frac = x - static_cast<double>(k0);
-        double g0 = gauss(c->seed, prn, k0);
-        double g1 = gauss(c->seed, prn, k0 + 1);
-        gain_db = c->sigma_db * kSmoothVarComp * smooth_blend(g0, g1, frac);
+void GridProcess::init(const uint8_t key[32], int domain, int purpose, int prn,
+                       double dt) {
+    std::memcpy(key_, key, 32);
+    n0_ = stream_n0(domain, purpose, prn);
+    dt_ = dt;
+    b0_ = 0;
+    buf_.clear();
+    last_m_ = INT64_MIN;
+}
+
+// q-th unit normal of the stream: block b = q / 8 gives eight uniforms, i.e.
+// four Box-Muller pairs.
+double GridProcess::normal(int64_t q) {
+    const int64_t b = floor_div(q, 8);
+    const int64_t nb = static_cast<int64_t>(buf_.size() / 8);
+    if (b < b0_ || b > b0_ + nb) {
+        buf_.clear();
+        b0_ = b;
+    } else if (b == b0_ + nb && nb >= 4096) {
+        buf_.erase(buf_.begin(), buf_.begin() + 8 * 2048);
+        b0_ += 2048;
     }
-    return static_cast<float>(std::pow(10.0, gain_db / 20.0));
+    while (static_cast<int64_t>(buf_.size() / 8) <= b - b0_) {
+        double u[8];
+        block_uniforms(key_, n0_, 0,
+                       b0_ + static_cast<int64_t>(buf_.size() / 8), u);
+        for (int i = 0; i < 4; ++i) {
+            const double r = std::sqrt(-2.0 * std::log(1.0 - u[2 * i]));
+            buf_.push_back(r * std::cos(2.0 * M_PI * u[2 * i + 1]));
+            buf_.push_back(r * std::sin(2.0 * M_PI * u[2 * i + 1]));
+        }
+    }
+    return buf_[static_cast<size_t>(q - 8 * b0_)];
+}
+
+// Exponentially correlated unit-variance value at grid point m (AR(1) taps
+// over innovations m-191 .. m, walked in increasing order so a forward run
+// keeps hitting the block window).
+double GridProcess::value(int64_t m) {
+    const double *a = ar_taps();
+    double x = 0.0;
+    for (int64_t i = m - (kArTaps - 1); i <= m; ++i) x += a[m - i] * normal(i);
+    return x;
+}
+
+double GridProcess::at(double t) {
+    const double x = t / dt_;
+    const double fl = std::floor(x);
+    const int64_t m = static_cast<int64_t>(fl);
+    if (m != last_m_) {
+        if (m == last_m_ + 1) {
+            last_v0_ = last_v1_;
+        } else {
+            last_v0_ = value(m);
+        }
+        last_v1_ = value(m + 1);
+        last_m_ = m;
+    }
+    const double f = x - fl;
+    return last_v0_ + f * (last_v1_ - last_v0_);
+}
+
+ChannelProcess::ChannelProcess(const FadingCfg &c, int prn) {
+    if (c.model == 0) return;
+    const int env = std::clamp(c.env, 0, 3);
+    const EnvPreset &e = kEnv[env];
+    uint8_t key[32];
+    if (c.model == 1)
+        seed_key(c.seed, key);
+    else
+        std::memcpy(key, c.key, 32);
+    for (int s = 0; s < 3; ++s)
+        for (int k = 0; k < 3; ++k) st_[s][k] = e.st[s][k];
+
+    const double v = std::max(c.speed_mps, 0.0);
+    const double tau_state = v > 0.0 ? std::min(e.d_state_m / v, kTauStateMax) : kTauStateMax;
+    const double tau_shadow = v > 0.0 ? std::min(e.d_shadow_m / v, kTauShadowMax) : kTauShadowMax;
+    const double carrier = c.carrier_hz > 0.0 ? c.carrier_hz : 1575.42e6;
+    p_.doppler_hz = std::max(v * carrier / kC, kDopplerMin);
+    p_.dt_state_s = tau_state / kPerTau;
+    p_.dt_shadow_s = tau_shadow / kPerTau;
+    p_.dt_diffuse_s = 1.0 / (kPerTau * p_.doppler_hz);   // knot spacing only
+    p_.dt_knot_s = std::min({p_.dt_state_s, p_.dt_shadow_s, p_.dt_diffuse_s, kKnotMax});
+
+    const double el = std::clamp(c.el_deg, 10.0, 90.0);
+    const double xi = (el - 10.0) / 20.0;
+    const int i0 = std::min(static_cast<int>(xi), 3);
+    const double fr = xi - i0;
+    p_.p_los = e.p_los[i0] + fr * (e.p_los[i0 + 1] - e.p_los[i0]);
+    p_.p_shadow = e.p_sh[i0] + fr * (e.p_sh[i0 + 1] - e.p_sh[i0]);
+    const double lo = 1e-6, hi = 1.0 - 1e-6;
+    p_.z_los = inv_norm(std::clamp(p_.p_los, lo, hi));
+    p_.z_shadow = inv_norm(std::clamp(p_.p_los + p_.p_shadow, lo, hi));
+
+    state_.init(key, c.domain, kPurposeState, prn, p_.dt_state_s);
+    shadow_.init(key, c.domain, kPurposeShadow, prn, p_.dt_shadow_s);
+    // Diffuse multipath: sum of kSos unit phasors, arrival angle n in the
+    // stratum [2 pi n / N, 2 pi (n+1) / N) and a random phase. Its ensemble
+    // autocorrelation is J0(2 pi f_D tau), the Jakes spectrum. Carrier in
+    // units of 1.023 MHz names the band (1540 L1, 1200 L2, 1150 L5, per
+    // channel for GLONASS FDMA), so each carrier scatters independently.
+    const uint32_t band =
+        static_cast<uint32_t>(std::lround(carrier / 1.023e6)) & 0xFFFFu;
+    const uint32_t n0 = stream_n0(c.domain, kPurposeDiffuse, prn);
+    for (int b = 0; b < kSos / 4; ++b) {
+        double u[8];
+        block_uniforms(key, n0, band, b, u);
+        for (int i = 0; i < 4; ++i) {
+            const int n = 4 * b + i;
+            const double alpha = 2.0 * M_PI * (n + u[2 * i]) / kSos;
+            sos_f_[n] = p_.doppler_hz * std::cos(alpha);
+            sos_ph_[n] = 2.0 * M_PI * u[2 * i + 1];
+        }
+    }
+    on_ = true;
+}
+
+std::complex<double> ChannelProcess::diffuse(double t_s) const {
+    double re = 0.0, im = 0.0;
+    for (int n = 0; n < kSos; ++n) {
+        const double ph = 2.0 * M_PI * sos_f_[n] * t_s + sos_ph_[n];
+        re += std::cos(ph);
+        im += std::sin(ph);
+    }
+    const double s = 1.0 / std::sqrt(static_cast<double>(kSos));
+    return {re * s, im * s};
+}
+
+void ChannelProcess::state_params(double z, double &mu, double &sig,
+                                  double &mp) const {
+    const double s1 = smooth01((z - p_.z_los) / kStateBlend + 0.5);
+    const double s2 = smooth01((z - p_.z_shadow) / kStateBlend + 0.5);
+    double v[3];
+    for (int k = 0; k < 3; ++k)
+        v[k] = st_[0][k] + s1 * (st_[1][k] - st_[0][k]) + s2 * (st_[2][k] - st_[1][k]);
+    mu = v[0]; sig = v[1]; mp = v[2];
+}
+
+void ChannelProcess::components(double t_s, double out[8]) {
+    for (int k = 0; k < 8; ++k) out[k] = 0.0;
+    if (!on_) { out[2] = 1.0; return; }
+    const double z = state_.at(t_s);
+    const double x = shadow_.at(t_s);
+    const std::complex<double> w = diffuse(t_s);
+    double mu, sig, mp;
+    state_params(z, mu, sig, mp);
+    out[0] = z;
+    out[1] = x;
+    out[2] = std::pow(10.0, (mu + sig * x) / 20.0);
+    out[3] = w.real();
+    out[4] = w.imag();
+    out[5] = mu;
+    out[6] = sig;
+    out[7] = mp;
+}
+
+std::complex<double> ChannelProcess::gain(double t_s) {
+    if (!on_) return {1.0, 0.0};
+    double o[8];
+    components(t_s, o);
+    const double a = std::pow(10.0, o[7] / 20.0);
+    return {o[2] + a * o[3], a * o[4]};
 }
 }  // namespace gs
 
-// C-linkage shims so the symbols are loadable via ctypes.
-extern "C" float fading_gain_linear(const FadingCfg *c, int prn, double t_s) {
-    return gs::fading_gain_linear(c, prn, t_s);
+// C-linkage shims so the model is loadable via ctypes.
+extern "C" void fading_gain_complex(const FadingCfg *c, int prn, double t_s,
+                                    double *out) {
+    gs::ChannelProcess p(*c, prn);
+    const std::complex<double> g = p.gain(t_s);
+    out[0] = g.real();
+    out[1] = g.imag();
+}
+extern "C" void fading_gain_series(const FadingCfg *c, int prn, double t0_s,
+                                   double dt_s, int n, double *out) {
+    gs::ChannelProcess p(*c, prn);
+    for (int i = 0; i < n; ++i) {
+        const std::complex<double> g = p.gain(t0_s + i * dt_s);
+        out[2 * i] = g.real();
+        out[2 * i + 1] = g.imag();
+    }
+}
+extern "C" void fading_components(const FadingCfg *c, int prn, double t_s,
+                                  double *out) {
+    gs::ChannelProcess p(*c, prn);
+    p.components(t_s, out);
+}
+extern "C" void fading_params(const FadingCfg *c, int prn, double *out) {
+    gs::ChannelProcess p(*c, prn);
+    const gs::FadingParams &q = p.params();
+    const double v[9] = {q.doppler_hz, q.dt_state_s, q.dt_shadow_s,
+                         q.dt_diffuse_s, q.dt_knot_s, q.p_los, q.p_shadow,
+                         q.z_los, q.z_shadow};
+    for (int i = 0; i < 9; ++i) out[i] = v[i];
 }
 extern "C" void fading_chacha20_block(const uint8_t *key, uint32_t counter,
                                       const uint8_t *nonce, uint8_t *out) {

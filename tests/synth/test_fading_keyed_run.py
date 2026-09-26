@@ -29,14 +29,16 @@ def _run(tmp_path, monkeypatch, fading, name):
 
 
 def _fade(**kw):
-    return {"model": "keyed", "sigma_db": 6.0, "coherence_s": 0.2, **kw}
+    return {"model": "keyed", "environment": "urban", "speed_mps": 5.0, **kw}
 
 
 def test_keyed_run_hides_the_key_by_default(tmp_path, monkeypatch):
     meta, _ = _run(tmp_path, monkeypatch, _fade(key=_KEY), "a")
-    assert meta["provenance"]["fading"] == "keyed"
+    assert meta["provenance"]["fading"] == {
+        "model": "keyed", "environment": "urban", "speed_mps": 5.0}
     svs = meta["provenance"]["svs"]
-    assert svs and all(s["fading_model"] == 2 for s in svs)
+    assert svs and all(s["fading_model"] == 2 and s["fading_env"] == "urban"
+                       for s in svs)
     assert all("fading_key" not in s for s in svs)
     assert len({s["fading_key_id"] for s in svs}) == 1
     assert _KEY not in json.dumps(meta)

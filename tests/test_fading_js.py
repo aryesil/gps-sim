@@ -1,5 +1,5 @@
-"""frontend/js/fading.js must reproduce the native fading gain exactly, so
-the scrubbed per-SV power bars show what the IQ actually carries."""
+"""frontend/js/fading.js must reproduce the native channel gain, so the
+scrubbed per-SV power bars show what the IQ actually carries."""
 import json
 import pathlib
 import shutil
@@ -32,27 +32,36 @@ def test_js_chacha20_rfc8439_block_vector():
     assert got.startswith("10f1e7e4d13b5915500fdd1fa32071c4")
 
 
-@pytest.mark.parametrize("model", ["lognormal", "keyed"])
+# (sys, prn, t, environment, speed, carrier, elevation)
+_CASES = [("G", 5, 0.1, "urban", 10.0, 1575.42e6, 15.0),
+          ("E", 5, 0.1, "urban", 10.0, 1575.42e6, 15.0),
+          ("C", 30, 12.34, "suburban", 1.4, 1176.45e6, 40.0),
+          ("R", 3, 99.9, "rural", 0.0, 1602.5625e6, 70.0),
+          ("G", 17, 250.0, "open", 25.0, 1227.60e6, 5.0),
+          ("J", 2, 0.0, "urban", 3.0, 1575.42e6, 88.0)]
+
+
+@pytest.mark.parametrize("model", ["seeded", "keyed"])
 def test_js_matches_native(model):
-    cfg = fading.FadingConfig.from_dict(
-        {"model": model, "sigma_db": 3.0, "coherence_s": 0.7, "seed": 11,
-         "key": _KEY})
-    cases = [("G", 5, 0.1), ("E", 5, 0.1), ("C", 30, 12.34), ("R", 3, 99.9)]
-    svs = [{"sys": s, "prn": p, "fading_model": fading.MODEL_INT[model],
-            "fading_sigma_db": 3.0, "fading_coherence_s": 0.7,
-            "fading_seed": 11, "fading_key": _KEY} for s, p, _ in cases]
+    svs, want = [], []
+    for s, p, t, env, v, car, el in _CASES:
+        d = {"model": model, "environment": env, "speed_mps": v, "seed": 11,
+             "key": _KEY}
+        cfg = fading.FadingConfig.from_dict(d)
+        want.append(fading.gain(p, t, cfg, s, car, el))
+        svs.append({"sys": s, "prn": p, "fading_model": fading.MODEL_INT[model],
+                    "fading_env": env, "fading_speed_mps": v,
+                    "fading_carrier_hz": car, "fading_el_deg": el,
+                    "fading_seed": 11, "fading_key": _KEY})
     js = _node("[" + ",".join(
-        f"globalThis.fadingGainDb({json.dumps(sv)}, {t})"
-        for sv, (_, _, t) in zip(svs, cases)) + "]")
-    for (s, p, t), got in zip(cases, js):
-        want = fading._gain_db(p, t, cfg, s)
-        if model == "lognormal":
-            # lognormal has no system domain (G5 == E5), kept for back-compat
-            want = fading._gain_db(p, t, cfg, "G")
-        assert got == pytest.approx(want, abs=1e-3), (s, p, t)
+        f"globalThis.fadingGain({json.dumps(sv)}, {c[2]})"
+        for sv, c in zip(svs, _CASES)) + "]")
+    for c, got, w in zip(_CASES, js, want):
+        assert complex(*got) == pytest.approx(w, abs=1e-9), c
 
 
 def test_js_keyed_without_recorded_key_is_flat():
-    sv = {"sys": "G", "prn": 5, "fading_model": 2, "fading_sigma_db": 3.0,
-          "fading_coherence_s": 1.0}
+    sv = {"sys": "G", "prn": 5, "fading_model": 2, "fading_env": "urban",
+          "fading_speed_mps": 3.0, "fading_carrier_hz": 1575.42e6,
+          "fading_el_deg": 30.0}
     assert _node(f"globalThis.fadingGainDb({json.dumps(sv)}, 4.2)") == 0

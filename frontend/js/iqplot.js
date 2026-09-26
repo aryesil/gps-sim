@@ -197,20 +197,21 @@ window.drawCorrelationBars = function (canvasId, rows, svs, t_s) {
   const isGain = !(rows && rows.length);
   const w = W / items.length;
   const vals = items.map(x => x.val);
-  // Gain mode: FIXED -18..+6 dB axis so every PRN's bar moves on its own as
+  // Gain mode: FIXED -36..+6 dB axis (blocked satellites sit 15-25 dB
+  // down under the channel model) so every PRN's bar moves on its own as
   // the scrubber advances. A data-fit axis (min/max each redraw) rescaled
   // the whole chart every frame, which read as "all bars move together".
   // GPS metric_db mode keeps the min-anchored zoom -- its per-PRN spread is
   // tiny and would be invisible on a fixed axis.
   let lo, hi;
-  if (isGain) { lo = -18; hi = 6; }
+  if (isGain) { lo = -36; hi = 6; }
   else { hi = Math.max(...vals) + 1; lo = Math.min(Math.min(...vals) - 2, hi - 6); }
   const span = Math.max(1e-6, hi - lo);
   const yOf = v => H - 10 - ((Math.max(lo, Math.min(hi, v)) - lo) / span) * (H - 22);
   if (isGain) {
-    // reference gridlines at 0 / -6 / -12 dB
+    // reference gridlines at 0 / -12 / -24 dB
     g.strokeStyle = '#ddd'; g.fillStyle = '#999';
-    [0, -6, -12].forEach(db => {
+    [0, -12, -24].forEach(db => {
       const y = yOf(db);
       g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
       g.fillText(db + ' dB', W - 34, y - 2);
@@ -360,7 +361,7 @@ window.loadIqPlots = async function (channelId, outdir, offset) {
       `   RMS ${(20 * Math.log10(rms / fs)).toFixed(1)} dBFS`;
   }
 
-  // Per-SV signal power at this scrub position: re-evaluate the fading model
+  // Per-SV signal power at this scrub position: re-evaluate the channel model
   // at t = offset / sample_rate so the bars breathe with the waveform as the
   // scrubber is dragged, instead of showing a single frozen snapshot.
   const model = _svPowerModel[channelId];
@@ -369,7 +370,7 @@ window.loadIqPlots = async function (channelId, outdir, offset) {
     drawCorrelationBars(`${channelId}-iq-correlation`, null, model, t);
     const lbl = document.getElementById(`${channelId}-iq-correlation-label`);
     if (lbl) lbl.textContent =
-      `Per-SV signal power @ t=${t.toFixed(2)}s (gain + fading, dB)`;
+      `Per-SV signal power @ t=${t.toFixed(2)}s (gain + channel, dB)`;
   }
 };
 

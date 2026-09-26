@@ -15,8 +15,9 @@ Two generation engines:
 - **`native`** — a built-in C++20 engine that renders the same GPS L1 C/A
   output **plus GLONASS G1, Galileo E1, BeiDou B1I, QZSS L1 C/A and SBAS L1**
   from one correlated multi-constellation geometry (one receive epoch, so
-  cross-system acquisition lines up), with a per-satellite fading model
-  (seeded, or keyed and cryptographically unpredictable) baked into the IQ. GLONASS FDMA is written to its own 1602 MHz band
+  cross-system acquisition lines up), with a per-satellite land-mobile-satellite
+  channel model (seeded, or keyed and cryptographically unpredictable) baked
+  into the IQ. GLONASS FDMA is written to its own 1602 MHz band
   file; every other system interleaves in the 1575.42 MHz L1 group.
 
 Signal generation runs from broadcast ephemeris by default; in **precise
@@ -55,17 +56,29 @@ engine (GPS + GLONASS + Galileo + BeiDou + QZSS from an MGEX SP3 product).
 - **Generate** — static point or dynamic waypoint route → `gps-sdr-sim` or
   the native C++ engine → raw interleaved IQ + `meta.json`, with streamed
   progress. The native engine adds a constellation picker (GPS always on;
-  GLONASS / Galileo / BeiDou / QZSS / SBAS opt-in), a log-normal fading
-  model, and int16 / int12 / int8 quantisation. Fading is either `lognormal`
-  (reproducible from a seed, so predictable by anyone who knows it) or
-  `keyed`. In `keyed`, knot values, knot jitter and each satellite's grid
-  phase and spacing come from ChaCha20 under a 256-bit key. An empty key
-  draws a fresh one from the OS CSPRNG per run. `meta.json` records only a
-  fingerprint of the key unless `record_key` is set.
+  GLONASS / Galileo / BeiDou / QZSS / SBAS opt-in), a per-satellite
+  channel model, and int16 / int12 / int8 quantisation. The channel is a
+  three-state (line-of-sight / shadowed / blocked) Loo model: a slow
+  correlated state process with elevation-dependent probabilities for the
+  chosen `environment` (`open`, `rural`, `suburban`, `urban`), log-normal
+  shadowing of the direct path, and Rayleigh diffuse multipath with a Jakes
+  Doppler spectrum of spread `speed_mps` / wavelength. The receiver speed also
+  sets how fast blockage and shadowing change (a static receiver still drifts
+  over minutes). All bands of a satellite share its blockage and shadowing;
+  the diffuse part is independent per carrier. The gain is complex and is
+  interpolated per sample between knots that resolve the Doppler spread. The
+  preset values are representative of published L-band land-mobile
+  measurements (Perez-Fontan / ITU-R P.681 style), not a calibrated copy of
+  one campaign, and multipath code delay is modelled separately (channel
+  models panel). Randomness is ChaCha20: `seeded` derives the key from a seed
+  (reproducible, so predictable by anyone who knows it); `keyed` uses a
+  256-bit key, and an empty key draws a fresh one from the OS CSPRNG per run.
+  `meta.json` records only a fingerprint of the key unless `record_key` is
+  set. The pre-ABI-28 name `lognormal` is accepted as `seeded`.
 - **Inspect** — power spectrum (every RF band overlaid on one absolute-Hz
   axis), per-PRN acquisition (Doppler + code phase) for a GPS-only run, a
   per-satellite signal-power panel across **all** constellations for a
-  multi-GNSS run (elevation taper + fading, re-evaluated as the IQ scrubber
+  multi-GNSS run (elevation taper + channel gain, re-evaluated as the IQ scrubber
   moves), code-correlation curves, measured-vs-predicted geometry. All
   status-panel canvases render at the display's pixel density.
 - **Verify** — a from-scratch software receiver acquires the generated IQ,
@@ -207,9 +220,9 @@ backend/
     bands.py        splits visible SVs into RF bands (L1 group 1575.42 MHz, GLONASS G1 1602 MHz)
     signal_engine.py  thin run() seam used by the API
     _lib.py         ctypes bindings for backend/synth/native/libgnsssynth.dylib
-    fading.py       FadingConfig (model / sigma_db / coherence_s / seed / key)
+    fading.py       FadingConfig (model / environment / speed_mps / seed / key)
     sbas.py glonass.py fs_policy.py   state helpers, FDMA, sample-rate policy
-    native/         C++20: code generation, NCOs, mixing, quantisation, block streaming, seeded + keyed (ChaCha20) fading
+    native/         C++20: code generation, NCOs, mixing, quantisation, block streaming, land-mobile-satellite channel (ChaCha20)
   models/           atmosphere.py, receiver_clock.py, multipath.py,
                     channel_models.py (glue), impairments.py, error_budget.py, wls.py
   analysis/         receiver.py (LS fix), reference.py + truth.py (independent
@@ -234,7 +247,7 @@ frontend/           vanilla JS, no build step; served static by FastAPI at /stat
     map.js trajectory.js live.js pages.js app.js
     plots.js skyplot.js iqplot.js   spectrogram, sky plot, IQ / spectrum plots,
                     per-SV power bars, HiDPI canvas helper
-    fading.js       JS port of the native fading models (scrubbed power bars)
+    fading.js       JS port of the native channel model (scrubbed power bars)
     log.js          audit-log merge, /ws/events client, receiver-feed panel
 ```
 
@@ -329,13 +342,13 @@ Three pages, switched from the left sidebar.
   each height-capped with its own scroll so opening one never stretches
   the page: **SP3** (load a local product, compare vs broadcast),
   **RF impairments**, **Propagation** (receiver models), **Signal engine**
-  (engine picker, constellation checkboxes, quantisation, fading model).
+  (engine picker, constellation checkboxes, quantisation, channel model).
 - *Scenario library* — save/reload the card's config by name.
 - *Timeline* — `jog` / `time_shift` steps that fire at `t + N` s.
 - *Inspect panels* — IQ waveform + spectrum with a playback scrubber
   (debounced, stale responses dropped), every RF band's spectrum overlaid
   on one absolute-frequency axis, per-satellite signal-power bars (real
-  acquisition metric for a GPS-only run; elevation-taper + fading gain
+  acquisition metric for a GPS-only run; elevation-taper + channel gain
   across all constellations for a multi-GNSS run, redrawn as the scrubber
   moves), spectrogram waterfall, C/N0 trend, sky plot, LNAV decode.
 - *Live manipulation* — jog buttons and GPS time-of-week shift while a live
@@ -502,7 +515,7 @@ fit (pure-Kepler recovery to millimetres, SP3-fixture fit, RINEX-2
 serialisation), precise generation wiring (both engines), geometry, the
 native engine (per-system code generation, NCO/mixer continuity, BOC and
 secondary codes, GLONASS FDMA epoch, multi-constellation acquisition,
-seeded fading, band planning, C++/Python constant parity), acquisition,
+channel model statistics and JS parity, band planning, C++/Python constant parity), acquisition,
 the receiver solve, LNAV decode, the live session, transmit plumbing for
 both the Pluto and bladeRF backends (mocked hardware), the RF-frontend
 LO-offset planner and TX quadrature calibration, the device link, audit,

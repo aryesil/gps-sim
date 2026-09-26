@@ -34,10 +34,10 @@ def _metrics(outdir, offset):
 def test_fading_spreads_per_sv_metrics(tmp_path, monkeypatch):
     flat = _metrics(_run(tmp_path, monkeypatch, {"model": "off"}), 0)
     faded = _metrics(_run(tmp_path, monkeypatch,
-                          {"model": "lognormal", "sigma_db": 4.0,
-                           "coherence_s": 2.0, "seed": 3}), 0)
+                          {"model": "seeded", "environment": "urban",
+                           "speed_mps": 1.4, "seed": 3}), 0)
     shared = set(flat) & set(faded)
-    assert len(shared) >= 4
+    assert len(shared) >= 3
     flat_spread = np.std([flat[p] for p in shared])
     faded_spread = np.std([faded[p] for p in shared])
     assert faded_spread > flat_spread + 1.0
@@ -45,7 +45,8 @@ def test_fading_spreads_per_sv_metrics(tmp_path, monkeypatch):
 
 def test_fading_metric_changes_along_the_file(tmp_path, monkeypatch):
     outdir = _run(tmp_path, monkeypatch,
-                  {"model": "lognormal", "sigma_db": 4.0, "coherence_s": 1.0, "seed": 9})
+                  {"model": "seeded", "environment": "urban",
+                   "speed_mps": 10.0, "seed": 9})
     early = _metrics(outdir, 0)
     late = _metrics(outdir, int(2_600_000.0 * 5.0))
     shared = set(early) & set(late)
