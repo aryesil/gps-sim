@@ -56,6 +56,8 @@ _L5_CHIP_HZ = 10.23e6
 # closed-loop tests from finishing. Real satellites measure 21-35 dB, so
 # 18 dB separates the two.
 _L5_ACQ_DB = 18.0
+# Seconds of L5-band IQ _fix_from_iq_l5 reads (see the comment there).
+_L5_READ_S = 32.0
 _NAVIC_LEN = 1023
 _NAVIC_CHIP_HZ = 1.023e6
 
@@ -197,12 +199,16 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
     navic = _sig.SIGNALS["IRNSS_L5"]
     b2a = _sig.SIGNALS["BDS_B2AD"]
 
-    # A full L5 CNAV 10/11/30/33 cycle spans 24 s (6 s messages); L5 runs
-    # at ~25 Msps, so cap the read
-    # near that (a 50 s cap would be ~1.3 G samples) -- read_iq clamps to
-    # the file length anyway.
+    # A full L5 CNAV 10/11/30/33 cycle spans 24 s (6 s messages); F/NAV
+    # needs pages 1-3, i.e. 30 s from a page-1 boundary. The signal reaches
+    # the receiver ~70-80 ms after it leaves the satellite, so a capture
+    # that opens on that boundary holds page 3's last symbol just past
+    # 30 s: a 30 s read cut it off and every E5a satellite reported "no
+    # own-PRN 1/2/3". L5 runs at ~25 Msps, so keep the cap close to that
+    # (a 50 s cap would be ~1.3 G samples); read_iq clamps to the file
+    # length anyway.
     iq = inspector.read_iq(iq_path, sample_format,
-                           max_samples=int(sample_rate * 30.0))
+                           max_samples=int(sample_rate * _L5_READ_S))
     approx_rx = (np.array(geometry.llh_to_ecef(*marker_llh))
                  if marker_llh else np.zeros(3))
 
