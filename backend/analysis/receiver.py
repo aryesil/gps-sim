@@ -69,8 +69,9 @@ def _fix_from_iq_l2(iq_path, sample_format, sample_rate, eph_by_prn,
     l2c = _sig.SIGNALS["GPS_L2C"]
     m_per_chip = config.C / _CM_CHIP_HZ
 
-    # CNAV messages 10 + 11 arrive once per 12 s each; 50 s of data gives a
-    # comfortable margin for acquisition slack plus a full 10/11/30 set.
+    # L2C CNAV messages arrive one per 12 s (10, 11, 30, 33 cycle); 50 s of
+    # data gives a comfortable margin for acquisition slack plus a full
+    # 10/11/30 set.
     iq = inspector.read_iq(iq_path, sample_format,
                            max_samples=int(sample_rate * 50.0))
     approx_rx = (np.array(geometry.llh_to_ecef(*marker_llh))
@@ -95,8 +96,8 @@ def _fix_from_iq_l2(iq_path, sample_format, sample_rate, eph_by_prn,
             # decodes that sibling's CNAV, which would otherwise be assigned
             # the wrong geometry.
             own = [msg for msg in msgs if msg["crc_ok"] and msg["prn"] == prn]
-            if not ({10, 11} <= {msg["type"] for msg in own}):
-                nav_decode[prn] = "no own-PRN 10/11"
+            if not ({10, 11, 30} <= {msg["type"] for msg in own}):
+                nav_decode[prn] = "no own-PRN 10/11/30"
                 continue
             rec = cnav_decode.reconstruct_ephemeris(own)
             rec["prn"] = prn
@@ -196,7 +197,8 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
     navic = _sig.SIGNALS["IRNSS_L5"]
     b2a = _sig.SIGNALS["BDS_B2AD"]
 
-    # One CNAV 10/11 pair spans 24 s; L5 runs at ~25 Msps, so cap the read
+    # A full L5 CNAV 10/11/30/33 cycle spans 24 s (6 s messages); L5 runs
+    # at ~25 Msps, so cap the read
     # near that (a 50 s cap would be ~1.3 G samples) -- read_iq clamps to
     # the file length anyway.
     iq = inspector.read_iq(iq_path, sample_format,
@@ -304,8 +306,8 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
                     code_phase_chips=r["code_phase_chips"])
                 msgs = bcnav2_decode.decode_messages(sym.tolist())
                 own = [m for m in msgs if m["crc_ok"] and m["prn"] == prn]
-                if not ({10, 11} <= {m["type"] for m in own}):
-                    nav_decode[key] = "no own-PRN 10/11"
+                if not ({10, 11, 30} <= {m["type"] for m in own}):
+                    nav_decode[key] = "no own-PRN 10/11/30"
                     continue
                 rec = bcnav2_decode.reconstruct_ephemeris(own)
                 # B-CNAV2 broadcasts toe/toc on BDT (GPS - 14 s); this
@@ -318,8 +320,8 @@ def _fix_from_iq_l5(iq_path, sample_format, sample_rate, eph_by_prn,
                     code_phase_chips=r["code_phase_chips"])
                 msgs = cnav_decode.decode_messages(sym.tolist())
                 own = [m for m in msgs if m["crc_ok"] and m["prn"] == prn]
-                if not ({10, 11} <= {m["type"] for m in own}):
-                    nav_decode[key] = "no own-PRN 10/11"
+                if not ({10, 11, 30} <= {m["type"] for m in own}):
+                    nav_decode[key] = "no own-PRN 10/11/30"
                     continue
                 rec = cnav_decode.reconstruct_ephemeris(own)
             rec["prn"] = prn

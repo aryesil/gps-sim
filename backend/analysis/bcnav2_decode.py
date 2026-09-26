@@ -87,10 +87,11 @@ def reconstruct_ephemeris(msgs: list[dict]) -> dict:
     for m in msgs:
         if m.get("crc_ok") and m["type"] in (L.MSG_EPH1, L.MSG_EPH2, L.MSG_CLK_IONO):
             by_type[m["type"]] = m["fields"]
-    if not ({L.MSG_EPH1, L.MSG_EPH2} <= set(by_type)):
-        raise ValueError("need CRC-valid B-CNAV2 messages 10 and 11")
+    # 30 carries the SV clock; a record without it would silently zero a0.
+    if not ({L.MSG_EPH1, L.MSG_EPH2, L.MSG_CLK_IONO} <= set(by_type)):
+        raise ValueError("need CRC-valid B-CNAV2 messages 10, 11 and 30")
     f10, f11 = by_type[L.MSG_EPH1], by_type[L.MSG_EPH2]
-    f30 = by_type.get(L.MSG_CLK_IONO, {})
+    f30 = by_type[L.MSG_CLK_IONO]
     sat_type = int(f10.get("sat_type", 3))
     a0 = L.a_ref_for(sat_type) + f10["delta_a"]
     rec = {"system": "C"}

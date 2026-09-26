@@ -69,3 +69,12 @@ def test_decode_messages_from_a_mid_stream_capture(gps_rec):
     types = {m["type"] for m in msgs if m["crc_ok"]}
     assert {11, 30} <= types, types
     assert all(m["prn"] == 1 for m in msgs)
+
+
+def test_reconstruct_refuses_without_clock_message():
+    # Without type 30 the record would carry af0 = 0: GPS clock offsets
+    # reach hundreds of microseconds, i.e. a silent tens-of-km fix error.
+    import pytest
+    msgs = [{"crc_ok": True, "type": t, "fields": {}} for t in (10, 11)]
+    with pytest.raises(ValueError, match="30"):
+        D.reconstruct_ephemeris(msgs)

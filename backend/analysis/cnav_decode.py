@@ -161,10 +161,11 @@ def reconstruct_ephemeris(msgs: list[dict]) -> dict:
     for m in msgs:
         if m.get("crc_ok") and m["type"] in (10, 11, 30, 33):
             by_type[m["type"]] = m["fields"]
-    if not ({10, 11} <= set(by_type)):
-        raise ValueError("need CRC-valid CNAV messages 10 and 11")
-    f10, f11 = by_type[10], by_type[11]
-    f30 = by_type.get(30, {})
+    # 30 carries the SV clock (af0 reaches hundreds of microseconds, i.e.
+    # tens of km); building a record without it would silently zero it.
+    if not ({10, 11, 30} <= set(by_type)):
+        raise ValueError("need CRC-valid CNAV messages 10, 11 and 30")
+    f10, f11, f30 = by_type[10], by_type[11], by_type[30]
     rec = {"system": "G"}
     rec["sqrtA"] = math.sqrt(max(f10["dA"] + L.A_REF, 1.0))
     rec["e"] = f10["e"]
@@ -192,7 +193,8 @@ def reconstruct_ephemeris(msgs: list[dict]) -> dict:
 
 # --- IQ -> convolutional symbols ---------------------------------------------
 
-_SYM_S = 0.02                           # one CNAV symbol (50 sym/s), both bands
+_SYM_S = 0.02                           # one L2C CNAV symbol (50 sym/s)
+_L5_SYM_S = 0.01                        # one L5 CNAV symbol (100 sym/s)
 _L2_CTR_HZ = 1_227_600_000.0
 _L5_CTR_HZ = 1_176_450_000.0
 _L5_CHIP_HZ = 10.23e6
@@ -440,7 +442,7 @@ def demod_symbols(iq, fs, prn, *, dopp_hz=None, code_phase_chips=None):
 
 
 def demod_symbols_l5(iq, fs, prn, *, dopp_hz=None, code_phase_chips=None):
-    """Hard {0,1} CNAV symbols (50 sym/s) from a GPS / QZSS L5 capture: the
+    """Hard {0,1} CNAV symbols (100 sym/s) from a GPS / QZSS L5 capture: the
     I5 primary at 10.23 Mcps with the NH10 secondary wiped off. Same
     message set and downstream decode as L2C."""
     from backend.analysis import band_acquire
@@ -463,4 +465,4 @@ def demod_symbols_l5(iq, fs, prn, *, dopp_hz=None, code_phase_chips=None):
     return _demod(iq, fs, i5, chip_hz=_L5_CHIP_HZ, code_len=_L5_LEN,
                   carrier_ctr_hz=_L5_CTR_HZ, dopp_hz=dopp_hz,
                   code_phase_chips=code_phase_chips,
-                  sec=_NH10, sec_rate_hz=1000.0)
+                  sec=_NH10, sec_rate_hz=1000.0, sym_s=_L5_SYM_S)

@@ -1,7 +1,8 @@
 """GPS CNAV encoder (IS-GPS-200 Sections 30 / 40) -- the L2C and L5
-navigation message. 300-bit messages, one per 12 s, rate-1/2 K=7
-convolutional coding (G1 = 0o171, G2 = 0o133 inverted), no interleaving,
-CRC-24Q over bits 1..276 -> 50 symbols/s. Message types 10, 11
+navigation message. 300-bit messages, rate-1/2 K=7 convolutional coding
+(G1 = 0o171, G2 = 0o133 inverted), no interleaving, CRC-24Q over bits
+1..276. L2C runs at 25 bps / 50 sym/s (one message per 12 s); L5 runs at
+50 bps / 100 sym/s (one message per 6 s, IS-GPS-705 Sec. 20.3.4). Message types 10, 11
 (ephemeris), 30 (clock + iono + group delay), 33 (clock + UTC), cycled.
 
 Field bit-allocation is driven by the shared table in
@@ -159,15 +160,21 @@ def build_message(msg_type: int, prn: int, tow_6s: int, alert: int,
     return body + crc24q(body)
 
 
-def nav_stream(eph, header, week, sow, duration_s, *, prn, eph_by_prn=None):
-    """(+/-1 int8 symbols at 50 sym/s, 50.0). Cycles message types
-    [10, 11, 30, 33], one 300-bit message per 12 s, TOW field carrying the
-    start of the following message (6 s units)."""
-    n_msg = max(1, math.ceil((math.ceil(float(duration_s)) + 24) / 12))
-    # Messages sit on the 12 s GPS-time grid at or before ``sow`` (the
-    # engine passes sow minus a margin so symbol 0 precedes the earliest
-    # transmit time). ceil() here used to start the stream AFTER sow.
-    tow0 = int(float(sow) // 12.0) * 2
+def nav_stream(eph, header, week, sow, duration_s, *, prn, eph_by_prn=None,
+               sym_rate=50.0):
+    """(+/-1 int8 symbols at ``sym_rate``, sym_rate). Cycles message types
+    [10, 11, 30, 33], one 300-bit message per 600 / sym_rate s (12 s on L2C
+    at 50 sym/s, 6 s on L5 at 100 sym/s), TOW field carrying the start of
+    the following message (6 s units)."""
+    msg_s = 600.0 / float(sym_rate)
+    step = int(round(msg_s / 6.0))        # TOW units (6 s) per message
+    n_msg = max(1, math.ceil((math.ceil(float(duration_s)) + 2 * msg_s)
+                             / msg_s))
+    # Messages sit on the message-period GPS-time grid at or before ``sow``
+    # (the engine passes sow minus a margin so symbol 0 precedes the
+    # earliest transmit time). ceil() here used to start the stream AFTER
+    # sow.
+    tow0 = int(float(sow) // msg_s) * step
     eph = dict(eph or {})
     eph.setdefault("gps_week", int(week))
     conv = _Conv()
@@ -175,8 +182,8 @@ def nav_stream(eph, header, week, sow, duration_s, *, prn, eph_by_prn=None):
     for i in range(n_msg):
         # Message type follows GPS time (message count since the week
         # start), so a stream started later continues the same schedule.
-        mtype = L.CYCLE[(tow0 // 2 + i) % len(L.CYCLE)]
-        tow = tow0 + (i + 1) * 2          # next message start, 12 s = 2 units
+        mtype = L.CYCLE[(tow0 // step + i) % len(L.CYCLE)]
+        tow = tow0 + (i + 1) * step       # next message start, 6 s units
         bits.extend(conv.encode(build_message(mtype, prn, tow, 0, eph, header)))
     arr = np.array([1 if s == 0 else -1 for s in bits], dtype=np.int8)
-    return arr, 50.0
+    return arr, float(sym_rate)

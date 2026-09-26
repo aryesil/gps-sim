@@ -29,6 +29,10 @@ SYM_RATE_HZ = {
 }
 
 
+# CNAV symbol rate per band: L2C 25 bps, L5 50 bps, rate-1/2 FEC.
+CNAV_SYM_RATE = {"L2": 50.0, "L5": 100.0}
+
+
 def nav_stream_for(sysc, signal, eph, header, week, sow, duration_s,
                    eph_by_prn=None, prn=None):
     """Dispatch to the per-system encoder. ``eph`` is that satellite's parsed
@@ -41,9 +45,11 @@ def nav_stream_for(sysc, signal, eph, header, week, sow, duration_s,
         # LNAV. Same message set on both bands; QZSS reuses it verbatim.
         from backend.analysis import cnav_encode
         p = int(prn if prn is not None else (eph.get("prn", 1) or 1))
+        # L2C: 25 bps / 50 sym/s; L5: 50 bps / 100 sym/s (IS-GPS-705).
         arr, rate = cnav_encode.nav_stream(eph, header or {}, week, sow,
                                            duration_s, prn=p,
-                                           eph_by_prn=eph_by_prn)
+                                           eph_by_prn=eph_by_prn,
+                                           sym_rate=CNAV_SYM_RATE[band])
         return arr, rate
     if sysc in ("G", "J"):
         # QZSS L1 C/A LNAV is frame-identical to GPS LNAV -- same subframes,
@@ -140,7 +146,8 @@ def stream_t0_sow(sysc, signal, tow0_sow: float, prn=None) -> float:
     band = getattr(signal, "band", "L1")
     t = float(tow0_sow)
     if band in ("L2", "L5") and sysc in ("G", "J"):
-        return (t // 12.0) * 12.0                        # CNAV, 12 s messages
+        msg_s = 600.0 / CNAV_SYM_RATE[band]              # CNAV: 12 s / 6 s
+        return (t // msg_s) * msg_s
     if sysc in ("G", "J"):
         return (t // 6.0) * 6.0                          # LNAV subframes
     if band == "L5" and sysc == "E":

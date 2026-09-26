@@ -85,6 +85,19 @@ def test_l2c_signal_dispatches_to_cnav(eph_multi):
     assert len(arr) % 600 == 0
 
 
+def test_l5_signal_dispatches_to_cnav_at_100_sps(eph_multi):
+    # IS-GPS-705: L5 CNAV is 50 bps / 100 sym/s, one message per 6 s (L2C
+    # is half that). At 50 sym/s a 26 s capture held only two messages.
+    from backend.synth import signals
+    rec = _first(eph_multi, "G")
+    arr, rate = nav_encoders.nav_stream_for(
+        "G", signals.SIGNALS["GPS_L5I"], rec, {}, _WEEK, _SOW, 12, prn=1)
+    assert rate == 100.0
+    assert len(arr) % 600 == 0
+    assert nav_encoders.stream_t0_sow(
+        "G", signals.SIGNALS["GPS_L5I"], _SOW + 7.3) == (_SOW + 7.3) // 6 * 6
+
+
 def test_l1_dispatch_still_lnav(eph_multi):
     from backend.synth import signals
     rec = _first(eph_multi, "G")

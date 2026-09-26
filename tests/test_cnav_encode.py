@@ -66,3 +66,17 @@ def test_nav_stream_rate_and_alphabet(gps_rec):
     assert arr.dtype == np.int8
     assert set(np.unique(arr)).issubset({-1, 1})
     assert len(arr) % 600 == 0            # 600 symbols per 300-bit message
+
+
+def test_l5_rate_stream_steps_tow_and_type_every_6_s(gps_rec):
+    from backend.analysis import cnav_decode as D
+    arr, rate = C.nav_stream(gps_rec, {}, _WEEK, _SOW, 30, prn=1,
+                             sym_rate=100.0)
+    assert rate == 100.0
+    msgs = [m for m in D.decode_messages([1 if s < 0 else 0 for s in arr])
+            if m["crc_ok"]]
+    assert len(msgs) >= 4
+    tows = [m["tow_6s"] for m in msgs]
+    assert all(b - a == 1 for a, b in zip(tows, tows[1:]))     # 6 s units
+    types = [m["type"] for m in msgs]
+    assert {10, 11, 30, 33} <= set(types[:4])
