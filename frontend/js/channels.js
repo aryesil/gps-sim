@@ -58,8 +58,8 @@ window.addChannel = function () {
         <label>Start UTC <input type="datetime-local" id="${id}-start-utc"></label>
         <label title="Live Start only: run on the real current GPS time (needed by phones / A-GPS receivers)"><input type="checkbox" id="${id}-start-now"> Live: now</label>
         <label>Duration s <input type="number" id="${id}-duration" value="300"></label>
-        <label>Sample rate <select id="${id}-rate">
-          <option>2600000</option><option>4000000</option><option>5000000</option><option>8000000</option><option>10000000</option><option>15000000</option>
+        <label>Sample rate <select id="${id}-rate" title="auto: the lowest rate that holds every selected system (native engine); gps-sdr-sim uses 2.6 MSPS">
+          <option value="auto" selected>auto</option><option>2600000</option><option>4000000</option><option>5000000</option><option>8000000</option><option>10000000</option><option>15000000</option>
         </select></label>
         <label>Format <select id="${id}-fmt"><option>int16</option><option>int8</option></select></label>
         <label>RINEX <input id="${id}-rinex-path" value="AUTO" size="26"></label>
@@ -140,10 +140,10 @@ window.addChannel = function () {
           <div id="${id}-mdl-summary" class="hint"></div>
         </section>
         <section class="adv-tab" data-adv="eng" hidden>
-          <p class="adv-head">Signal engine <span class="info" title="gps-sdr-sim is the default external generator (GPS L1 C/A only). native is the built-in C++ engine: same GPS L1 C/A output plus a per-satellite land-mobile-satellite channel model (blockage, shadowing, Doppler-spread multipath) baked into the IQ. Leave on gps-sdr-sim for the unchanged workflow.">i</span></p>
+          <p class="adv-head">Signal engine <span class="info" title="native (default) is the built-in C++ engine: every constellation and band, navigation messages and the per-satellite land-mobile-satellite channel model. gps-sdr-sim is the external generator (GPS L1 C/A only).">i</span></p>
           <label>Engine <select id="${id}-engine">
-            <option value="gps-sdr-sim">gps-sdr-sim (default)</option>
-            <option value="native">native (C++ engine, GPS L1 C/A + fading)</option>
+            <option value="native" selected>native (C++ engine, default)</option>
+            <option value="gps-sdr-sim">gps-sdr-sim (GPS L1 C/A only)</option>
           </select></label>
           <fieldset class="sys-set"><legend>Constellations (native)</legend>
             <label><input type="checkbox" id="${id}-sys-G" checked disabled> GPS</label>
@@ -366,13 +366,28 @@ window.addChannel = function () {
 function wireChannelActions(id) {
   const st = _channels[id];
 
+  // The main rate select: a number, or undefined for "auto" (the backend
+  // picks the lowest rate that holds the selected systems).
+  function _rateValue() {
+    const v = document.getElementById(`${id}-rate`).value;
+    return v === 'auto' ? undefined : Number(v);
+  }
+  st.autoFs = null;     // {band: fs} from /api/native/band_centre
   function _updateSizeEstimate() {
     const bytesPerSample = document.getElementById(`${id}-fmt`).value === 'int8' ? 1 : 2;
-    const rate = Number(document.getElementById(`${id}-rate`).value);
+    const auto = document.getElementById(`${id}-rate`).value === 'auto';
+    const rate = auto
+      ? (st.autoFs ? Object.values(st.autoFs).reduce((a, b) => a + b, 0) : 2.6e6)
+      : Number(document.getElementById(`${id}-rate`).value);
     const duration = Number(document.getElementById(`${id}-duration`).value);
     const bytes = 2 * bytesPerSample * rate * duration;
+    const rates = (auto && st.autoFs)
+      ? ' (auto: ' + Object.entries(st.autoFs)
+          .map(([b, f]) => `${b} ${(f / 1e6).toFixed(f % 1e6 ? 3 : 0).replace(/\.?0+$/, '')} MSPS`)
+          .join(', ') + ')'
+      : '';
     document.getElementById(`${id}-size-estimate`).textContent =
-      `estimated size: ${(bytes / 1e6).toFixed(1)} MB`;
+      `estimated size: ${(bytes / 1e6).toFixed(1)} MB${rates}`;
   }
   [`${id}-fmt`, `${id}-rate`, `${id}-duration`].forEach(elId => {
     document.getElementById(elId).addEventListener('input', _updateSizeEstimate);
@@ -481,6 +496,32 @@ function wireChannelActions(id) {
       })
       .catch(() => {});
   }
+  // "auto" sample rate: ask the backend which rate each output band gets
+  // for this selection (the same fs_policy the engine applies).
+  let _fsReqToken = 0;
+  function _refreshAutoFs() {
+    if (document.getElementById(`${id}-engine`).value !== 'native') {
+      st.autoFs = { L1: 2.6e6 };
+      _updateSizeEstimate();
+      return;
+    }
+    const sys = ['G', 'R', 'E', 'C', 'J', 'S', 'I'].filter(
+      s => document.getElementById(`${id}-sys-${s}`).checked);
+    const bandBoxes = ['L1', 'L2', 'L5'].filter(
+      b => document.getElementById(`${id}-band-${b}`).checked);
+    const bands = (bandBoxes.length && !(bandBoxes.length === 1 && bandBoxes[0] === 'L1'))
+      ? bandBoxes.join(',') : '';
+    const token = ++_fsReqToken;
+    fetch(`/api/native/band_centre?systems=${encodeURIComponent(sys.join(','))}` +
+          `&bands=${encodeURIComponent(bands)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d || token !== _fsReqToken || !d.fs) return;
+        st.autoFs = d.fs;
+        _updateSizeEstimate();
+      })
+      .catch(() => {});
+  }
   _loModeSel.onchange = () => {
     _loInput.disabled = _loModeSel.value === 'auto';
     _refreshLoHz();
@@ -491,19 +532,20 @@ function wireChannelActions(id) {
 
   ['G', 'R', 'E', 'C', 'J', 'S', 'I'].forEach(s => {
     document.getElementById(`${id}-sys-${s}`).addEventListener('change', () => {
-      _updateChannelTitle(); _refreshLoHz();
+      _updateChannelTitle(); _refreshLoHz(); _refreshAutoFs();
     });
   });
   ['L1', 'L2', 'L5'].forEach(b => {
     document.getElementById(`${id}-band-${b}`).addEventListener('change', () => {
-      _updateChannelTitle(); _refreshLoHz();
+      _updateChannelTitle(); _refreshLoHz(); _refreshAutoFs();
     });
   });
   document.getElementById(`${id}-engine`).addEventListener('change', () => {
-    _updateChannelTitle(); _refreshLoHz();
+    _updateChannelTitle(); _refreshLoHz(); _refreshAutoFs();
   });
   _updateChannelTitle();
   _refreshLoHz();
+  _refreshAutoFs();
 
   // Band checkboxes: L1 is always implicitly available (it's the legacy
   // default), so never let a user land on zero bands checked -- fall back
@@ -575,7 +617,7 @@ function wireChannelActions(id) {
       lat: ll ? ll.lat : 0, lon: ll ? ll.lng : 0, alt: 100,
       start_utc: document.getElementById(`${id}-start-utc`).value + ':00',
       duration_s: Number(document.getElementById(`${id}-duration`).value),
-      sample_rate: Number(document.getElementById(`${id}-rate`).value),
+      sample_rate: _rateValue(),
       sample_format: document.getElementById(`${id}-fmt`).value,
       rinex_path: document.getElementById(`${id}-rinex-path`).value.trim() || 'AUTO',
       lo_hz: Number(document.getElementById(`${id}-lo`).value),
@@ -930,7 +972,7 @@ function wireChannelActions(id) {
       lon: st.map.latlng() ? st.map.latlng().lng : 0,
       alt: 100, start_utc: su + ':00',
       duration_s: Number(document.getElementById(`${id}-duration`).value),
-      sample_rate: Number(document.getElementById(`${id}-rate`).value),
+      sample_rate: _rateValue(),
       sample_format: document.getElementById(`${id}-fmt`).value,
       ephemeris_mode: document.getElementById(`${id}-eph-mode`).value,
     };
@@ -1019,7 +1061,7 @@ function wireChannelActions(id) {
       start_utc: document.getElementById(`${id}-start-now`).checked
         ? 'now' : document.getElementById(`${id}-start-utc`).value + ':00',
       duration_s: Number(document.getElementById(`${id}-duration`).value),
-      sample_rate: Number(document.getElementById(`${id}-rate`).value),
+      sample_rate: _rateValue(),
       sample_format: document.getElementById(`${id}-fmt`).value,
       uri: document.getElementById(`${id}-uri`).value,
       kind: document.getElementById(`${id}-kind`).value,

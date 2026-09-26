@@ -186,6 +186,23 @@ def _internal_bands_for(systems: list[str], bands_req: list[str] | None) -> set[
     return out
 
 
+def _auto_sample_rate(body: dict, engine: str, systems: list[str]) -> float:
+    """The request's L1 sample rate. Unset (or "auto"): for the native
+    engine the lowest policy rate that holds every selected system's L1
+    signals (fs_policy.default_fs -- 2.6 MSPS for GPS alone, 5 MSPS with
+    Galileo's BOC, 20 MSPS once BeiDou B1I shares the output); for
+    gps-sdr-sim the configured default."""
+    v = body.get("sample_rate")
+    if v not in (None, "", "auto", 0):
+        return float(v)
+    if engine != "native":
+        return float(config.DEFAULT_SAMPLE_RATE)
+    from backend.synth import bands as _bandsmod, fs_policy
+    l1 = sorted({_bandsmod._signal_key(sig) for sysc in systems
+                 for sig in signals.signals_for(sysc, ("L1",))})
+    return fs_policy.default_fs(l1) if l1 else float(config.DEFAULT_SAMPLE_RATE)
+
+
 @app.get("/api/native/band_centre")
 def native_band_centre(systems: str = "G", bands: str = ""):
     """Centre frequency (Hz) of every distinct native RF band the given
@@ -203,14 +220,18 @@ def native_band_centre(systems: str = "G", bands: str = ""):
     needed = _internal_bands_for(systems_list, bands_req)
     from backend.synth import bands as _bandsmod
     reg = _bandsmod.full_band_registry()
-    out = {}
+    out, fs_out = {}, {}
     for b in sorted(needed):
         if b not in reg:
             continue
         sig_ids = sorted({_bandsmod._signal_key(sig) for sysc in systems_list
                           for sig in signals.signals_for(sysc, (b,))})
         out[b] = _bandsmod.band_centre(b, sig_ids)
-    return {"bands": out}
+        if sig_ids:
+            import types
+            fs_out[b] = _bandsmod._band_fs(
+                b, sig_ids, types.SimpleNamespace(sample_rate=None))
+    return {"bands": out, "fs": fs_out}
 
 
 # TX1/TX2 -- the AD9361/AD9363's two TX ports (KNOWN hardware fact, not an
@@ -890,7 +911,7 @@ def generate(body: dict):
     req = scenario.ScenarioRequest(
         rinex_path=rinex_path, lat=body["lat"], lon=body["lon"], alt=body["alt"],
         start=start, duration_s=int(body["duration_s"]),
-        sample_rate=float(body.get("sample_rate", config.DEFAULT_SAMPLE_RATE)),
+        sample_rate=_auto_sample_rate(body, engine, systems),
         sample_format=body.get("sample_format", "int16"),
         route=[tuple(p) for p in body["route"]] if body.get("route") else None,
         nav_override=nav_override,
@@ -1133,7 +1154,17 @@ def start_transmit(body: dict, request: Request):
         raise HTTPException(403, "transmit disabled: needs ALLOW_TX and confirm_isolated")
     slot = _acquire_tx_slot(_requested_tx_slot(body))
     try:
-        sample_rate = float(body["sample_rate"])
+        sample_rate = float(body.get("sample_rate") or 0.0)
+        if "outdir" in body:
+            # A generated run plays back at the rate and format it was made
+            # with (the native engine may have chosen or raised the rate),
+            # not whatever the UI's rate/format controls show now.
+            _mp = config.OUT_DIR / body["outdir"] / "meta.json"
+            if _mp.is_file():
+                _meta = json.loads(_mp.read_text())
+                sample_rate = float(_meta.get("sample_rate") or sample_rate)
+                body = {**body, "sample_format":
+                        _meta.get("sample_format") or body.get("sample_format")}
         lo_hz, bb_offset_hz, rf_report = _resolve_rf_plan(body, config.L1_HZ, sample_rate)
         params = transmit.TxParams(
             iq_path=str(config.OUT_DIR / body["outdir"] / "gpssim.bin")
@@ -1448,7 +1479,7 @@ def live_start(body: dict, request: Request):
         req = scenario.ScenarioRequest(
             rinex_path=rinex_path, lat=body["lat"], lon=body["lon"], alt=body["alt"],
             start=start, duration_s=int(body.get("duration_s", 300)),
-            sample_rate=float(body.get("sample_rate", config.DEFAULT_SAMPLE_RATE)),
+            sample_rate=_auto_sample_rate(body, engine, systems),
             sample_format=body.get("sample_format", "int16"),
             nav_override=nav_override,
             engine=engine, systems=systems, bands=bands_req)

@@ -255,10 +255,30 @@ def test_live_start_explicit_slot_already_occupied_is_409_not_fallback(monkeypat
         app_module._tx_slots["TX1"] = None
 
 
+def test_native_band_centre_reports_the_auto_rate_per_band():
+    r = client.get("/api/native/band_centre", params={"systems": "G,E,C"})
+    assert r.json()["fs"] == {"L1": 20e6}          # B1I beside GPS/Galileo
+    r = client.get("/api/native/band_centre", params={"systems": "G,E"})
+    assert r.json()["fs"] == {"L1": 5e6}           # Galileo E1 BOC
+
+
+def test_generate_auto_sample_rate_is_the_lowest_sufficient_one():
+    from backend import app as app_module
+    assert app_module._auto_sample_rate({}, "native", ["G"]) == 2.6e6
+    assert app_module._auto_sample_rate({}, "native", ["G", "E"]) == 5e6
+    assert app_module._auto_sample_rate(
+        {"sample_rate": "auto"}, "native", ["G", "E", "C"]) == 20e6
+    assert app_module._auto_sample_rate({}, "gps-sdr-sim", ["G"]) == \
+        config.DEFAULT_SAMPLE_RATE
+    assert app_module._auto_sample_rate(
+        {"sample_rate": 4e6}, "native", ["G", "E", "C"]) == 4e6
+
+
 def test_native_band_centre_defaults_to_gps_l1():
     r = client.get("/api/native/band_centre")
     assert r.status_code == 200
-    assert r.json() == {"bands": {"L1": pytest.approx(config.L1_HZ)}}
+    assert r.json()["bands"] == {"L1": pytest.approx(config.L1_HZ)}
+    assert r.json()["fs"] == {"L1": 2.6e6}          # GPS L1 C/A alone
 
 
 def test_native_band_centre_resolves_per_system_default_when_bands_unset():
@@ -278,7 +298,8 @@ def test_native_band_centre_resolves_explicit_band_request():
 def test_native_band_centre_ignores_unknown_entries_instead_of_422ing():
     r = client.get("/api/native/band_centre", params={"systems": "G,ZZ", "bands": "L1,bogus"})
     assert r.status_code == 200
-    assert r.json() == {"bands": {"L1": pytest.approx(config.L1_HZ)}}
+    assert r.json()["bands"] == {"L1": pytest.approx(config.L1_HZ)}
+    assert r.json()["fs"] == {"L1": 2.6e6}          # GPS L1 C/A alone
 
 
 def test_jog_unknown_slot_404():

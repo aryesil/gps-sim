@@ -383,7 +383,11 @@ and the Event list: the persistent audit trail merged with the live
 **Generate and verify (no RF)**
 
 1. Click the map to set the marker, Start UTC = now, Duration 300 s,
-   2.6 Msps, int16, RINEX `AUTO`.
+   sample rate `auto`, int16, RINEX `AUTO`. The native engine is the
+   default; `auto` picks the lowest rate that holds the selected systems
+   (2.6 Msps for GPS alone, 5 Msps with Galileo, 20 Msps once BeiDou B1I
+   shares the L1 output) and the size estimate shows it. An explicit rate
+   too low for the selection is raised with a warning.
 2. **Generate.** The inspect table shows measured vs. predicted Doppler /
    code phase per PRN.
 3. Scrub the IQ plot; check spectrogram and sky plot.
@@ -414,7 +418,8 @@ and the Event list: the persistent audit trail merged with the live
 1. Start with `ALLOW_TX=1`. Generate a scenario.
 2. Connect SDR TX to the receiver antenna port through **≥ 40 dB** in-line
    attenuation. Cabled or shielded only.
-3. Set Device URI, LO 1575.42 MHz, 2.6 Msps, TX gain −50 dB, tick
+3. Set Device URI, LO 1575.42 MHz, sample rate `auto` (or a rate the
+   selection fits in -- live TX rejects one that is too low), TX gain −50 dB, tick
    "isolated / cabled setup confirmed", **Start**.
 4. Record TTFF, reported position vs. marker, sustained underflow count.
 
