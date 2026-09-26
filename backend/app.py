@@ -128,12 +128,15 @@ def _validate_native_request(body: dict) -> tuple[str, list[str], list[str] | No
 
 
 def _resolved_band_output(internal_band: str, systems: list[str],
-                          req: scenario.ScenarioRequest) -> tuple[float, float]:
+                          req: scenario.ScenarioRequest, *,
+                          strict: bool = False) -> tuple[float, float]:
     """(sample_rate_hz, centre_hz) the resolved single internal RF band
     (a backend.synth.bands id, e.g. "L2" or GLONASS's "G1"/"G2" -- not
     necessarily the user-facing "L1"/"L2"/"L5" string) will actually be
-    generated at. Mirrors bands._band_fs exactly: L1 uses req.sample_rate
-    (validated, not auto-floored -- matching generation's own behaviour);
+    generated at. Mirrors bands._band_fs exactly: L1 uses req.sample_rate,
+    raised to the policy default when it is too low for the signals (as
+    generation does) -- or, with ``strict`` (live TX, where the SDR must
+    stream the rate the operator chose), rejected with a ValueError;
     every other band floats to its own floor independent of req.sample_rate
     (native L2/L5 floors, e.g. L5's >=25 Msps, can sit well above whatever
     nominal/L1-oriented rate the request carries). A live TX stream's SDR
@@ -144,6 +147,9 @@ def _resolved_band_output(internal_band: str, systems: list[str],
         _bandsmod._signal_key(sig)
         for sysc in systems
         for sig in signals.signals_for(sysc, (internal_band,))})
+    if strict and internal_band == "L1":
+        from backend.synth import fs_policy
+        fs_policy.validate_fs(req.sample_rate, sig_ids)
     fs = _bandsmod._band_fs(internal_band, sig_ids, req)
     centre_hz = _bandsmod.band_centre(internal_band, sig_ids)
     return fs, centre_hz
@@ -919,10 +925,36 @@ def generate(body: dict):
         # possible nor meaningful; the status panel is fed from meta.json instead.
         multi_gnss = sorted(set(getattr(req, "systems", None) or ["G"])) != ["G"]
         try:
-            q: list = []
-            outdir = signal_engine.run(req, progress_cb=lambda f: q.append(f))
-            for f in q:
-                yield f"data: {json.dumps({'progress': f})}\n\n"
+            # Run the synthesis on a worker thread and stream its progress
+            # while it runs (collecting it and replaying it afterwards left
+            # the progress bar at 0 until the end, then filled it at once).
+            import queue as _queue
+            q: _queue.Queue = _queue.Queue()
+            res: dict = {}
+
+            def _work():
+                try:
+                    res["outdir"] = signal_engine.run(
+                        req, progress_cb=lambda f: q.put(("p", f)))
+                except BaseException as exc:          # noqa: BLE001
+                    res["exc"] = exc
+                finally:
+                    q.put(("end", None))
+
+            threading.Thread(target=_work, daemon=True,
+                             name="generate").start()
+            last = -1.0
+            while True:
+                kind, f = q.get()
+                if kind == "end":
+                    break
+                # at most ~200 events per run
+                if f - last >= 0.005 or f >= 1.0:
+                    last = f
+                    yield f"data: {json.dumps({'progress': f})}\n\n"
+            if "exc" in res:
+                raise res["exc"]
+            outdir = res["outdir"]
             # generator.run aligns every satellite's toc/toe to the request's
             # start (KNOWN_ISSUES F4) before handing the nav file to
             # gps-sdr-sim, so the IQ was generated from that aligned
@@ -961,9 +993,11 @@ def generate(body: dict):
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
             return
         svs, meta_bands, meta_systems, meta_fading = [], [], [], None
+        engine_warnings: list = []
         try:
             _m = json.loads((outdir / "meta.json").read_text())
             _prov = _m.get("provenance", {})
+            engine_warnings = list(_prov.get("warnings") or [])
             svs = _prov.get("svs", [])
             meta_fading = _prov.get("fading")
             meta_systems = _prov.get("systems", [])
@@ -980,7 +1014,7 @@ def generate(body: dict):
                          "bands": meta_bands,
                          "systems": meta_systems,
                          "ephemeris_mode": "precise" if req.nav_override is not None else "broadcast",
-                         "warnings": precise_warnings}}
+                         "warnings": list(precise_warnings) + engine_warnings}}
         yield f"data: {json.dumps(done)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
@@ -1427,7 +1461,8 @@ def live_start(body: dict, request: Request):
         # RF-frontend LO-offset planning isn't in play (RF_FRONTEND_ENABLED
         # plus target_rf_frequency_hz together mean rf_frontend.plan()
         # computes lo_hz instead -- see _resolve_rf_plan).
-        band_fs, band_centre_hz = _resolved_band_output(internal_band, systems, req)
+        band_fs, band_centre_hz = _resolved_band_output(internal_band, systems,
+                                                        req, strict=True)
         sig_bw_hz = _signal_bandwidth_hz(internal_band, systems)
         lo_hz, bb_offset_hz, rf_report = _resolve_rf_plan(
             body, band_centre_hz, band_fs, sig_bw_hz)

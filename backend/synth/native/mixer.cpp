@@ -1,6 +1,7 @@
 // backend/synth/native/mixer.cpp
 #include "mixer.hpp"
 #include "nco.hpp"
+#include <climits>
 #include <cmath>
 
 namespace gs {
@@ -96,6 +97,18 @@ void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
         const double inv_gdt = use_gk ? 1.0 / sv.gain_knot_dt : 0.0;
         const int64_t gk_last = sv.gain_nknots - 2;
 
+        // The code chip, secondary chip and nav symbol only change when
+        // floor(cp) or floor(u) does, so they are recomputed on those edges
+        // instead of every sample (the 64-bit modulos and divisions were
+        // most of the per-sample cost). Exact when the code length and the
+        // chips per nav symbol are integers -- every signal defined today;
+        // anything else takes the per-sample path.
+        const bool cache_chip =
+            chips_per_sym == std::floor(chips_per_sym) && chips_per_sym > 0.0;
+        int64_t last_fl = INT64_MIN, last_ufl = INT64_MIN;
+        float cached = 0.0f;
+        const std::complex<float> *lut = expLut().data();
+
         for (int k = 0; k < n; ++k) {
             double t = abs_t0 + k * dt;
             // `t` is already absolute (abs_t0 + k*dt); advancing by absolute `t`
@@ -104,25 +117,40 @@ void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
             // and restarted the code phase at `eff` every call (final review B1).
             double cp = use_traj ? (cp_base + chip_rate * (k * dt))
                                  : (eff + chip_rate * t);
-            // int64_t, not long: long is 32-bit on Windows/MinGW and the
-            // absolute chip count passes 2^31 after ~210 s at 10.23 Mcps.
-            int64_t ci = static_cast<int64_t>(std::floor(cp)) % L;
-            if (ci < 0) ci += L;
-            float chip = static_cast<float>(code[ci]);
             const double u = use_tx ? (cp + tx_off) : cp;
-            if (sec_len > 0) {
-                // One secondary chip spans exactly one primary code period, so
-                // index by elapsed primary periods -- phase-continuous across
-                // streaming blocks and parallel chunks, with transitions
-                // aligned to code-period edges. In transmit-time mode the
-                // period count is referenced to the nav stream, so secondary
-                // chip 0 starts every nav symbol (ICD synchronisation).
-                int64_t period = static_cast<int64_t>(
-                    std::floor(u / static_cast<double>(L)));
-                int64_t si = period % sec_len;
-                if (si < 0) si += sec_len;
-                chip *= static_cast<float>(sec[si]);
+            const int64_t fl = static_cast<int64_t>(std::floor(cp));
+            const int64_t ufl = static_cast<int64_t>(std::floor(u));
+            float chip;
+            if (cache_chip && fl == last_fl && ufl == last_ufl) {
+                chip = cached;
+            } else {
+                // int64_t, not long: long is 32-bit on Windows/MinGW and the
+                // absolute chip count passes 2^31 after ~210 s at 10.23 Mcps.
+                int64_t ci = fl % L;
+                if (ci < 0) ci += L;
+                chip = static_cast<float>(code[ci]);
+                if (sec_len > 0) {
+                    // One secondary chip spans exactly one primary code
+                    // period, so index by elapsed primary periods --
+                    // phase-continuous across streaming blocks and parallel
+                    // chunks, with transitions aligned to code-period edges.
+                    // In transmit-time mode the period count is referenced
+                    // to the nav stream, so secondary chip 0 starts every nav
+                    // symbol (ICD synchronisation).
+                    int64_t period = static_cast<int64_t>(
+                        std::floor(u / static_cast<double>(L)));
+                    int64_t si = period % sec_len;
+                    if (si < 0) si += sec_len;
+                    chip *= static_cast<float>(sec[si]);
+                }
+                if (use_tx)
+                    chip *= static_cast<float>(nav_symbol_at(
+                        nav, static_cast<int64_t>(std::floor(u / chips_per_sym))));
+                cached = chip;
+                last_fl = fl;
+                last_ufl = ufl;
             }
+            if (!use_tx) chip *= static_cast<float>(nav_symbol(nav, t));
             if (use_boc) {
                 int64_t hc = static_cast<int64_t>(std::floor(2.0 * cp));
                 if (cboc != 0) {
@@ -135,11 +163,8 @@ void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
                     chip = -chip;
                 }
             }
-            float navsym = use_tx
-                ? static_cast<float>(nav_symbol_at(
-                      nav, static_cast<int64_t>(std::floor(u / chips_per_sym))))
-                : static_cast<float>(nav_symbol(nav, t));
-            std::complex<float> c = carr.next();
+            std::complex<float> c = lut[carr.phase >> 20];
+            carr.phase += carr.inc;
             if (use_gk) {
                 const double x = t * inv_gdt - static_cast<double>(sv.gain_knot_j0);
                 int64_t j = static_cast<int64_t>(std::floor(x));
@@ -153,7 +178,7 @@ void mix_block(const SvChannel *__restrict svs, int nsv, double fs,
                 c = std::complex<float>(c.real() * gr - c.imag() * gi,
                                         c.real() * gi + c.imag() * gr);
             }
-            float d = g * chip * navsym;
+            float d = g * chip;
             iq[2 * k]     += d * c.real();
             iq[2 * k + 1] += d * c.imag();
         }

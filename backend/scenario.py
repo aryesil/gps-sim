@@ -114,7 +114,15 @@ def estimate_bytes(req: ScenarioRequest) -> int:
     few Msps alone and the run could still run out of space partway through.
     """
     bps = _bytes_per_sample(req.sample_format)
-    total = int(2 * bps * req.sample_rate * req.duration_s)
+    fs1 = float(req.sample_rate)
+    if getattr(req, "engine", "gps-sdr-sim") == "native":
+        # the native engine raises a too-low L1 rate (bands._band_fs)
+        l1 = sorted({_bandsmod._signal_key(sig)
+                     for sysc in (req.systems or ("G",))
+                     for sig in signals.signals_for(sysc, ("L1",))})
+        if l1 and fs1 < fs_policy.fs_min(l1):
+            fs1 = fs_policy.default_fs(l1)
+    total = int(2 * bps * fs1 * req.duration_s)
     for band_id in (req.bands or []):
         if band_id == "L1":
             continue

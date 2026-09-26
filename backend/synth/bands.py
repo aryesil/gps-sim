@@ -34,6 +34,7 @@ class BandPlan:
     quant: int
     entries: list
     out_file: str
+    fs_note: str = ""       # set when the requested rate had to be raised
 
 
 def _signal_key(sig) -> str:
@@ -56,7 +57,14 @@ def _band_fs(band_id: str, sig_ids: list[str], req) -> float:
     """Resolve the sample rate for one band: an explicit per-band override
     on the request (floored by the policy), else the policy default."""
     if band_id == "L1":
-        return fs_policy.validate_fs(req.sample_rate, sig_ids)
+        fs = req.sample_rate
+        if fs is not None and float(fs) < fs_policy.fs_min(sig_ids):
+            # Too low for these signals (BeiDou B1I sharing the L1 output
+            # with GPS/Galileo needs ~18.5 MHz to span both carriers): raise
+            # it to the policy default rather than fail the run; plan_bands
+            # reports the change.
+            return fs_policy.default_fs(sig_ids)
+        return fs_policy.validate_fs(fs, sig_ids)
     override = getattr(req, f"{band_id.lower()}_sample_rate", None)
     ks = range(-7, 7) if band_id in ("G1", "G2") else ()
     floor = fs_policy.band_floor(band_id, sig_ids, ks=ks)
@@ -91,6 +99,16 @@ def plan_bands(entries, req) -> list[BandPlan]:
             continue
         sig_ids = sorted({_signal_key(e["signal_id"]) for e in group})
         fs = _band_fs(band_id, sig_ids, req)
+        note = ""
+        if (band_id == "L1" and req.sample_rate is not None
+                and fs != float(req.sample_rate)):
+            span = fs_policy.carrier_span_hz(sig_ids)
+            why = (f"BeiDou B1I and GPS/Galileo L1 share one output spanning "
+                   f"{span / 1e6:.1f} MHz" if span > 0.0 else
+                   f"the selected signals need at least "
+                   f"{fs_policy.fs_min(sig_ids) / 1e6:.3f} MHz")
+            note = (f"sample rate raised from {float(req.sample_rate) / 1e6:g} "
+                    f"to {fs / 1e6:g} MSPS: {why}")
         plans.append(BandPlan(band_id, band_centre(band_id, sig_ids), fs,
-                              quant, group, band.out_file))
+                              quant, group, band.out_file, note))
     return plans

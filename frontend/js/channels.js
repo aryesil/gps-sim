@@ -922,6 +922,8 @@ function wireChannelActions(id) {
   document.getElementById(`${id}-btn-generate`).onclick = () => {
     const su = document.getElementById(`${id}-start-utc`).value;
     if (!su) return alert('set a start UTC');
+    document.getElementById(`${id}-gen-progress`).value = 0;
+    document.getElementById(`${id}-warnings`).textContent = '';
     const body = {
       rinex_path: document.getElementById(`${id}-rinex-path`).value.trim() || 'AUTO',
       lat: st.map.latlng() ? st.map.latlng().lat : 0,
@@ -966,6 +968,10 @@ function wireChannelActions(id) {
             }
             if (msg.done) {
               st.lastOutdir = msg.done.outdir;
+              document.getElementById(`${id}-gen-progress`).value = 1;
+              const dw = msg.done.warnings || [];
+              document.getElementById(`${id}-warnings`).textContent = dw.join('\n');
+              dw.forEach(w => logLine('Channel ' + id + ': ' + w, 'warn'));
               drawInspectTable(`${id}-inspect-table`, msg.done.inspect);
               drawSvPowerTable(`${id}-svpower-table`, msg.done.svs, msg.done.bands);
               const corrLabel = document.getElementById(`${id}-iq-correlation-label`);

@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <thread>
 #include <vector>
 
 // Streams one interleaved-IQ file for a single band. This is the former
@@ -61,8 +62,12 @@ static int run_one_band(const BandSpec &b,
 
     const int blk = b.block_samples > 0 ? b.block_samples : 65536;
     std::vector<float> fbuf(static_cast<size_t>(2 * blk));
-    std::vector<int16_t> qbuf16(static_cast<size_t>(2 * blk));
-    std::vector<int8_t> qbuf8(static_cast<size_t>(2 * blk));
+    const size_t esz = (b.quant == 0) ? 1u : 2u;
+    // Two output buffers: the writer thread drains one while the workers
+    // fill the other, so disk writes overlap the mixing.
+    std::vector<uint8_t> qbuf[2] = {
+        std::vector<uint8_t>(static_cast<size_t>(2 * blk) * esz),
+        std::vector<uint8_t>(static_cast<size_t>(2 * blk) * esz)};
 
     // Composite-level scale: aim for ~1/4 of full scale, divided by sqrt(nsv)
     // so a full constellation does not clip.
@@ -72,8 +77,15 @@ static int run_one_band(const BandSpec &b,
         ? (0.25f * fs_full / static_cast<float>(std::sqrt((double)nsv)))
         : fs_full;
 
+    gs::WorkerPool pool(b.nthreads);
+    const int nthreads = pool.size();
+    std::thread writer;
+    bool write_ok = true;
+    size_t write_n = 0;
+
     uint64_t done = 0;
     int rc = 0;
+    int cur = 0;
     while (done < b.total_samples) {
         const int n = static_cast<int>(
             std::min<uint64_t>(static_cast<uint64_t>(blk),
@@ -102,22 +114,44 @@ static int run_one_band(const BandSpec &b,
             ch[i].gain_knot_dt = dt;
             ch[i].gain_knots = knots[i].data();
         }
-        gs::mix_block_parallel(ch.data(), nsv, b.fs, done, n, fbuf.data(),
-                               b.nthreads);
-        void *q = (b.quant == 0) ? static_cast<void *>(qbuf8.data())
-                                 : static_cast<void *>(qbuf16.data());
-        gs::quantize_block(fbuf.data(), 2 * n, b.quant, scale, q);
-        const size_t esz = (b.quant == 0) ? 1u : 2u;
-        if (std::fwrite(q, esz, static_cast<size_t>(2 * n), f) !=
-            static_cast<size_t>(2 * n)) {
-            rc = -2;
-            break;
+        // Mix and quantise in parallel chunks. mix_block accumulates, so
+        // each chunk zeroes its slice first; the output does not depend on
+        // the chunking (the mixer is absolute-sample seeded).
+        const int nchunk = (n < 4096) ? 1 : nthreads;
+        const int chunk = (n + nchunk - 1) / nchunk;
+        uint8_t *q = qbuf[cur].data();
+        pool.run(nchunk, [&](int t) {
+            const int lo = t * chunk;
+            const int hi = std::min(n, lo + chunk);
+            if (lo >= hi) return;
+            float *iq = fbuf.data() + 2 * lo;
+            std::fill(iq, iq + 2 * (hi - lo), 0.0f);
+            gs::mix_block(ch.data(), nsv, b.fs, done + static_cast<uint64_t>(lo),
+                          hi - lo, iq);
+            gs::quantize_block(iq, 2 * (hi - lo), b.quant, scale,
+                               q + static_cast<size_t>(2 * lo) * esz);
+        });
+        if (writer.joinable()) {
+            writer.join();
+            if (!write_ok) {
+                rc = -2;
+                break;
+            }
         }
+        write_n = static_cast<size_t>(2 * n);
+        writer = std::thread([&, q, write_n] {
+            write_ok = std::fwrite(q, esz, write_n, f) == write_n;
+        });
+        cur ^= 1;
         done += n;
         if (progress)
             progress(static_cast<double>(done) /
                          static_cast<double>(b.total_samples),
                      user);
+    }
+    if (writer.joinable()) {
+        writer.join();
+        if (!write_ok && rc == 0) rc = -2;
     }
     std::fclose(f);
     return rc;

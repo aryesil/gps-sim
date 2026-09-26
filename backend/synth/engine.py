@@ -170,50 +170,119 @@ def _trajectory_knots(state, rx, sow, fs, block_samples, total_samples,
              // int(block_samples))
     L = int(code_len)
     eff = L - (float(code_phase0_chips) % L)
-    cf, cph, cr, kp = [], [], [], []
-    r0 = None
-    a0 = None
-    k0 = clk_fn(0.0)[0] if clk_fn is not None else 0.0
-    for j in range(nk):
-        tj = (j * block_samples) / fs
-        if rx_fn is not None:
-            rxj, vrxj = rx_fn(tj)
-        else:
-            rxj, vrxj = rx, (0.0, 0.0, 0.0)
-        o = geometry.observables(state, rxj, sow + tj, rx_vel=vrxj,
-                                 signal=signal)
-        if r0 is None:
-            r0 = o["geo_range_m"]
-        dr = o["geo_range_m"] - r0
-        iono_abs = tropo_abs = 0.0
-        if atmo_fn is not None:
-            iono_abs, tropo_abs = atmo_fn(math.radians(o["az_deg"]),
-                                          math.radians(o["el_deg"]), tj)
-            if a0 is None:
-                a0 = (iono_abs, tropo_abs)
-        iono = iono_abs - (a0[0] if a0 else 0.0)
-        tropo = tropo_abs - (a0[1] if a0 else 0.0)
-        dr_code = dr + iono + tropo
-        clk_abs, clk_rate = clk_fn(tj) if clk_fn is not None else (0.0, 0.0)
-        dr_code += config.C * (clk_abs - k0)
-        cf.append(o["carrier_doppler_hz"] * doppler_scale + carrier_offset_hz
-                  - carrier_hz * clk_rate)
-        # ABSOLUTE carrier phase (a function of GPS time and the absolute
-        # carrier range only), not phase relative to this run's start: two
-        # runs that abut in time (live segments) then join without a
-        # carrier-phase jump. A run-relative phase restarted at 0 every
-        # segment, which a receiver PLL sees as a random phase step each
-        # second -- cycle slips, flipped data bits, no ephemeris. Cycles are
-        # reduced in float64 before scaling to radians.
-        cyc = (math.fmod(carrier_offset_hz * (sow + tj), 1.0)
-               - math.fmod(carrier_hz / config.C
-                           * (o["geo_range_m"] - iono_abs + tropo_abs), 1.0)
-               - math.fmod(carrier_hz * clk_abs, 1.0))
-        cph.append(2.0 * math.pi * cyc)
-        cr.append(chip_rate_hz + o["code_doppler_hz"] - chip_rate_hz * clk_rate)
-        kp.append(eff + chip_rate_hz * tj
-                  - (chip_rate_hz / config.C) * dr_code)
-    return cf, cph, cr, kp
+    ts = (np.arange(nk, dtype=np.int64) * int(block_samples)) / fs
+    if rx_fn is not None:
+        rv = [rx_fn(float(t)) for t in ts]
+        rxs = np.array([np.asarray(p, float) for p, _ in rv])
+        vrx = np.array([np.asarray(v, float) for _, v in rv])
+    else:
+        rxs = np.broadcast_to(np.asarray(rx, float), (nk, 3))
+        vrx = np.zeros((nk, 3))
+    o = _observables_vec(state, rxs, vrx, sow + ts, signal)
+    geo, fd, cd = o["geo_range_m"], o["carrier_doppler_hz"], o["code_doppler_hz"]
+    dr = geo - geo[0]
+    if atmo_fn is not None:
+        at = np.array([atmo_fn(float(a), float(e), float(t)) for a, e, t in
+                       zip(np.radians(o["az_deg"]), np.radians(o["el_deg"]), ts)])
+        iono_abs, tropo_abs = at[:, 0], at[:, 1]
+    else:
+        iono_abs = tropo_abs = np.zeros(nk)
+    iono = iono_abs - iono_abs[0]
+    tropo = tropo_abs - tropo_abs[0]
+    if clk_fn is not None:
+        ck = np.array([clk_fn(float(t)) for t in ts])
+        clk_abs, clk_rate = ck[:, 0], ck[:, 1]
+    else:
+        clk_abs = clk_rate = np.zeros(nk)
+    k0 = clk_abs[0]
+    dr_code = dr + iono + tropo + config.C * (clk_abs - k0)
+    cf = fd * doppler_scale + carrier_offset_hz - carrier_hz * clk_rate
+    # ABSOLUTE carrier phase (a function of GPS time and the absolute
+    # carrier range only), not phase relative to this run's start: two
+    # runs that abut in time (live segments) then join without a
+    # carrier-phase jump. A run-relative phase restarted at 0 every
+    # segment, which a receiver PLL sees as a random phase step each
+    # second -- cycle slips, flipped data bits, no ephemeris. Cycles are
+    # reduced in float64 before scaling to radians.
+    cyc = (np.fmod(carrier_offset_hz * (sow + ts), 1.0)
+           - np.fmod(carrier_hz / config.C * (geo - iono_abs + tropo_abs), 1.0)
+           - np.fmod(carrier_hz * clk_abs, 1.0))
+    cph = 2.0 * math.pi * cyc
+    cr = chip_rate_hz + cd - chip_rate_hz * clk_rate
+    kp = eff + chip_rate_hz * ts - (chip_rate_hz / config.C) * dr_code
+    return cf.tolist(), cph.tolist(), cr.tolist(), kp.tolist()
+
+
+# Satellite states for the trajectory knots are sampled every _SAT_NODE_S
+# seconds and interpolated with an _SAT_NODE_PTS-point Lagrange polynomial.
+# An orbit's n-th derivative scales as omega^n * r (omega ~ 1.5e-4 rad/s), so
+# at 10 s spacing the 8-point interpolation error is far below 1e-9 m -- the
+# knots match per-knot geometry.observables calls while evaluating the state
+# function ~1000x less often (it was ~70 % of a run's wall time).
+_SAT_NODE_S = 10.0
+_SAT_NODE_PTS = 8
+
+
+def _sat_interp(state, t_lo: float, t_hi: float):
+    """``f(t_array) -> (pos (n,3), vel (n,3))`` interpolating ``state``
+    (``f(t) -> (pos, vel, clk)``) over ``[t_lo, t_hi]``."""
+    h, m = _SAT_NODE_S, _SAT_NODE_PTS
+    a = t_lo - (m // 2) * h
+    n = int(math.ceil((t_hi - a) / h)) + m // 2 + 1
+    tn = a + h * np.arange(n)
+    pv = [state(float(t)) for t in tn]
+    P = np.array([np.asarray(p, float) for p, _v, _c in pv])
+    V = np.array([np.asarray(v, float) for _p, v, _c in pv])
+    k = np.arange(m)
+    denom = np.array([np.prod([kk - j for j in range(m) if j != kk])
+                      for kk in range(m)], float)
+
+    def f(t):
+        x = (np.asarray(t, float) - a) / h
+        i0 = np.clip(np.floor(x).astype(np.int64) - (m // 2 - 1), 0, n - m)
+        u = x - i0                                   # in [m/2-1, m/2)
+        d = u[:, None] - k[None, :]                  # (q, m)
+        w = np.empty_like(d)
+        for kk in range(m):
+            w[:, kk] = np.prod(np.delete(d, kk, axis=1), axis=1) / denom[kk]
+        idx = i0[:, None] + k[None, :]
+        return (np.einsum("qm,qmc->qc", w, P[idx]),
+                np.einsum("qm,qmc->qc", w, V[idx]))
+    return f
+
+
+def _observables_vec(state, rxs, vrx, t_rx, signal):
+    """``geometry.observables`` for arrays of receive times ``t_rx`` (n,),
+    receiver positions/velocities ``rxs``/``vrx`` (n,3): the same light-time
+    iteration, Earth-rotation correction and az/el, on an interpolated
+    satellite state. Returns geo_range_m, carrier/code Doppler, az/el."""
+    carrier_hz = config.L1_HZ if signal is None else signal.carrier_hz
+    chip_hz = config.CA_CHIP_HZ if signal is None else signal.chip_rate_hz
+    sat = _sat_interp(state, float(t_rx[0]) - 0.2, float(t_rx[-1]))
+    tof = np.full(t_rx.shape, 0.075)
+    for _ in range(8):
+        pos, vel = sat(t_rx - tof)
+        th = config.OMEGA_E_DOT * tof
+        c, s = np.cos(th), np.sin(th)
+        pos_rot = np.stack([c * pos[:, 0] + s * pos[:, 1],
+                            -s * pos[:, 0] + c * pos[:, 1], pos[:, 2]], axis=1)
+        tof = np.linalg.norm(pos_rot - rxs, axis=1) / config.C
+    los_vec = pos_rot - rxs
+    geo = np.linalg.norm(los_vec, axis=1)
+    los = los_vec / geo[:, None]
+    x, y, z = rxs[:, 0], rxs[:, 1], rxs[:, 2]
+    lon = np.arctan2(y, x)
+    lat = np.arctan2(z, np.sqrt(x * x + y * y))
+    le = -np.sin(lon) * los[:, 0] + np.cos(lon) * los[:, 1]
+    ln = (-np.sin(lat) * np.cos(lon) * los[:, 0]
+          - np.sin(lat) * np.sin(lon) * los[:, 1] + np.cos(lat) * los[:, 2])
+    lu = (np.cos(lat) * np.cos(lon) * los[:, 0]
+          + np.cos(lat) * np.sin(lon) * los[:, 1] + np.sin(lat) * los[:, 2])
+    fd = -carrier_hz * np.einsum("qc,qc->q", vel - vrx, los) / config.C
+    return {"geo_range_m": geo, "carrier_doppler_hz": fd,
+            "code_doppler_hz": fd * chip_hz / carrier_hz,
+            "az_deg": np.degrees(np.arctan2(le, ln)) % 360.0,
+            "el_deg": np.degrees(np.arcsin(np.clip(lu, -1, 1)))}
 
 
 _I8P = ctypes.POINTER(ctypes.c_int8)
@@ -678,7 +747,8 @@ def run(req, progress_cb=None) -> pathlib.Path:
     # the fixed marker position. A route forces the per-block trajectory path
     # (a moving receiver with frozen geometry is meaningless).
     route = getattr(req, "route", None)
-    rx_fn = _route_rx_fn(route, req.duration_s) if route else None
+    rx_fn = (functools.lru_cache(maxsize=None)(
+        _route_rx_fn(route, req.duration_s)) if route else None)
     if route and not getattr(req, "continuous_doppler", True):
         warnings.append("route set with continuous_doppler=False; per-block "
                         "re-propagation forced on so the receiver can move")
@@ -1031,6 +1101,10 @@ def run(req, progress_cb=None) -> pathlib.Path:
     plans = bands.plan_bands(entries, req)
     if not plans:
         raise RuntimeError("no visible satellites for any band")
+    for p in plans:
+        if p.fs_note:
+            _log.warning("engine.run: %s", p.fs_note)
+            warnings.append(p.fs_note)
 
     band_specs = []
     keep_alive = []

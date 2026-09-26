@@ -115,3 +115,15 @@ def test_b1i_sits_on_its_own_carrier_and_widens_the_l1_output():
         fs_policy.validate_fs(2.6e6, both)
     # BeiDou alone keeps the narrow default
     assert fs_policy.fs_min(["BDS_B1I"]) == pytest.approx(2.046e6)
+
+
+def test_too_low_l1_rate_is_raised_with_a_note():
+    # The UI's 2.6 MSPS default cannot hold BeiDou B1I next to GPS/Galileo
+    # L1: the plan raises it to the policy default and says so.
+    import types
+    both = ["BDS_B1I", "GAL_E1", "GPS_L1CA"]
+    req = types.SimpleNamespace(sample_rate=2.6e6)
+    assert bands._band_fs("L1", both, req) == fs_policy.default_fs(both)
+    # a rate that is already enough is kept
+    req = types.SimpleNamespace(sample_rate=2.6e6)
+    assert bands._band_fs("L1", ["GAL_E1", "GPS_L1CA"], req) == 2.6e6
