@@ -60,6 +60,22 @@ def test_js_matches_native(model):
         assert complex(*got) == pytest.approx(w, abs=1e-9), c
 
 
+def test_js_matches_native_on_a_route_profile():
+    mo = fading.Motion([0.0, 5.0, 12.0, 30.0], [0.0, 60.0, 60.0, 400.0])
+    cfg = fading.FadingConfig.from_dict(
+        {"model": "seeded", "environment": "urban", "seed": 5})
+    ts = [0.0, 2.5, 7.0, 11.9, 12.0, 20.3, 29.0, 45.0]
+    want = [fading.gain(9, t, cfg, "G", 1575.42e6, 30.0, mo) for t in ts]
+    sv = {"sys": "G", "prn": 9, "fading_model": 1, "fading_env": "urban",
+          "fading_speed_mps": None, "fading_carrier_hz": 1575.42e6,
+          "fading_el_deg": 30.0, "fading_seed": 5,
+          "fading_motion": mo.as_dict()}
+    js = _node("[" + ",".join(f"globalThis.fadingGain({json.dumps(sv)}, {t})"
+                              for t in ts) + "]")
+    for t, got, w in zip(ts, js, want):
+        assert complex(*got) == pytest.approx(w, abs=1e-9), t
+
+
 def test_js_keyed_without_recorded_key_is_flat():
     sv = {"sys": "G", "prn": 5, "fading_model": 2, "fading_env": "urban",
           "fading_speed_mps": 3.0, "fading_carrier_hz": 1575.42e6,

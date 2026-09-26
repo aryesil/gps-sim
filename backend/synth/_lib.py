@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-ABI_VERSION = 28
+ABI_VERSION = 29
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 if sys.platform == "darwin":
     _EXT = "dylib"
@@ -56,6 +56,11 @@ class FadingCfg(ctypes.Structure):
         ("seed", ctypes.c_uint64),
         ("key", ctypes.c_uint8 * 32),    # keyed model: ChaCha20 key
         ("domain", ctypes.c_int),        # ASCII system letter
+        # ABI 29 -- distance travelled (m) at times (s); >= 2 points replace
+        # speed_mps. The caller keeps both arrays alive.
+        ("motion_n", ctypes.c_int),
+        ("motion_t", ctypes.POINTER(ctypes.c_double)),
+        ("motion_d", ctypes.POINTER(ctypes.c_double)),
     ]
 
 

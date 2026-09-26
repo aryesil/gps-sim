@@ -47,7 +47,8 @@ window.drawSvPowerTable = function (tableId, svs, bands) {
         const gdb = (typeof s.gain_db === 'number') ? s.gain_db.toFixed(2)
           : (typeof s.gain === 'number' ? (20 * Math.log10(s.gain)).toFixed(2) : '—');
         const sig = (s.fading_model && s.fading_env)
-          ? `${s.fading_env} ${Number(s.fading_speed_mps || 0).toFixed(1)} m/s` : 'off';
+          ? `${s.fading_env} ${typeof s.fading_speed_mps === 'number'
+            ? s.fading_speed_mps.toFixed(1) + ' m/s' : 'auto'}` : 'off';
         const el = (typeof s.el_deg === 'number') ? s.el_deg.toFixed(1) : '—';
         const az = (typeof s.az_deg === 'number') ? s.az_deg.toFixed(1) : '—';
         const cd = (typeof s.code_doppler_hz === 'number') ? s.code_doppler_hz.toFixed(1) : '—';

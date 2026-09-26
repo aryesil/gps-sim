@@ -16,7 +16,7 @@ from backend.analysis import nav_encoders
 from backend.ephem import ephemeris, ephemeris_fit, ephemeris_source
 from backend.gpstime import GPSTime
 from backend.synth import _lib, bands, pilot_codes, postproc, signals
-from backend.synth.fading import MODEL_INT, FadingConfig
+from backend.synth.fading import MODEL_INT, FadingConfig, Motion
 from backend.models import atmosphere, channel_models, receiver_clock as rc_mod
 from backend.models import impairments as imp_mod, multipath as mp_mod
 
@@ -967,6 +967,14 @@ def run(req, progress_cb=None) -> pathlib.Path:
     # once, so every SV and band of this run shares it.
     cfg = FadingConfig.from_dict(getattr(req, "fading", None)).for_run()
     fading_model_int = MODEL_INT[cfg.model] if cfg.enabled() else 0
+    # Channel motion: with no explicit speed, a waypoint route drives the
+    # channel by the distance travelled along it (stops fade slowly, fast
+    # stretches fast). The ctypes arrays live as long as this call.
+    fade_motion = None
+    if fading_model_int and cfg.speed_mps is None and route:
+        from backend import scenario as _scenario
+        fade_motion = Motion(*_scenario.route_distance_profile(
+            route, req.duration_s))
 
     # Broadcast navigation message per system (SP-A GPS LNAV + SP-D others):
     # one +/-1 symbol stream per SV at that system's symbol rate, built from
@@ -1079,7 +1087,8 @@ def run(req, progress_cb=None) -> pathlib.Path:
                 if plan.fs >= 2.0 * (abs(if_hz) + _CBOC_HALF_BW_HZ):
                     c.cboc = int(getattr(c, "_cboc", 0))
                 if fading_model_int:
-                    cfg.fill(c.fading, e["sys"], fade_carrier_hz, el_deg)
+                    cfg.fill(c.fading, e["sys"], fade_carrier_hz, el_deg,
+                             fade_motion)
                 sv_list.append(c)
                 keep_alive.append(c_keep)
             band_sys.add(e["sys"])
@@ -1212,8 +1221,12 @@ def run(req, progress_cb=None) -> pathlib.Path:
                 {v: k for k, v in signals.SIGNALS.items()}.get(
                     e["signal_id"], f"{e['sys']}/{e['signal_id'].band}")
                 for e in entries}),
+            # speed_mps None: the channel follows `motion` (the route's
+            # distance profile) when present, else a static receiver.
             "fading": ({"model": cfg.model, "environment": cfg.environment,
-                        "speed_mps": cfg.speed_mps}
+                        "speed_mps": cfg.speed_mps,
+                        "motion": (fade_motion.as_dict()
+                                   if fade_motion is not None else None)}
                        if cfg.enabled() else "off"),
             "channel_models": channel_report,
             "impairments": impairment_report or None,

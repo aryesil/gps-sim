@@ -234,8 +234,8 @@ double GridProcess::value(int64_t m) {
     return x;
 }
 
-double GridProcess::at(double t) {
-    const double x = t / dt_;
+double GridProcess::at(double u) {
+    const double x = u / dt_;
     const double fl = std::floor(x);
     const int64_t m = static_cast<int64_t>(fl);
     if (m != last_m_) {
@@ -263,13 +263,29 @@ ChannelProcess::ChannelProcess(const FadingCfg &c, int prn) {
     for (int s = 0; s < 3; ++s)
         for (int k = 0; k < 3; ++k) st_[s][k] = e.st[s][k];
 
-    const double v = std::max(c.speed_mps, 0.0);
-    const double tau_state = v > 0.0 ? std::min(e.d_state_m / v, kTauStateMax) : kTauStateMax;
-    const double tau_shadow = v > 0.0 ? std::min(e.d_shadow_m / v, kTauShadowMax) : kTauShadowMax;
+    // Motion: a distance profile from a route, else a constant speed. The
+    // top speed sizes the knot grid so the fastest stretch is resolved.
+    double vmax = 0.0;
+    if (c.motion_n >= 2 && c.motion_t && c.motion_d) {
+        mt_.assign(c.motion_t, c.motion_t + c.motion_n);
+        md_.assign(c.motion_d, c.motion_d + c.motion_n);
+        for (int i = 1; i < c.motion_n; ++i) {
+            const double dt = mt_[i] - mt_[i - 1];
+            if (dt > 0.0) vmax = std::max(vmax, (md_[i] - md_[i - 1]) / dt);
+        }
+    } else {
+        speed_ = std::max(c.speed_mps, 0.0);
+        vmax = speed_;
+    }
     const double carrier = c.carrier_hz > 0.0 ? c.carrier_hz : 1575.42e6;
-    p_.doppler_hz = std::max(v * carrier / kC, kDopplerMin);
-    p_.dt_state_s = tau_state / kPerTau;
-    p_.dt_shadow_s = tau_shadow / kPerTau;
+    lambda_ = kC / carrier;
+    d_state_ = e.d_state_m;
+    d_shadow_ = e.d_shadow_m;
+    // Decorrelation rates: distance over the correlation distance plus the
+    // satellite-motion floor.
+    p_.doppler_hz = vmax / lambda_ + kDopplerMin;
+    p_.dt_state_s = 1.0 / (kPerTau * (vmax / d_state_ + 1.0 / kTauStateMax));
+    p_.dt_shadow_s = 1.0 / (kPerTau * (vmax / d_shadow_ + 1.0 / kTauShadowMax));
     p_.dt_diffuse_s = 1.0 / (kPerTau * p_.doppler_hz);   // knot spacing only
     p_.dt_knot_s = std::min({p_.dt_state_s, p_.dt_shadow_s, p_.dt_diffuse_s, kKnotMax});
 
@@ -283,11 +299,14 @@ ChannelProcess::ChannelProcess(const FadingCfg &c, int prn) {
     p_.z_los = inv_norm(std::clamp(p_.p_los, lo, hi));
     p_.z_shadow = inv_norm(std::clamp(p_.p_los + p_.p_shadow, lo, hi));
 
-    state_.init(key, c.domain, kPurposeState, prn, p_.dt_state_s);
-    shadow_.init(key, c.domain, kPurposeShadow, prn, p_.dt_shadow_s);
+    // State and shadowing run on u = distance / d_c + t / tau_max (one unit
+    // = one correlation length), gridded kPerTau points per unit.
+    state_.init(key, c.domain, kPurposeState, prn, 1.0 / kPerTau);
+    shadow_.init(key, c.domain, kPurposeShadow, prn, 1.0 / kPerTau);
     // Diffuse multipath: sum of kSos unit phasors, arrival angle n in the
     // stratum [2 pi n / N, 2 pi (n+1) / N) and a random phase. Its ensemble
-    // autocorrelation is J0(2 pi f_D tau), the Jakes spectrum. Carrier in
+    // autocorrelation over travelled distance r is J0(2 pi r / lambda), the
+    // Jakes spectrum for any speed profile. Carrier in
     // units of 1.023 MHz names the band (1540 L1, 1200 L2, 1150 L5, per
     // channel for GLONASS FDMA), so each carrier scatters independently.
     const uint32_t band =
@@ -299,17 +318,31 @@ ChannelProcess::ChannelProcess(const FadingCfg &c, int prn) {
         for (int i = 0; i < 4; ++i) {
             const int n = 4 * b + i;
             const double alpha = 2.0 * M_PI * (n + u[2 * i]) / kSos;
-            sos_f_[n] = p_.doppler_hz * std::cos(alpha);
+            sos_c_[n] = std::cos(alpha);
             sos_ph_[n] = 2.0 * M_PI * u[2 * i + 1];
         }
     }
     on_ = true;
 }
 
+double ChannelProcess::distance(double t_s) const {
+    if (mt_.empty()) return speed_ * t_s;
+    if (t_s <= mt_.front()) return md_.front();
+    if (t_s >= mt_.back()) return md_.back();
+    const size_t i = static_cast<size_t>(
+        std::upper_bound(mt_.begin(), mt_.end(), t_s) - mt_.begin()) - 1;
+    const double dt = mt_[i + 1] - mt_[i];
+    const double f = dt > 0.0 ? (t_s - mt_[i]) / dt : 0.0;
+    return md_[i] + f * (md_[i + 1] - md_[i]);
+}
+
+// Diffuse multipath at time t: each phasor turns with the travelled distance
+// in wavelengths, plus kDopplerMin cycles/s for the satellite's own motion.
 std::complex<double> ChannelProcess::diffuse(double t_s) const {
+    const double r = distance(t_s) / lambda_ + kDopplerMin * t_s;
     double re = 0.0, im = 0.0;
     for (int n = 0; n < kSos; ++n) {
-        const double ph = 2.0 * M_PI * sos_f_[n] * t_s + sos_ph_[n];
+        const double ph = 2.0 * M_PI * sos_c_[n] * r + sos_ph_[n];
         re += std::cos(ph);
         im += std::sin(ph);
     }
@@ -330,8 +363,9 @@ void ChannelProcess::state_params(double z, double &mu, double &sig,
 void ChannelProcess::components(double t_s, double out[8]) {
     for (int k = 0; k < 8; ++k) out[k] = 0.0;
     if (!on_) { out[2] = 1.0; return; }
-    const double z = state_.at(t_s);
-    const double x = shadow_.at(t_s);
+    const double d = distance(t_s);
+    const double z = state_.at(d / d_state_ + t_s / kTauStateMax);
+    const double x = shadow_.at(d / d_shadow_ + t_s / kTauShadowMax);
     const std::complex<double> w = diffuse(t_s);
     double mu, sig, mp;
     state_params(z, mu, sig, mp);

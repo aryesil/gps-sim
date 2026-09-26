@@ -924,11 +924,12 @@ def generate(body: dict):
             # bar is stuck forever. Always send a terminal event instead.
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
             return
-        svs, meta_bands, meta_systems = [], [], []
+        svs, meta_bands, meta_systems, meta_fading = [], [], [], None
         try:
             _m = json.loads((outdir / "meta.json").read_text())
             _prov = _m.get("provenance", {})
             svs = _prov.get("svs", [])
+            meta_fading = _prov.get("fading")
             meta_systems = _prov.get("systems", [])
             meta_bands = _m.get("bands", [])
         except Exception:                        # noqa: BLE001 - meta optional
@@ -937,6 +938,9 @@ def generate(body: dict):
                          "size_bytes": (outdir / "gpssim.bin").stat().st_size,
                          "inspect": table,
                          "svs": svs,
+                         # channel model incl. the route's distance profile,
+                         # which frontend/js/fading.js needs to replay it
+                         "fading": meta_fading,
                          "bands": meta_bands,
                          "systems": meta_systems,
                          "ephemeris_mode": "precise" if req.nav_override is not None else "broadcast",

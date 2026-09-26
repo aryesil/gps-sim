@@ -190,6 +190,29 @@ def route_llh_at(route, duration_s, t: float) -> tuple[float, float, float]:
             a[2] + (b[2] - a[2]) * frac)
 
 
+def route_distance_profile(route, duration_s) -> tuple[list[float], list[float]]:
+    """Distance travelled along ``route`` (metres) at each waypoint time,
+    for the motion semantics of :func:`route_llh_at`: waypoint ``i`` is
+    reached at ``i * (n - 1) / (10 * seg)`` s, the receiver moves linearly
+    between waypoints and holds after the last one. Segment lengths are the
+    ECEF chords between waypoints."""
+    from backend import geometry
+
+    if not route or len(route) < 2:
+        raise ValueError("route needs at least two waypoints")
+    seg = len(route) - 1
+    n = int(round(duration_s * 10))
+    t_seg = max(n - 1, 1) / (10.0 * seg)
+    ts, ds = [0.0], [0.0]
+    prev = geometry.llh_to_ecef(*route[0])
+    for i in range(1, seg + 1):
+        cur = geometry.llh_to_ecef(*route[i])
+        ds.append(ds[-1] + sum((a - b) ** 2 for a, b in zip(cur, prev)) ** 0.5)
+        ts.append(i * t_seg)
+        prev = cur
+    return ts, ds
+
+
 def write_motion_csv(req: ScenarioRequest, path) -> None:
     if not req.route or len(req.route) < 2:
         raise ValueError("route needs at least two waypoints")

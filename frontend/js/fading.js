@@ -1,5 +1,6 @@
-// JS port of backend/synth/native/fading.cpp (ABI 28 land-mobile-satellite
-// channel). Evaluating it at any run time t_s reproduces the complex gain the
+// JS port of backend/synth/native/fading.cpp (ABI 29 land-mobile-satellite
+// channel; it advances with the distance travelled -- sv.fading_motion, the
+// route's profile, or a constant sv.fading_speed_mps). Evaluating it at any run time t_s reproduces the complex gain the
 // C++ engine applied to a signal, so the per-SV power bars can track the
 // waveform scrubber.
 //   model 1 seeded: ChaCha20 key derived from sv.fading_seed.
@@ -109,7 +110,8 @@
   }
   function smooth01(x) { return x <= 0 ? 0 : (x >= 1 ? 1 : x * x * (3 - 2 * x)); }
 
-  // Exponentially correlated unit Gaussian on a grid (GridProcess).
+  // Exponentially correlated unit Gaussian on a grid (GridProcess), indexed
+  // by u = distance / d_c + t / tau_max.
   function gridProcess(kw, domain, purpose, prn, dt) {
     const n0 = streamN0(domain, purpose, prn);
     const blocks = new Map();
@@ -134,8 +136,8 @@
       for (let i = m - (AR_TAPS - 1); i <= m; i++) x += a[m - i] * normal(i);
       return x;
     }
-    return function at(t) {
-      const x = t / dt, fl = Math.floor(x);
+    return function at(u) {
+      const x = u / dt, fl = Math.floor(x);
       const v0 = value(fl), v1 = value(fl + 1);
       return v0 + (x - fl) * (v1 - v0);
     };
@@ -146,19 +148,32 @@
     const kw = sv.fading_model === 1 ? seedKeyWords(sv.fading_seed || 0)
       : keyWordsOf(sv.fading_key);
     const dom = sv.sys ? sv.sys.charCodeAt(0) : 0;
-    const v = Math.max(sv.fading_speed_mps || 0, 0);
-    const tauState = v > 0 ? Math.min(e.dState / v, TAU_STATE_MAX) : TAU_STATE_MAX;
-    const tauShadow = v > 0 ? Math.min(e.dShadow / v, TAU_SHADOW_MAX) : TAU_SHADOW_MAX;
+    // Motion: the route's distance profile (sv.fading_motion), else a
+    // constant speed (null = static).
+    const mo = sv.fading_motion;
+    const useProfile = mo && mo.t_s && mo.t_s.length >= 2;
+    const speed = useProfile ? 0 : Math.max(sv.fading_speed_mps || 0, 0);
+    function distance(t) {
+      if (!useProfile) return speed * t;
+      const T = mo.t_s, D = mo.dist_m, n = T.length;
+      if (t <= T[0]) return D[0];
+      if (t >= T[n - 1]) return D[n - 1];
+      let lo = 0, hi = n - 1;                    // upper_bound(T, t) - 1
+      while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (T[mid] <= t) lo = mid; else hi = mid; }
+      const dt = T[lo + 1] - T[lo];
+      const f = dt > 0 ? (t - T[lo]) / dt : 0;
+      return D[lo] + f * (D[lo + 1] - D[lo]);
+    }
     const carrier = sv.fading_carrier_hz > 0 ? sv.fading_carrier_hz : 1575.42e6;
-    const fd = Math.max(v * carrier / C, DOPPLER_MIN);
+    const lambda = C / carrier;
     const el = Math.min(Math.max(typeof sv.fading_el_deg === 'number' ? sv.fading_el_deg : 45, 10), 90);
     const xi = (el - 10) / 20, i0 = Math.min(Math.trunc(xi), 3), fr = xi - i0;
     const pLos = e.pLos[i0] + fr * (e.pLos[i0 + 1] - e.pLos[i0]);
     const pSh = e.pSh[i0] + fr * (e.pSh[i0 + 1] - e.pSh[i0]);
     const cl = p => Math.min(Math.max(p, 1e-6), 1 - 1e-6);
     const z1 = invNorm(cl(pLos)), z2 = invNorm(cl(pLos + pSh));
-    const state = gridProcess(kw, dom, P_STATE, sv.prn, tauState / PER_TAU);
-    const shadow = gridProcess(kw, dom, P_SHADOW, sv.prn, tauShadow / PER_TAU);
+    const state = gridProcess(kw, dom, P_STATE, sv.prn, 1 / PER_TAU);
+    const shadow = gridProcess(kw, dom, P_SHADOW, sv.prn, 1 / PER_TAU);
     const band = Math.round(carrier / 1.023e6) & 0xFFFF;
     const n0 = streamN0(dom, P_DIFFUSE, sv.prn);
     const sf = [], sp = [];
@@ -166,19 +181,22 @@
       const u = blockUniforms(kw, n0, band, b);
       for (let i = 0; i < 4; i++) {
         const n = 4 * b + i;
-        sf.push(fd * Math.cos(2 * Math.PI * (n + u[2 * i]) / SOS));
+        sf.push(Math.cos(2 * Math.PI * (n + u[2 * i]) / SOS));
         sp.push(2 * Math.PI * u[2 * i + 1]);
       }
     }
     return function gain(t) {
-      const z = state(t), x = shadow(t);
+      const d = distance(t);
+      const z = state(d / e.dState + t / TAU_STATE_MAX);
+      const x = shadow(d / e.dShadow + t / TAU_SHADOW_MAX);
+      const r = d / lambda + DOPPLER_MIN * t;
       const s1 = smooth01((z - z1) / STATE_BLEND + 0.5);
       const s2 = smooth01((z - z2) / STATE_BLEND + 0.5);
       const p = [0, 1, 2].map(k => e.st[0][k] + s1 * (e.st[1][k] - e.st[0][k])
         + s2 * (e.st[2][k] - e.st[1][k]));
       let re = 0, im = 0;
       for (let n = 0; n < SOS; n++) {
-        const ph = 2 * Math.PI * sf[n] * t + sp[n];
+        const ph = 2 * Math.PI * sf[n] * r + sp[n];
         re += Math.cos(ph); im += Math.sin(ph);
       }
       const ws = 1 / Math.sqrt(SOS);

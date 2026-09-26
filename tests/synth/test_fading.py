@@ -19,9 +19,11 @@ def _lib_f():
     return lib
 
 
-def _cfg(d, sysc="G", carrier=L1, el=45.0):
+def _cfg(d, sysc="G", carrier=L1, el=45.0, motion=None):
     c = _lib.FadingCfg()
-    fading.FadingConfig.from_dict(d).for_run().fill(c, sysc, carrier, el)
+    fading.FadingConfig.from_dict(d).for_run().fill(c, sysc, carrier, el,
+                                                    motion)
+    c._motion = motion   # keep the ctypes arrays alive with the struct
     return c
 
 
@@ -50,6 +52,10 @@ def _params(d, **kw):
         for k, v in kw.items()})
 
 
+def _auto(env="urban", seed=3):
+    return {"model": "seeded", "environment": env, "seed": seed}
+
+
 def _seeded(env="suburban", speed=10.0, seed=3):
     return {"model": "seeded", "environment": env, "speed_mps": speed,
             "seed": seed}
@@ -68,7 +74,7 @@ def _j0(x):
 # ---- plumbing ----------------------------------------------------------------
 
 def test_abi_version_matches_library():
-    assert _lib.load_lib().synth_abi_version() == _lib.ABI_VERSION == 28
+    assert _lib.load_lib().synth_abi_version() == _lib.ABI_VERSION == 29
 
 
 def test_chacha20_rfc8439_block_vector():
@@ -86,6 +92,9 @@ def test_off_model_is_unity():
 
 
 def test_config_validation_and_legacy_name():
+    assert fading.FadingConfig.from_dict({"model": "seeded"}).speed_mps is None
+    assert fading.FadingConfig.from_dict(
+        {"model": "seeded", "speed_mps": ""}).speed_mps is None
     for bad in ({"model": "weird"}, {"model": "seeded", "environment": "moon"},
                 {"model": "seeded", "speed_mps": -1},
                 {"model": "keyed", "key": "zz"},
@@ -160,10 +169,12 @@ def test_gain_is_continuous():
 # ---- physics -----------------------------------------------------------------
 
 def test_doppler_spread_is_speed_over_wavelength():
+    # plus the 0.01 Hz satellite-motion floor
     for v, car in ((1.4, L1), (20.0, L1), (20.0, L5)):
         assert _params(_seeded(speed=v), carrier=car)["doppler_hz"] == \
-            pytest.approx(v * car / 299792458.0)
+            pytest.approx(v * car / 299792458.0 + 0.01)
     assert _params(_seeded(speed=0.0))["doppler_hz"] == pytest.approx(0.01)
+    assert _params({"model": "seeded"})["doppler_hz"] == pytest.approx(0.01)
 
 
 def test_diffuse_autocorrelation_is_jakes_j0():
@@ -214,6 +225,45 @@ def test_static_receiver_changes_slowly():
     fast = _series(_seeded(env="urban", speed=20.0), 4, 0.0, 0.05, 400)
     slow = _series(_seeded(env="urban", speed=0.0), 4, 0.0, 0.05, 400)
     assert np.std(np.diff(abs(slow))) < 0.1 * np.std(np.diff(abs(fast)))
+
+
+# ---- motion: route distance profile --------------------------------------------
+
+def test_linear_profile_equals_constant_speed():
+    mo = fading.Motion([0.0, 100.0], [0.0, 1200.0])          # 12 m/s
+    const = _series(_seeded(env="urban", speed=12.0), 8, 0.0, 0.037, 2000)
+    prof = _series(_auto(), 8, 0.0, 0.037, 2000, motion=mo)
+    assert np.allclose(prof, const, atol=1e-6)
+    assert _params(_auto(), motion=mo)["doppler_hz"] == pytest.approx(
+        12.0 * L1 / 299792458.0 + 0.01)
+
+
+def test_stop_on_the_route_fades_like_a_static_receiver():
+    # drive 20 m/s for 10 s, stop 10 s, drive again
+    mo = fading.Motion([0.0, 10.0, 20.0, 30.0], [0.0, 200.0, 200.0, 400.0])
+    g = abs(_series(_auto(), 4, 0.0, 0.01, 3000, motion=mo))
+    moving = np.std(np.diff(g[100:900]))
+    stopped = np.std(np.diff(g[1100:1900]))
+    again = np.std(np.diff(g[2100:2900]))
+    assert stopped < 0.05 * moving and stopped < 0.05 * again
+    # during the stop the channel equals a static one advanced to 200 m
+    static = abs(_series(_auto(), 4, 12.0, 0.5, 10, motion=fading.Motion(
+        [0.0, 10.0, 1e6], [0.0, 200.0, 200.0])))
+    assert np.allclose(static, g[1200:1700:50], atol=1e-9)
+
+
+def test_route_distance_profile_follows_route_timing():
+    from backend import geometry, scenario
+    route = [(41.0, 29.0, 100.0), (41.001, 29.0, 100.0),
+             (41.001, 29.002, 100.0)]
+    ts, ds = scenario.route_distance_profile(route, 30)
+    assert ts == pytest.approx([0.0, 29.9 / 2, 29.9])
+    a, b, c = (np.array(geometry.llh_to_ecef(*w)) for w in route)
+    assert ds == pytest.approx([0.0, np.linalg.norm(b - a),
+                                np.linalg.norm(b - a) + np.linalg.norm(c - b)])
+    # same timing as the position sampler: halfway along segment 0 at t_1/2
+    mid = scenario.route_llh_at(route, 30, ts[1] / 2)
+    assert mid[0] == pytest.approx(41.0005)
 
 
 # ---- mixer complex-gain knots --------------------------------------------------

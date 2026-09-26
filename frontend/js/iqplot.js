@@ -174,7 +174,11 @@ const _BAR_SYS_COLOR = { G:'#2a6', R:'#c30', E:'#093', C:'#c60', J:'#606', S:'#8
 // redraw the power bars at each sample position. null for GPS-only runs
 // (those show the real acquisition metric instead).
 const _svPowerModel = {};
-window.setSvPowerModel = function (channelId, svs) {
+window.setSvPowerModel = function (channelId, svs, fading) {
+  // A route-driven channel needs the run's distance profile (shared by
+  // every SV); hang it on each entry so fadingGainDb(sv, t) can replay it.
+  const motion = fading && typeof fading === 'object' ? fading.motion : null;
+  if (motion && svs) svs.forEach(s => { s.fading_motion = motion; });
   _svPowerModel[channelId] = (svs && svs.length) ? svs : null;
 };
 

@@ -4,8 +4,8 @@ from backend.synth import _lib
 
 
 def test_abi_version():
-    assert _lib.ABI_VERSION == 28
-    assert _lib.load_lib().synth_abi_version() == 28
+    assert _lib.ABI_VERSION == 29
+    assert _lib.load_lib().synth_abi_version() == 29
 
 
 def test_l2c_icd_known_answer():

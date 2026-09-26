@@ -14,6 +14,9 @@ typedef struct {
     uint64_t seed;
     uint8_t key[32];
     int domain;
+    int motion_n;           // ABI 29: distance profile (see fading.hpp)
+    const double *motion_t;
+    const double *motion_d;
 } FadingCfg;
 #endif
 #ifdef __cplusplus

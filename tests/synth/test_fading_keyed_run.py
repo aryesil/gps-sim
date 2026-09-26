@@ -5,6 +5,7 @@ import json
 import pathlib
 
 import numpy as np
+import pytest
 
 from backend import config, scenario
 from backend.synth import engine
@@ -35,7 +36,8 @@ def _fade(**kw):
 def test_keyed_run_hides_the_key_by_default(tmp_path, monkeypatch):
     meta, _ = _run(tmp_path, monkeypatch, _fade(key=_KEY), "a")
     assert meta["provenance"]["fading"] == {
-        "model": "keyed", "environment": "urban", "speed_mps": 5.0}
+        "model": "keyed", "environment": "urban", "speed_mps": 5.0,
+        "motion": None}
     svs = meta["provenance"]["svs"]
     assert svs and all(s["fading_model"] == 2 and s["fading_env"] == "urban"
                        for s in svs)
@@ -58,3 +60,21 @@ def test_same_key_same_iq_fresh_key_different_iq(tmp_path, monkeypatch):
     assert not np.array_equal(c, d)
     assert (m1["provenance"]["svs"][0]["fading_key_id"]
             != m2["provenance"]["svs"][0]["fading_key_id"])
+
+
+def test_route_drives_the_channel_when_speed_is_unset(tmp_path, monkeypatch):
+    out = tmp_path / "r"
+    out.mkdir()
+    monkeypatch.setattr(config, "OUT_DIR", out)
+    route = [(41.0, 29.0, 100.0), (41.0002, 29.0, 100.0)]
+    req = scenario.ScenarioRequest(
+        rinex_path=_RINEX, lat=41.0, lon=29.0, alt=100.0,
+        start=dt.datetime(2024, 1, 1), duration_s=1,
+        sample_rate=2_600_000.0, sample_format="int16", engine="native",
+        route=route, fading={"model": "seeded", "environment": "urban"})
+    meta = json.loads((engine.run(req) / "meta.json").read_text())
+    fad = meta["provenance"]["fading"]
+    assert fad["speed_mps"] is None
+    assert fad["motion"]["t_s"] == scenario.route_distance_profile(route, 1)[0]
+    assert fad["motion"]["dist_m"][-1] == pytest.approx(22.2, abs=0.3)
+    assert all(s["fading_speed_mps"] is None for s in meta["provenance"]["svs"])

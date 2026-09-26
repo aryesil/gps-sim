@@ -62,9 +62,12 @@ engine (GPS + GLONASS + Galileo + BeiDou + QZSS from an MGEX SP3 product).
   correlated state process with elevation-dependent probabilities for the
   chosen `environment` (`open`, `rural`, `suburban`, `urban`), log-normal
   shadowing of the direct path, and Rayleigh diffuse multipath with a Jakes
-  Doppler spectrum of spread `speed_mps` / wavelength. The receiver speed also
-  sets how fast blockage and shadowing change (a static receiver still drifts
-  over minutes). All bands of a satellite share its blockage and shadowing;
+  Doppler spectrum of spread speed / wavelength. All three advance with the
+  distance the receiver travels (plus a slow term for satellite motion, so a
+  static receiver still drifts over minutes). Leave `speed_mps` unset to take
+  the distance profile of the waypoint route (stops fade slowly, fast
+  stretches fast; static when there is no route), or set it for a constant
+  speed. All bands of a satellite share its blockage and shadowing;
   the diffuse part is independent per carrier. The gain is complex and is
   interpolated per sample between knots that resolve the Doppler spread. The
   preset values are representative of published L-band land-mobile

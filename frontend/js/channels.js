@@ -176,7 +176,7 @@ window.addChannel = function () {
             <option value="suburban" selected>suburban</option>
             <option value="urban">urban</option>
           </select></label>
-          <label class="fade-on" title="Receiver speed. Sets the diffuse Doppler spread (speed / wavelength) and how fast blockage and shadowing change; 0 = static (slow changes from satellite motion only).">speed m/s <input id="${id}-fade-speed" type="number" min="0" step="0.5" value="0"></label>
+          <label class="fade-on" title="Receiver speed. Sets the diffuse Doppler spread (speed / wavelength) and how fast blockage and shadowing change. Empty = auto: follow the waypoint route (distance travelled, so stops fade slowly), or static when there is no route. A number forces a constant speed; 0 = static (slow changes from satellite motion only).">speed m/s <input id="${id}-fade-speed" type="number" min="0" step="0.5" placeholder="auto (route)"></label>
           <label class="fade-seeded">seed <input id="${id}-fade-seed" type="number" step="1" value="1"></label>
           <label class="fade-keyed">key (64 hex) <input id="${id}-fade-key" type="password" autocomplete="off" spellcheck="false" size="20" placeholder="empty = random per run"></label>
           <button type="button" class="fade-keyed" id="${id}-fade-keygen" title="Fill in a new random 256-bit key (crypto.getRandomValues), so the same fading can be reused later">random key</button>
@@ -880,8 +880,9 @@ function wireChannelActions(id) {
       out.fading = {
         model: fm,
         environment: document.getElementById(`${id}-fade-env`).value,
-        speed_mps: Number(document.getElementById(`${id}-fade-speed`).value),
       };
+      const spd = document.getElementById(`${id}-fade-speed`).value;
+      if (spd !== '') out.fading.speed_mps = Number(spd);
       if (fm === 'keyed') {
         const key = document.getElementById(`${id}-fade-key`).value.trim();
         if (key) out.fading.key = key;
@@ -975,7 +976,7 @@ function wireChannelActions(id) {
                   : 'Per-SV signal power (gain + channel, dB)';
               }
               // Multi-GNSS: let the scrubber drive the power bars (fading vs t).
-              setSvPowerModel(id, gpsOnlyInspect ? null : msg.done.svs);
+              setSvPowerModel(id, gpsOnlyInspect ? null : msg.done.svs, msg.done.fading);
               drawCorrelationBars(`${id}-iq-correlation`, msg.done.inspect, msg.done.svs, 0);
               loadIqPlots(id, msg.done.outdir);
               attachIqScrubber(id, msg.done.outdir);
