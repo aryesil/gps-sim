@@ -15,8 +15,8 @@ Two generation engines:
 - **`native`** — a built-in C++20 engine that renders the same GPS L1 C/A
   output **plus GLONASS G1, Galileo E1, BeiDou B1I, QZSS L1 C/A and SBAS L1**
   from one correlated multi-constellation geometry (one receive epoch, so
-  cross-system acquisition lines up), with a seeded per-satellite fading
-  model baked into the IQ. GLONASS FDMA is written to its own 1602 MHz band
+  cross-system acquisition lines up), with a per-satellite fading model
+  (seeded, or keyed and cryptographically unpredictable) baked into the IQ. GLONASS FDMA is written to its own 1602 MHz band
   file; every other system interleaves in the 1575.42 MHz L1 group.
 
 Signal generation runs from broadcast ephemeris by default; in **precise
@@ -55,8 +55,13 @@ engine (GPS + GLONASS + Galileo + BeiDou + QZSS from an MGEX SP3 product).
 - **Generate** — static point or dynamic waypoint route → `gps-sdr-sim` or
   the native C++ engine → raw interleaved IQ + `meta.json`, with streamed
   progress. The native engine adds a constellation picker (GPS always on;
-  GLONASS / Galileo / BeiDou / QZSS / SBAS opt-in), a seeded log-normal
-  fading model, and int16 / int12 / int8 quantisation.
+  GLONASS / Galileo / BeiDou / QZSS / SBAS opt-in), a log-normal fading
+  model, and int16 / int12 / int8 quantisation. Fading is either `lognormal`
+  (reproducible from a seed, so predictable by anyone who knows it) or
+  `keyed`. In `keyed`, knot values, knot jitter and each satellite's grid
+  phase and spacing come from ChaCha20 under a 256-bit key. An empty key
+  draws a fresh one from the OS CSPRNG per run. `meta.json` records only a
+  fingerprint of the key unless `record_key` is set.
 - **Inspect** — power spectrum (every RF band overlaid on one absolute-Hz
   axis), per-PRN acquisition (Doppler + code phase) for a GPS-only run, a
   per-satellite signal-power panel across **all** constellations for a
@@ -202,9 +207,9 @@ backend/
     bands.py        splits visible SVs into RF bands (L1 group 1575.42 MHz, GLONASS G1 1602 MHz)
     signal_engine.py  thin run() seam used by the API
     _lib.py         ctypes bindings for backend/synth/native/libgnsssynth.dylib
-    fading.py       FadingConfig (model / sigma_db / coherence_s / seed)
+    fading.py       FadingConfig (model / sigma_db / coherence_s / seed / key)
     sbas.py glonass.py fs_policy.py   state helpers, FDMA, sample-rate policy
-    native/         C++20: code generation, NCOs, mixing, quantisation, block streaming, seeded fading
+    native/         C++20: code generation, NCOs, mixing, quantisation, block streaming, seeded + keyed (ChaCha20) fading
   models/           atmosphere.py, receiver_clock.py, multipath.py,
                     channel_models.py (glue), impairments.py, error_budget.py, wls.py
   analysis/         receiver.py (LS fix), reference.py + truth.py (independent
@@ -228,7 +233,8 @@ frontend/           vanilla JS, no build step; served static by FastAPI at /stat
                     (SP3 / RF impairments / Propagation / Signal engine)
     map.js trajectory.js live.js pages.js app.js
     plots.js skyplot.js iqplot.js   spectrogram, sky plot, IQ / spectrum plots,
-                    per-SV power bars, HiDPI canvas helper, JS fading-model port
+                    per-SV power bars, HiDPI canvas helper
+    fading.js       JS port of the native fading models (scrubbed power bars)
     log.js          audit-log merge, /ws/events client, receiver-feed panel
 ```
 

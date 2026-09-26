@@ -126,10 +126,12 @@ def test_signal_engine_panel_present_and_opt_in():
     js = _rd("channels.js")
     assert 'data-adv="eng"' in js   # advanced sub-tab
     assert '${id}-engine' in js
-    for sfx in ("fade-model", "fade-sigma", "fade-coh", "fade-seed", "fs", "quant"):
+    for sfx in ("fade-model", "fade-sigma", "fade-coh", "fade-seed",
+                "fade-key", "fade-record", "fs", "quant"):
         assert f'${{id}}-{sfx}' in js, sfx
     # opt-in: default engine is gps-sdr-sim and an untouched panel adds nothing
     assert "value=\"gps-sdr-sim\"" in js
+    assert '<option value="keyed">' in js
     assert 'if (_engineBody() === null) ' in js or 'const _eng = _engineBody();' in js
 
 

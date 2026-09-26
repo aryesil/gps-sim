@@ -168,35 +168,7 @@ window.loadCorrelationCurve = async function (canvasId, readoutId, outdir, prn) 
 // coloured by constellation.
 const _BAR_SYS_COLOR = { G:'#2a6', R:'#c30', E:'#093', C:'#c60', J:'#606', S:'#888' };
 
-// JS port of backend/synth/native/fading.cpp (splitmix64 + smoothstep between
-// coherence knots). Keyed only on (seed, prn, knot), so evaluating it here at
-// any run time t_s reproduces the exact per-block lognormal gain the C++ mixer
-// folded into the IQ -- lets the per-SV power bars track the waveform scrubber.
-const _M64 = (1n << 64n) - 1n;
-function _mix64(x) {
-  x = (x + 0x9E3779B97F4A7C15n) & _M64;
-  x = ((x ^ (x >> 30n)) * 0xBF58476D1CE4E5B9n) & _M64;
-  x = ((x ^ (x >> 27n)) * 0x94D049BB133111EBn) & _M64;
-  return (x ^ (x >> 31n)) & _M64;
-}
-function _u01(h) { return Number(h >> 11n) * (1 / 9007199254740992); }
-function _fadeGauss(seed, prn, knot) {
-  const kn = (BigInt(knot) * 0x100000001B3n) & _M64;
-  const base = _mix64((BigInt.asUintN(64, BigInt(seed))
-    ^ (BigInt(prn) << 40n) ^ kn) & _M64);
-  const u1 = _u01(_mix64(base)) + 1e-12;
-  const u2 = _u01(_mix64(base ^ 0xABCDEFn));
-  return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-}
-window.fadingGainDb = function (sv, t_s) {
-  const sigma = sv.fading_sigma_db, coh = sv.fading_coherence_s;
-  if (!sv.fading_model || !(sigma > 0) || !(coh > 0)) return 0;
-  const x = t_s / coh, k0 = Math.floor(x), frac = x - k0;
-  const g0 = _fadeGauss(sv.fading_seed, sv.prn, k0);
-  const g1 = _fadeGauss(sv.fading_seed, sv.prn, k0 + 1);
-  const w = frac * frac * (3 - 2 * frac);
-  return sigma * 1.1602387022306428 * (g0 * (1 - w) + g1 * w);
-};
+// fadingGainDb(sv, t_s) lives in fading.js (loaded before this file).
 
 // channelId -> per-SV list (meta.json provenance.svs), for the scrubber to
 // redraw the power bars at each sample position. null for GPS-only runs

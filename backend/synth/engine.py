@@ -15,7 +15,7 @@ from backend.analysis import nav_encoders
 from backend.ephem import ephemeris, ephemeris_fit, ephemeris_source
 from backend.gpstime import GPSTime
 from backend.synth import _lib, bands, pilot_codes, signals
-from backend.synth.fading import FadingConfig
+from backend.synth.fading import MODEL_INT, FadingConfig
 from backend.models import atmosphere
 
 # Keplerian toe/toc grid (s) used when re-labelling broadcast records to the
@@ -937,8 +937,10 @@ def run(req, progress_cb=None) -> pathlib.Path:
         e["code_phase_chips"] = ((e["pseudorange_m"] / config.C
                                   * sig.chip_rate_hz) % sig.code_len)
 
-    cfg = FadingConfig.from_dict(getattr(req, "fading", None))
-    fading_model_int = 1 if cfg.model == "lognormal" else 0
+    # for_run(): a keyed model without a caller key draws a fresh one here,
+    # once, so every SV and band of this run shares it.
+    cfg = FadingConfig.from_dict(getattr(req, "fading", None)).for_run()
+    fading_model_int = MODEL_INT[cfg.model] if cfg.enabled() else 0
 
     # Broadcast navigation message per system (SP-A GPS LNAV + SP-D others):
     # one +/-1 symbol stream per SV at that system's symbol rate, built from
@@ -1045,10 +1047,8 @@ def run(req, progress_cb=None) -> pathlib.Path:
                 _finish_component(c, e, sow, knots)
                 if plan.fs >= 2.0 * (abs(if_hz) + _CBOC_HALF_BW_HZ):
                     c.cboc = int(getattr(c, "_cboc", 0))
-                c.fading.model = fading_model_int
-                c.fading.sigma_db = cfg.sigma_db
-                c.fading.coherence_s = cfg.coherence_s
-                c.fading.seed = cfg.seed
+                if fading_model_int:
+                    cfg.fill(c.fading, e["sys"])
                 sv_list.append(c)
                 keep_alive.append(c_keep)
             band_sys.add(e["sys"])
@@ -1082,6 +1082,12 @@ def run(req, progress_cb=None) -> pathlib.Path:
                        "fading_sigma_db": cfg.sigma_db if fading_model_int else 0.0,
                        "fading_coherence_s": cfg.coherence_s,
                        "fading_seed": int(cfg.seed)}
+            if fading_model_int == MODEL_INT["keyed"]:
+                # The key stays secret unless the caller asked to keep it;
+                # the fingerprint only says which key a run used.
+                sv_meta["fading_key_id"] = cfg.key_id()
+                if cfg.record_key:
+                    sv_meta["fading_key"] = cfg.key.hex()
             gk = e.get("glo_k")
             if e["sys"] == "R" and gk is not None and not (
                     isinstance(gk, float) and math.isnan(gk)):

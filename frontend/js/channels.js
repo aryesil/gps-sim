@@ -165,13 +165,17 @@ window.addChannel = function () {
             <option value="int12">int12</option>
             <option value="int8">int8</option>
           </select></label>
-          <label>Fading model <select id="${id}-fade-model">
+          <label>Fading model <span class="info" title="log-normal (seeded): reproducible from the seed; anyone who knows or guesses the seed can predict the fading. keyed (ChaCha20): values, knot timing and per-satellite grid come from a 256-bit key; without the key the fading cannot be predicted from the IQ. Leave the key empty to draw a fresh random key for every run.">i</span> <select id="${id}-fade-model">
             <option value="off">off</option>
-            <option value="lognormal">log-normal</option>
+            <option value="lognormal">log-normal (seeded)</option>
+            <option value="keyed">keyed (ChaCha20, unpredictable)</option>
           </select></label>
           <label>sigma dB <input id="${id}-fade-sigma" type="number" step="0.5" value="3"></label>
           <label>coherence s <input id="${id}-fade-coh" type="number" step="0.5" value="2"></label>
-          <label>seed <input id="${id}-fade-seed" type="number" step="1" value="1"></label>
+          <label class="fade-seeded">seed <input id="${id}-fade-seed" type="number" step="1" value="1"></label>
+          <label class="fade-keyed">key (64 hex) <input id="${id}-fade-key" type="password" autocomplete="off" spellcheck="false" size="20" placeholder="empty = random per run"></label>
+          <button type="button" class="fade-keyed" id="${id}-fade-keygen" title="Fill in a new random 256-bit key (to reuse the same fading later)">new key</button>
+          <label class="fade-keyed" title="Write the key into meta.json so the run can be reproduced and its fading plotted. Anyone with meta.json can then predict this run's fading."><input type="checkbox" id="${id}-fade-record"> record key in meta</label>
         </section>
         </div>
         <div id="${id}-size-estimate" class="hint"></div>
@@ -392,6 +396,22 @@ function wireChannelActions(id) {
   }
   document.getElementById(`${id}-engine`).addEventListener('change', _updateEngineConstellationState);
   _updateEngineConstellationState();
+
+  // Fading model: show the seed for log-normal, the key controls for keyed.
+  function _updateFadingFields() {
+    const fm = document.getElementById(`${id}-fade-model`).value;
+    const sec = document.getElementById(`${id}-fade-model`).closest('section');
+    sec.querySelectorAll('.fade-seeded').forEach(el => { el.style.display = fm === 'lognormal' ? '' : 'none'; });
+    sec.querySelectorAll('.fade-keyed').forEach(el => { el.style.display = fm === 'keyed' ? '' : 'none'; });
+  }
+  document.getElementById(`${id}-fade-model`).addEventListener('change', _updateFadingFields);
+  _updateFadingFields();
+  document.getElementById(`${id}-fade-keygen`).onclick = () => {
+    const b = new Uint8Array(32);
+    crypto.getRandomValues(b);
+    document.getElementById(`${id}-fade-key`).value =
+      Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+  };
 
   // Card header: reflects the engine/system/band boxes actually checked
   // *right now*, instead of a title frozen at "GPS L1 C/A" from card
@@ -854,8 +874,14 @@ function wireChannelActions(id) {
         model: fm,
         sigma_db: Number(document.getElementById(`${id}-fade-sigma`).value),
         coherence_s: Number(document.getElementById(`${id}-fade-coh`).value),
-        seed: Number(document.getElementById(`${id}-fade-seed`).value),
       };
+      if (fm === 'keyed') {
+        const key = document.getElementById(`${id}-fade-key`).value.trim();
+        if (key) out.fading.key = key;
+        if (document.getElementById(`${id}-fade-record`).checked) out.fading.record_key = true;
+      } else {
+        out.fading.seed = Number(document.getElementById(`${id}-fade-seed`).value);
+      }
     }
     const sys = ["G", "R", "E", "C", "J", "S", "I"].filter(
       s => document.getElementById(`${id}-sys-${s}`).checked);

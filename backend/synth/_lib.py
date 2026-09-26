@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-ABI_VERSION = 26
+ABI_VERSION = 27
 _NATIVE_DIR = pathlib.Path(__file__).parent / "native"
 if sys.platform == "darwin":
     _EXT = "dylib"
@@ -48,10 +48,13 @@ def glo_struct(record: dict) -> "GloEph":
 class FadingCfg(ctypes.Structure):
     # Field order MUST match `FadingCfg` in native/fading.hpp exactly.
     _fields_ = [
-        ("model", ctypes.c_int),         # 0 = off, 1 = lognormal
+        ("model", ctypes.c_int),         # 0 = off, 1 = lognormal, 2 = keyed
         ("sigma_db", ctypes.c_double),
         ("coherence_s", ctypes.c_double),
         ("seed", ctypes.c_uint64),
+        # ABI 27 -- keyed model: ChaCha20 key and constellation domain tag.
+        ("key", ctypes.c_uint8 * 32),
+        ("domain", ctypes.c_int),
     ]
 
 
@@ -145,7 +148,7 @@ def one_sv_spec(code, carrier_hz=0.0, code_phase0=0.0, code_doppler=0.0,
     s.nav_nbits = 0
     s.gain = float(gain)
     s.prn = int(prn)
-    s.fading = FadingCfg(0, 0.0, 0.0, 0)
+    s.fading = FadingCfg()
     s.sys = 0
     s.sub_carrier_hz = 0.0
     s.sec_code = None
@@ -276,6 +279,10 @@ def bind_fading(lib: ctypes.CDLL) -> None:
     lib.fading_gain_linear.restype = ctypes.c_float
     lib.fading_gain_linear.argtypes = [
         ctypes.POINTER(FadingCfg), ctypes.c_int, ctypes.c_double]
+    lib.fading_chacha20_block.restype = None
+    lib.fading_chacha20_block.argtypes = [
+        ctypes.c_char_p, ctypes.c_uint32, ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_uint8)]
 
 
 class NativeEngineUnavailable(RuntimeError):

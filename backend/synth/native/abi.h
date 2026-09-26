@@ -10,6 +10,8 @@ typedef struct {
     double sigma_db;
     double coherence_s;
     uint64_t seed;
+    uint8_t key[32];      // ABI 27 -- keyed model
+    int domain;
 } FadingCfg;
 #endif
 #ifdef __cplusplus
@@ -17,9 +19,12 @@ extern "C" {
 #endif
 int synth_abi_version(void);
 // Deterministic per-SV fading gain (linear), C-linkage shim over
-// gs::fading_gain_linear. Depends only on (seed, prn, floor(t_s/coherence_s))
-// plus smoothstep interpolation to the next knot.
+// gs::fading_gain_linear (see fading.hpp for the lognormal and keyed models).
 float fading_gain_linear(const FadingCfg *c, int prn, double t_s);
+// ABI 27 -- RFC 8439 ChaCha20 block (key 32 B, nonce 12 B, out 64 B), the
+// PRF behind the keyed fading model; exported for test vectors.
+void fading_chacha20_block(const uint8_t *key, uint32_t counter,
+                           const uint8_t *nonce, uint8_t *out);
 // Fills out[0..8] with: l1_hz, ca_chip_hz, ca_code_len, nav_bit_hz, mu,
 // omega_e_dot, c, f_rel, gps_utc_leap. `n` must be >= 9.
 void synth_constants(double *out, int n);
