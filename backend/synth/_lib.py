@@ -486,7 +486,7 @@ def debug_one_sv(code, code_rate, code_phase0, code_doppler, carrier_freq, fs, n
     out = (ctypes.c_float * (2 * int(n)))()
     lib.synth_debug_one_sv(cptr, code_rate, code_phase0, code_doppler,
                            carrier_freq, fs, int(n), out)
-    return np.array(list(out), dtype=np.float32)
+    return np.frombuffer(out, dtype=np.float32).copy()
 
 
 def debug_one_sv_ex(code, code_rate, code_phase0, code_doppler, carrier_freq, fs,
@@ -505,7 +505,7 @@ def debug_one_sv_ex(code, code_rate, code_phase0, code_doppler, carrier_freq, fs
     lib.synth_debug_one_sv_ex(cptr, code_rate, code_phase0, code_doppler,
                               carrier_freq, fs, int(n), int(sys), sub_hz,
                               sptr, int(sec_len), sec_rate, out)
-    return np.array(list(out), dtype=np.float32)
+    return np.frombuffer(out, dtype=np.float32).copy()
 
 
 def debug_mix_range_ex(code, code_rate, code_phase0, code_doppler, carrier_freq,
@@ -526,7 +526,7 @@ def debug_mix_range_ex(code, code_rate, code_phase0, code_doppler, carrier_freq,
                                  carrier_freq, fs, int(sample0), int(n),
                                  int(sys), sub_hz, sptr, int(sec_len), sec_rate,
                                  out)
-    a = np.array(list(out), dtype=np.float32)
+    a = np.frombuffer(out, dtype=np.float32).copy()
     return a[0::2] + 1j * a[1::2]
 
 
@@ -560,7 +560,7 @@ def debug_mix_traj(code, code_rate, code_phase0, carrier_freq, fs, sample0, n,
     lib.synth_debug_mix_traj(cptr, code_rate, code_phase0, carrier_freq, fs,
                              int(sample0), int(n), int(nk), int(knot_samples),
                              cf, cph, cr, cph2, out)
-    a = np.array(list(out), dtype=np.float32)
+    a = np.frombuffer(out, dtype=np.float32).copy()
     return a[0::2] + 1j * a[1::2]
 
 
@@ -584,7 +584,7 @@ def debug_mix_gain(code, code_rate, code_phase0, carrier_freq, fs, sample0, n,
                              int(sample0), int(n), int(nthreads), int(k.size),
                              int(knot_j0), float(knot_dt),
                              kf.ctypes.data_as(_F32), out)
-    a = np.array(list(out), dtype=np.float32)
+    a = np.frombuffer(out, dtype=np.float32).copy()
     return a[0::2] + 1j * a[1::2]
 
 
@@ -628,5 +628,5 @@ def debug_mix_parallel_ex(code, code_rate, code_phase0, code_doppler,
                                     carrier_freq, fs, int(sample0), int(n),
                                     int(nthreads), int(sys), sub_hz, sptr,
                                     int(sec_len), sec_rate, out)
-    a = np.array(list(out), dtype=np.float32)
+    a = np.frombuffer(out, dtype=np.float32).copy()
     return a[0::2] + 1j * a[1::2]
