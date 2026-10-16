@@ -6,6 +6,7 @@ namespace {
 constexpr int kLen = 10230;
 constexpr uint32_t k13 = 0x1FFFu;         // 13-bit register mask
 constexpr int kXaResetChip = 8190;        // XA short-cycle reset point
+constexpr int kXbPeriod = 8191;           // XB (2^13 - 1) doğal periyodu
 
 // XA feedback taps: stages {9, 10, 12, 13}. Bit i-1 <=> stage i.
 constexpr uint32_t kXaMask =
@@ -80,7 +81,11 @@ void gen_one(int adv, int8_t *out) {
     uint32_t xa = k13;
     for (int i = 0; i < kLen; ++i) {
         const int xa_chip = static_cast<int>((xa >> (13 - 1)) & 1u);
-        const int xb_chip = xb_seq[(i + adv) % kLen];
+        // XB 13 kademeli LFSR'nin doğal periyodu 8191'dir (ICD: başlangıç
+        // durumu = hepsi-1 durumu `adv` adım ilerletilmiş hali, sonra serbest
+        // koşar). Önceki `% kLen` indeksi 10230'da sarıp, i+adv >= 10230 olan
+        // yaklaşık yarım chip'te ICD dışı kod üretiyordu.
+        const int xb_chip = xb_seq[(i + adv) % kXbPeriod];
         out[i] = (xa_chip ^ xb_chip) ? -1 : 1;
         const int xaf = parity(xa & kXaMask);
         xa = ((xa << 1) | static_cast<uint32_t>(xaf)) & k13;
