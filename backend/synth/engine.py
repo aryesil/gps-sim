@@ -750,6 +750,36 @@ def _visible_gps(req) -> list[tuple[int, dict]]:
     return out
 
 
+@dataclasses.dataclass
+class BandPlan:
+    """Per-band mixer inputs, as handed to ``_lib.fill_band``.
+
+    ``svs`` carry ctypes pointers into numpy buffers; ``keep_alive`` holds the
+    owning objects, so keep the whole ``BandPlan`` referenced while ``svs`` are
+    in use. ``nsv_scale`` is the ``nsv_ref`` gain pre-multiplier already folded
+    into every ``sv.gain``.
+    """
+    id: str
+    fs: float
+    centre_hz: float
+    quant: int
+    total_samples: int
+    block_samples: int
+    svs: list
+    keep_alive: list
+    nsv_scale: float
+
+
+@dataclasses.dataclass
+class EnginePlan:
+    bands: list
+
+
+def plan(req) -> EnginePlan:
+    """Everything ``run`` does up to (not including) ``_lib.run_bands``."""
+    return _run_impl(req, None, plan_only=True)
+
+
 def run(req, progress_cb=None) -> pathlib.Path:
     """Synthesize a multi-GNSS run with the native engine. Produces one IQ file
     per RF band (``gpssim.bin`` for L1, ``gpssim_g1.bin`` for the GLONASS G1
@@ -758,10 +788,14 @@ def run(req, progress_cb=None) -> pathlib.Path:
     GPS-only (``req.systems == ("G",)``) is byte-identical to the Phase-1
     single-band path: one L1 band, one ``gpssim.bin``.
     """
+    return _run_impl(req, progress_cb)
+
+
+def _run_impl(req, progress_cb=None, plan_only=False):
     _lib.load_lib()
 
     in_memory = bool(getattr(req, "in_memory", False))
-    if in_memory:
+    if in_memory or plan_only:
         outdir = None
         mem_buffers = {}
     else:
@@ -1166,11 +1200,13 @@ def run(req, progress_cb=None) -> pathlib.Path:
             warnings.append(p.fs_note)
 
     band_specs = []
+    band_plans = []
     keep_alive = []
     meta_bands = []
     meta_svs = []
     for plan in plans:
         sv_list = []
+        band_keep = []
         band_sys = set()
         # (sys, prn, band) with a registered dataless pilot entry: data and
         # pilot share the satellite's power equally.
@@ -1224,6 +1260,7 @@ def run(req, progress_cb=None) -> pathlib.Path:
                              fade_motion)
                 sv_list.append(c)
                 keep_alive.append(c_keep)
+                band_keep.append(c_keep)
             band_sys.add(e["sys"])
             sig = e["signal_id"]
             sv_meta = {"sys": e["sys"], "prn": e["prn"],
@@ -1288,6 +1325,12 @@ def run(req, progress_cb=None) -> pathlib.Path:
             for c in sv_list:
                 c.gain *= pnorm
         total_samples = int(round(plan.fs * req.duration_s))
+        band_plans.append(BandPlan(
+            id=plan.id, fs=plan.fs, centre_hz=plan.centre_hz, quant=plan.quant,
+            total_samples=total_samples, block_samples=_BLOCK_SAMPLES,
+            svs=sv_list, keep_alive=band_keep, nsv_scale=pnorm))
+        if plan_only:
+            continue
         bs = _lib.BandSpec()
         if in_memory:
             raw_dtype = np.int8 if req.sample_format == "int8" else np.int16
@@ -1310,6 +1353,10 @@ def run(req, progress_cb=None) -> pathlib.Path:
             "nsv_ref_scale": round(pnorm, 4),
         })
 
+    if plan_only:
+        if not band_plans:
+            raise RuntimeError("no satellites survived band planning")
+        return EnginePlan(bands=band_plans)
     if not band_specs:
         raise RuntimeError("no satellites survived band planning")
     plans_by_id = {p.id: p for p in plans}
