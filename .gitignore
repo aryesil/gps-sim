@@ -34,3 +34,6 @@ scripts/cs8_tx_selftest.py
 scripts/make_sp3_fixture.py
 scripts/sbf_monitor.py
 scripts/validate_scenario.py
+
+# xsim work dirs
+fpga/sim/work/
