@@ -179,7 +179,10 @@ def align_epochs(eph_by_prn: dict[int, dict], week: int, sow: float,
     if kepler_grid_s and kepler_grid_s > 0:
         g = float(kepler_grid_s)
         k_sow = (float(sow) // g) * g
-        # BeiDou broadcasts toe/toc on BDT = GPS - 14 s: snap on that scale.
+        # BeiDou broadcasts toe/toc on BDT = GPS - 14 s (BDT began 2006-01-01
+        # when GPST was already 14 s ahead of UTC; both scales are leap-free
+        # since, so the gap is constant): snap on that scale, then store the
+        # result back on the GPS scale (+ 14 s) like every other system.
         k_sow_bds = ((float(sow) - 14.0) // g) * g + 14.0
     out = {}
     for prn, e in eph_by_prn.items():
