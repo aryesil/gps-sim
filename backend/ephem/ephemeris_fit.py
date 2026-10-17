@@ -76,7 +76,8 @@ def _eph_from_theta(theta: np.ndarray, toe: float, gps_week: int,
 
 def _model_positions(theta: np.ndarray, tks: np.ndarray, toe: float,
                      gps_week: int, mu: float = config.MU,
-                     omega_e_dot: float = config.OMEGA_E_DOT) -> np.ndarray:
+                     omega_e_dot: float = config.OMEGA_E_DOT,
+                     toe_offset: float = 0.0) -> np.ndarray:
     """Vectorised copy of ``geometry._orbit`` + ``_ecef_from_orbit`` over an
     array of ``tk``. The scalar versions in ``backend/geometry`` remain the
     reference; this exists only so the fit's grid search and Jacobian run
@@ -103,7 +104,7 @@ def _model_positions(theta: np.ndarray, tks: np.ndarray, toe: float,
     r = A * (1.0 - e * cosE) + crs * s2 + crc * c2
     inc = i0 + idot * tks + cis * s2 + cic * c2
     xp, yp = r * np.cos(u), r * np.sin(u)
-    Omega = omega0 + (omega_dot - omega_e_dot) * tks - omega_e_dot * toe
+    Omega = omega0 + (omega_dot - omega_e_dot) * tks - omega_e_dot * (toe - toe_offset)
     cO, sO, ci, si = np.cos(Omega), np.sin(Omega), np.cos(inc), np.sin(inc)
     return np.column_stack([
         xp * cO - yp * ci * sO,
@@ -114,7 +115,8 @@ def _model_positions(theta: np.ndarray, tks: np.ndarray, toe: float,
 
 def _seed(pos: np.ndarray, vel_ecef: np.ndarray, toe: float,
          mu: float = config.MU,
-         omega_e_dot: float = config.OMEGA_E_DOT) -> np.ndarray:
+         omega_e_dot: float = config.OMEGA_E_DOT,
+         toe_offset: float = 0.0) -> np.ndarray:
     """Osculating-element seed for Gauss-Newton.
 
     ``a``/``e``/``i`` come from the inertial state (ECEF velocity plus
@@ -145,7 +147,7 @@ def _seed(pos: np.ndarray, vel_ecef: np.ndarray, toe: float,
     m_hat = np.cross(h_hat, n_hat)
     u = math.atan2(float(pos @ m_hat), float(pos @ n_hat))
     lon_node = math.atan2(node[1], node[0])
-    omega0 = lon_node + omega_e_dot * toe
+    omega0 = lon_node + omega_e_dot * (toe - toe_offset)
 
     theta = np.zeros(len(_PARAMS))
     theta[_PARAMS.index("m0")] = u
@@ -255,6 +257,7 @@ def fit_satellite(state_fn, epoch: GPSTime, *, prn, source: str,
     """
     sysp = geometry.SYS_PARAMS.get(sys, geometry.SYS_PARAMS["G"])
     mu, wdot, frel = sysp["mu"], sysp["omega_e_dot"], sysp["f_rel"]
+    toe_off = sysp.get("toe_offset_s", 0.0)
     toe = float(epoch.sow)
     half = window_s / 2.0
     sow = toe + np.linspace(-half, half, n_samples)
@@ -272,7 +275,7 @@ def fit_satellite(state_fn, epoch: GPSTime, *, prn, source: str,
         raise EphemerisFitError(f"{sys}{prn}: precise track has non-finite samples")
 
     mid = n_samples // 2
-    theta = _seed(pos[mid], vel[mid], toe, mu, wdot)
+    theta = _seed(pos[mid], vel[mid], toe, mu, wdot, toe_off)
 
     # The osculating seed can be ~0.5 rad off in mean anomaly and node
     # longitude -- outside Gauss-Newton's linearisation range. A coarse
@@ -285,7 +288,7 @@ def fit_satellite(state_fn, epoch: GPSTime, *, prn, source: str,
             t2 = theta.copy()
             t2[im] += dm
             t2[io] += do
-            rr = (_model_positions(t2, tks, toe, epoch.week, mu, wdot) - pos).reshape(-1)
+            rr = (_model_positions(t2, tks, toe, epoch.week, mu, wdot, toe_off) - pos).reshape(-1)
             c = float(rr @ rr)
             if best is None or c < best[0]:
                 best = (c, dm, do)
@@ -294,7 +297,7 @@ def fit_satellite(state_fn, epoch: GPSTime, *, prn, source: str,
 
     # Solve in normalised coordinates x = theta / _SCALE.
     def residual(x: np.ndarray) -> np.ndarray:
-        return (_model_positions(x * _SCALE, tks, toe, epoch.week, mu, wdot) - pos).reshape(-1)
+        return (_model_positions(x * _SCALE, tks, toe, epoch.week, mu, wdot, toe_off) - pos).reshape(-1)
 
     x = theta / _SCALE
     r = residual(x)

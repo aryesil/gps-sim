@@ -16,7 +16,10 @@ SYS_PARAMS = {
     "G": {"mu": config.MU,      "omega_e_dot": config.OMEGA_E_DOT, "f_rel": config.F_REL},
     "J": {"mu": config.MU,      "omega_e_dot": config.OMEGA_E_DOT, "f_rel": config.F_REL},
     "E": {"mu": 3.986004418e14, "omega_e_dot": 7.2921151467e-5,    "f_rel": -4.442807309e-10},
-    "C": {"mu": 3.986004418e14, "omega_e_dot": 7.2921150e-5,       "f_rel": -4.442807309e-10},
+    # BeiDou's toe/toc are carried on the GPS scale internally (BDT + 14 s) but the
+    # ICD's earth-rotation term uses toe on BDT: toe_offset_s is that difference.
+    "C": {"mu": 3.986004418e14, "omega_e_dot": 7.2921150e-5,       "f_rel": -4.442807309e-10,
+          "toe_offset_s": 14.0},
     # NavIC broadcasts a GPS-like Kepler element set on the GPS WGS84 datum
     # (IRNSS ICD sec 6.2.1) -- same constants as "G"/"J", own key so a
     # broadcast dict tagged system="I" resolves without falling back to G.
@@ -48,8 +51,15 @@ def _kepler_E(m: float, e: float) -> float:
     return E
 
 
+def _toe_offset(eph: dict) -> float:
+    """Seconds by which the record's ``toe`` runs ahead of the system's own
+    time scale (BeiDou: 14 s, GPS scale vs BDT; 0 for every other system)."""
+    sysp = SYS_PARAMS.get(eph.get("system", "G"), SYS_PARAMS["G"])
+    return sysp.get("toe_offset_s", 0.0)
+
+
 def _orbit(eph: dict, tk: float, mu: float = config.MU,
-          omega_e_dot: float = config.OMEGA_E_DOT):
+          omega_e_dot: float = config.OMEGA_E_DOT, toe_offset: float = 0.0):
     A = eph["sqrtA"] ** 2
     n0 = np.sqrt(mu / A ** 3)
     n = n0 + eph["delta_n"]
@@ -65,7 +75,7 @@ def _orbit(eph: dict, tk: float, mu: float = config.MU,
     xp = r * np.cos(u)
     yp = r * np.sin(u)
     Omega = (eph["omega0"] + (eph["omega_dot"] - omega_e_dot) * tk
-             - omega_e_dot * eph["toe"])
+             - omega_e_dot * (eph["toe"] - toe_offset))
     return xp, yp, i, Omega, E
 
 
@@ -116,7 +126,7 @@ def _sat_pos(eph: dict, t_gps: float):
     is_bds_geo = eph.get("system") == "C" and (
         eph.get("prn") in _BDS_GEO_PRNS or abs(eph["i0"]) < _BDS_GEO_INC_RAD)
 
-    xp, yp, i, Omega, E = _orbit(eph, tk, mu, wdot)
+    xp, yp, i, Omega, E = _orbit(eph, tk, mu, wdot, _toe_offset(eph))
     if is_bds_geo:
         pos = _bds_geo_ecef(xp, yp, i, Omega + wdot * tk, wdot * tk)
     else:
@@ -129,7 +139,7 @@ def sat_state(eph: dict, t_gps: float):
     pos, E, tk, mu, wdot, is_bds_geo, frel = _sat_pos(eph, t_gps)
 
     def _p(ttk):
-        xp, yp, i, Omega, _E = _orbit(eph, ttk, mu, wdot)
+        xp, yp, i, Omega, _E = _orbit(eph, ttk, mu, wdot, _toe_offset(eph))
         if is_bds_geo:
             return _bds_geo_ecef(xp, yp, i, Omega + wdot * ttk, wdot * ttk)
         return _ecef_from_orbit(xp, yp, i, Omega)
@@ -214,7 +224,7 @@ def solve_transmit_time(eph, rx_ecef, t_rx: float, *, compute_vel: bool = True):
         dt = 0.5
 
         def _p(ttk):
-            xp, yp, i, Omega, _E = _orbit(eph, ttk, mu, wdot)
+            xp, yp, i, Omega, _E = _orbit(eph, ttk, mu, wdot, _toe_offset(eph))
             if is_bds_geo:
                 return _bds_geo_ecef(xp, yp, i, Omega + wdot * ttk, wdot * ttk)
             return _ecef_from_orbit(xp, yp, i, Omega)

@@ -22,12 +22,15 @@ double keplerE(double m, double e) {
 //   0 GPS/QZSS, 1 Galileo, 2 BeiDou MEO/IGSO, 3 BeiDou GEO.
 // (This enum is unrelated to the code-generation `sys` int used elsewhere.)
 // BeiDou shares Galileo's mu, so it shares the same f_rel = -2*sqrt(mu)/c^2.
-struct SysP { double mu, wdot, frel; };
+// toe_off: seconds by which e->toe runs ahead of the system's own time scale.
+// BeiDou records carry toe on the GPS scale (BDT + 14 s) while the ICD's
+// -omega_e_dot*toe node term takes toe on BDT, so it uses (toe - toe_off).
+struct SysP { double mu, wdot, frel, toe_off; };
 static const SysP kSysP[4] = {
-    {gs::kMu,        gs::kOmegaEDot,  gs::kFRel},         // 0 GPS/QZSS
-    {3.986004418e14, 7.2921151467e-5, -4.442807309e-10},  // 1 Galileo
-    {3.986004418e14, 7.2921150e-5,    -4.442807309e-10},  // 2 BeiDou MEO/IGSO
-    {3.986004418e14, 7.2921150e-5,    -4.442807309e-10},  // 3 BeiDou GEO
+    {gs::kMu,        gs::kOmegaEDot,  gs::kFRel,          0.0},   // 0 GPS/QZSS
+    {3.986004418e14, 7.2921151467e-5, -4.442807309e-10,   0.0},   // 1 Galileo
+    {3.986004418e14, 7.2921150e-5,    -4.442807309e-10,  14.0},   // 2 BeiDou MEO/IGSO
+    {3.986004418e14, 7.2921150e-5,    -4.442807309e-10,  14.0},   // 3 BeiDou GEO
 };
 
 struct OrbitPt { double xp, yp, i, Omega, E; };
@@ -48,7 +51,7 @@ OrbitPt orbit(const KeplerEph *e, double tk, const SysP &sp) {
     double xp = r * std::cos(u);
     double yp = r * std::sin(u);
     double Omega = e->omega0 + (e->omega_dot - sp.wdot) * tk
-                   - sp.wdot * e->toe;
+                   - sp.wdot * (e->toe - sp.toe_off);
     return {xp, yp, i, Omega, E};
 }
 
