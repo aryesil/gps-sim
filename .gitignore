@@ -24,3 +24,13 @@ backend/synth/native/*.d
 .claude/
 data/
 
+
+# Not needed to run the software: tests, code-table generators, dev/bench scripts
+# (run_server.* and setup.sh in scripts/ stay tracked)
+tests/
+tools/
+scripts/cs8_e2e.py
+scripts/cs8_tx_selftest.py
+scripts/make_sp3_fixture.py
+scripts/sbf_monitor.py
+scripts/validate_scenario.py

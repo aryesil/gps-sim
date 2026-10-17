@@ -117,7 +117,7 @@ window.addChannel = function () {
         <label>Duration s <input type="number" id="${id}-duration" value="300"></label>
         <label title="Auto-stop live transmission when duration expires"><input type="checkbox" id="${id}-duration-autostop" checked> Auto-stop after duration</label>
         <label>Sample rate <select id="${id}-rate" title="auto: the lowest rate that holds every selected system. With the Tezuka kind, rates up to 10 Msps are sent as 16-bit samples and higher ones as 8-bit (the network link cannot carry more).">
-          <option value="auto" selected>auto</option><option value="2600000">2.6 Msps</option><option value="5000000">5 Msps</option><option value="10000000">10 Msps</option><option value="15000000">15 Msps</option><option value="20000000">20 Msps</option><option value="25000000">25 Msps</option><option value="27500000">27.5 Msps</option>
+          <option value="auto" selected>auto</option><option value="2600000">2.6 Msps</option><option value="4000000">4 Msps</option><option value="5000000">5 Msps</option><option value="8000000">8 Msps</option><option value="10000000">10 Msps</option><option value="15000000">15 Msps</option><option value="20000000">20 Msps</option><option value="25000000">25 Msps</option><option value="27500000">27.5 Msps</option>
         </select></label>
         <label>Format <select id="${id}-fmt"><option>int16</option><option>int8</option></select></label>
         <label>RINEX <input id="${id}-rinex-path" value="AUTO" size="26"></label>
