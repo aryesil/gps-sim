@@ -47,37 +47,49 @@ class EngineModel:
             self._rom[key] = bits.reshape(-1).astype(np.int64) * 2 - 1
         return self._rom[key]
 
+    def channel_terms(self, c):
+        """Per-sample terms of one channel: (a, term_i, term_q, idx), int64
+        arrays of BLOCK samples.  ``a`` is the signed 19-bit coefficient
+        (0 when the channel is invalid), ``idx`` the 12-bit carrier index and
+        term_i/q = a*COS[idx] / a*SIN[idx] (35-bit)."""
+        n = W.BLOCK
+        k = np.arange(n, dtype=np.int64)
+        if not c.valid:
+            z = np.zeros(n, np.int64)
+            return z, z.copy(), z.copy(), z.copy()
+        lim = c.code_len << W.CODE_FRAC_BITS
+        ph = (c.carr_phase0 + k * (c.carr_inc & 0xFFFFFFFF)) & 0xFFFFFFFF
+        idx = ((ph + W.LUT_ROUND) >> 20) & 0xFFF
+        cp = (c.code_phase0 + k * c.code_inc) % lim
+        chip = self._chips(c.kind, c.prn)[cp >> W.CODE_FRAC_BITS]
+        sp = c.sign_phase0 + k * c.code_inc
+        per = (c.sign_idx0 + sp // lim) % W.SIGN_BITS
+        sgn = ((c.sign_bits >> per) & 1) * 2 - 1
+        if c.boc:
+            s11 = 1 - 2 * ((cp >> (W.CODE_FRAC_BITS - 1)) & 1)
+            if c.cboc:
+                s61 = 1 - 2 * (((12 * cp) >> W.CODE_FRAC_BITS) & 1)
+                mag = np.where(c.cboc * s11 * s61 > 0, c.coef[1], c.coef[2])
+            else:
+                mag = c.coef[0]
+            coef = mag * s11
+        else:
+            coef = np.full(n, c.coef[0], np.int64)
+        a = coef * chip * sgn
+        return a, a * _COS[idx], a * _SIN[idx], idx
+
     def _process(self, chans) -> np.ndarray:
         if len(chans) > self.nch_max:
             raise ValueError(f"{len(chans)} channels > nch_max {self.nch_max}")
         n = W.BLOCK
-        k = np.arange(n, dtype=np.int64)
         acc_i = np.zeros(n, np.int64)
         acc_q = np.zeros(n, np.int64)
         for c in chans:
             if not c.valid:
                 continue
-            lim = c.code_len << W.CODE_FRAC_BITS
-            ph = (c.carr_phase0 + k * (c.carr_inc & 0xFFFFFFFF)) & 0xFFFFFFFF
-            idx = ((ph + W.LUT_ROUND) >> 20) & 0xFFF
-            cp = (c.code_phase0 + k * c.code_inc) % lim
-            chip = self._chips(c.kind, c.prn)[cp >> W.CODE_FRAC_BITS]
-            sp = c.sign_phase0 + k * c.code_inc
-            per = (c.sign_idx0 + sp // lim) % W.SIGN_BITS
-            sgn = ((c.sign_bits >> per) & 1) * 2 - 1
-            if c.boc:
-                s11 = 1 - 2 * ((cp >> (W.CODE_FRAC_BITS - 1)) & 1)
-                if c.cboc:
-                    s61 = 1 - 2 * (((12 * cp) >> W.CODE_FRAC_BITS) & 1)
-                    mag = np.where(c.cboc * s11 * s61 > 0, c.coef[1], c.coef[2])
-                else:
-                    mag = c.coef[0]
-                coef = mag * s11
-            else:
-                coef = np.full(n, c.coef[0], np.int64)
-            a = coef * chip * sgn
-            acc_i += a * _COS[idx]
-            acc_q += a * _SIN[idx]
+            _, ti, tq, _ = self.channel_terms(c)
+            acc_i += ti
+            acc_q += tq
         half = 1 << (_OUT_SHIFT - 1)
         out = np.empty((n, 2), np.int16)
         for j, acc in enumerate((acc_i, acc_q)):
