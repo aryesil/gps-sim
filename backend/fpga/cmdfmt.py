@@ -30,15 +30,24 @@ Channel record (10 words = 320 bits, no spare bits)
     w0    [11:6]   prn           0..63
     w0    [13:12]  kind          0 CA, 1 E1B, 2 E1C, 3 B1I
     w0    [14]     valid
-    w0    [15]     boc           0/1
-    w0    [17:16]  cboc          0 -> 0, 1 -> +1, 2 -> -1 (3 illegal)
-    w0    [22:18]  sign_idx0     index (0..31) of the sign bit active at the
-                                 block's first sample; consecutive code periods
-                                 use consecutive bits, wrapping mod 32
+    w0    [15]     boc           0/1; boc=0 -> plain code, cboc is ignored
+                                 and coef[0] is the amplitude
+    w0    [17:16]  cboc          0 -> 0 (plain BOC, coef[0]), 1 -> +1, 2 -> -1
+                                 (CBOC phase sign; 3 illegal).  Only used when
+                                 boc=1
+    w0    [22:18]  sign_idx0     starting bit index (0..31) into sign_bits.
+                                 The bit used at a sample is
+                                 (sign_idx0 + sign_phase // (code_len << 40))
+                                 mod 32, where sign_phase is sign_phase0 +
+                                 k*code_inc for sample k of the block and
+                                 code_len is fixed by kind (C/A 1023,
+                                 E1B/E1C 4092, B1I 2046).  The host (cmdgen)
+                                 always sends sign_idx0 = 0.
     w0    [31:23]  code_inc[8:0]
     w1    [31:0]   carr_inc      int32, two's complement, units 2**-32 cycle
     w2    [31:0]   carr_phase0   uint32
-    w3    [31:0]   sign_bits     bit i = sign of period i (1 = negative)
+    w3    [31:0]   sign_bits     bit i = sign of period i; bit value 1 means
+                                 +1 chip/polarity, 0 means -1
     w4    [31:0]   code_inc[40:9]   (code_inc is 43 bits: 3 integer + 40
     w5    [1:0]    code_inc[42:41]   fractional bits, chips per sample)
     w5    [31:2]   code_phase0[29:0]   (52 bits = 12 int + 40 frac chips,
