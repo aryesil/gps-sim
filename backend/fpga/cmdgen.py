@@ -33,6 +33,7 @@ Sign-bit convention (documented once, used by ``sign_bits_for_block``)
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 from typing import Callable, Iterator
 
@@ -40,6 +41,7 @@ import numpy as np
 
 from backend.fpga import cmdfmt, roms
 from backend.fpga import widths as W
+from backend.fpga.select import ChannelPlan, plan_channels  # noqa: F401
 
 CBOC_A = 0.95346258924559231     # kCbocA, mixer.cpp
 CBOC_B = 0.30151134457776363     # kCbocB, mixer.cpp
@@ -234,9 +236,26 @@ def _coefs(g: float, scale: float, cboc: int) -> tuple[int, int, int]:
     return c
 
 
+class _Stream:
+    """Iterator wrapper carrying the ``ChannelPlan`` of a limited run."""
+
+    def __init__(self, it, channel_plan):
+        self._it = it
+        self.channel_plan = channel_plan
+        self.dropped = channel_plan.dropped
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._it)
+
+
 def generate_blocks(band, first_block: int = 0, n_blocks: int | None = None,
                     out_lsb: float = 32767.0, *,
-                    active: Callable[[int, int], bool] | None = None
+                    active: Callable[[int, int], bool] | None = None,
+                    limit_fs: float | None = None, f_eng: float = 250e6,
+                    min_per_system: int = 3
                     ) -> Iterator[tuple[int, list[cmdfmt.ChannelBlock]]]:
     """Yield ``(first_block + j, [ChannelBlock, ...])`` for plan blocks
     j = 0 .. total_samples // block_samples - 1 (at most ``n_blocks``).
@@ -249,7 +268,18 @@ def generate_blocks(band, first_block: int = 0, n_blocks: int | None = None,
     sample index.  Keep ``band`` referenced while iterating (the SvSpec
     pointers point into ``band.keep_alive``).  Unsupported channels raise
     NotImplementedError immediately, not on the first ``next``.
+
+    ``limit_fs`` (opt-in): apply ``select.select_svs(band, limit_fs, f_eng)``
+    and generate only the kept SVs, renumbered ``ch = 0..n-1`` in plan order
+    (``active`` then sees the new indices); the amplitude scale uses the kept
+    count.  The returned iterator then has ``.channel_plan`` (kept, dropped,
+    nch, nch_max, T, fs_max).  Default None: unchanged behaviour.
     """
+    cplan = None
+    if limit_fs is not None:
+        cplan = plan_channels(band, limit_fs, f_eng, min_per_system)
+        band = dataclasses.replace(band, svs=cplan.kept,
+                                   sv_el_deg=[])
     fs = float(band.fs)
     bs = int(band.block_samples)
     nsv = len(band.svs)
@@ -297,4 +327,6 @@ def generate_blocks(band, first_block: int = 0, n_blocks: int | None = None,
                     coef=coefs[st.ch]))
             yield first_block + j, recs
 
-    return gen()
+    if cplan is None:
+        return gen()
+    return _Stream(gen(), cplan)

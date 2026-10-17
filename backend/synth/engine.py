@@ -768,6 +768,10 @@ class BandPlan:
     svs: list
     keep_alive: list
     nsv_scale: float
+    # Geometric elevation (deg) of the SV behind each ``svs`` entry, index-
+    # parallel to ``svs`` (both Galileo E1B/E1C channels carry the same value).
+    # Informational only (used by backend.fpga.select); never feeds synthesis.
+    sv_el_deg: list = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -1206,6 +1210,7 @@ def _run_impl(req, progress_cb=None, plan_only=False):
     meta_svs = []
     for plan in plans:
         sv_list = []
+        sv_el = []
         band_keep = []
         band_sys = set()
         # (sys, prn, band) with a registered dataless pilot entry: data and
@@ -1259,6 +1264,7 @@ def _run_impl(req, progress_cb=None, plan_only=False):
                     cfg.fill(c.fading, e["sys"], fade_carrier_hz, el_deg,
                              fade_motion)
                 sv_list.append(c)
+                sv_el.append(el_deg)
                 keep_alive.append(c_keep)
                 band_keep.append(c_keep)
             band_sys.add(e["sys"])
@@ -1328,7 +1334,8 @@ def _run_impl(req, progress_cb=None, plan_only=False):
         band_plans.append(BandPlan(
             id=plan.id, fs=plan.fs, centre_hz=plan.centre_hz, quant=plan.quant,
             total_samples=total_samples, block_samples=_BLOCK_SAMPLES,
-            svs=sv_list, keep_alive=band_keep, nsv_scale=pnorm))
+            svs=sv_list, keep_alive=band_keep, nsv_scale=pnorm,
+            sv_el_deg=sv_el))
         if plan_only:
             continue
         bs = _lib.BandSpec()
