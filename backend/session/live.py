@@ -116,6 +116,17 @@ def _generate_segment(seg_req, iq_filename):
     return (data, iq_filename)
 
 
+def _generate_segment_air(seg_req, iq_filename, air_name, level_dbfs, tx_scale, gain):
+    """One live segment, scaled, saturated and packed for the air (module-level
+    so a worker process runs it, see backend.rf.air). Returns
+    (AirChunk, band file name)."""
+    from backend.rf import air
+    data, iq_filename, _is_raw = _generate_segment_raw(seg_req, iq_filename)
+    chunk = air.prepare(data, air.format_by_name(air_name), level_dbfs=level_dbfs,
+                        tx_scale=tx_scale, gain=gain)
+    return chunk, iq_filename
+
+
 @dataclass
 class LiveState:
     llh: list[float]
@@ -137,6 +148,9 @@ class LiveSession:
         self._created_mono = time.monotonic()
         self.first_segment_latency_s: float | None = None
         self._pool = None
+        self._air = None          # (format, level_dbfs, tx_scale) once air_segments() is used
+        self._air_gain = None
+        self._workers = 1
         self._scratch_dir = None
         if base_req.nav_override is None and base_req.rinex_path:
             import pathlib as _pathlib
@@ -213,6 +227,26 @@ class LiveSession:
         iq, self._iq_filename = _generate_segment(seg_req, self._iq_filename)
         return iq
 
+    def air_segments(self, fmt, *, level_dbfs: float, tx_scale: float = 1.0):
+        """Like segments(), but every chunk is an air.AirChunk: scaled to the
+        TX level, saturated and packed in the worker process, so the process
+        that runs the TX pump does no per-sample work. The digital gain is
+        measured on the first segment and reused (as transmit.stream does)."""
+        self._air = (fmt.name, float(level_dbfs), float(tx_scale))
+        self._air_gain = None
+        return self.segments()
+
+    def _make_air_segment(self, k: int, snap: LiveState):
+        seg_req = self._segment_request(k, snap)
+        name, level_dbfs, tx_scale = self._air
+        args = (seg_req, self._iq_filename, name, level_dbfs, tx_scale, self._air_gain)
+        if self._pool is not None:
+            chunk, self._iq_filename = self._pool.submit(_generate_segment_air, *args).result()
+        else:
+            chunk, self._iq_filename = _generate_segment_air(*args)
+        self._air_gain = chunk.gain
+        return chunk
+
     def segments(self):
         """Generator of complex IQ chunks -- transmit.stream()'s chunk_source
         for a live session. Stops (StopIteration) once self.running is set
@@ -232,18 +266,86 @@ class LiveSession:
             import concurrent.futures
             import multiprocessing
             from backend.ephem import ephemeris
+            self._workers = max(1, int(config.LIVE_GEN_WORKERS)) if self._air else 1
             self._pool = concurrent.futures.ProcessPoolExecutor(
-                max_workers=1, mp_context=multiprocessing.get_context("spawn"),
+                max_workers=self._workers, mp_context=multiprocessing.get_context("spawn"),
                 initializer=_seed_worker_cache,
                 initargs=(dict(ephemeris._PARSE_CACHE),))
 
+        def _put(item) -> bool:
+            while self.running:
+                try:
+                    out.put(item, timeout=0.5)
+                    return True
+                except queue.Full:
+                    pass
+            return False
+
+        def _producer_pipelined():
+            """Air path with several workers: segment k+1..k+W are generated
+            while k is still being sent, results are released in order. The
+            first segment runs alone: it fixes the band file and the digital
+            gain every later segment reuses."""
+            import collections
+            inflight: collections.deque = collections.deque()   # (k, snap, future)
+            k_submit = 0
+            errors = 0
+            while self.running:
+                while (len(inflight) < self._workers and self.running
+                       and (inflight or k_submit == 0 or self._air_gain is not None)):
+                    with self._lock:
+                        snap = copy.deepcopy(self.state)
+                    args = (self._segment_request(k_submit, snap), self._iq_filename,
+                            *self._air[:3], self._air_gain)
+                    try:
+                        fut = self._pool.submit(_generate_segment_air, *args)
+                    except RuntimeError:
+                        if not self.running:      # pool shut down by stop()
+                            return
+                        raise
+                    inflight.append((k_submit, snap, fut))
+                    k_submit += 1
+                    if k_submit == 1:
+                        break          # wait for segment 0 before fanning out
+                if not inflight:
+                    return
+                k, snap, fut = inflight[0]
+                try:
+                    chunk, self._iq_filename = fut.result()
+                except RuntimeError as ex:
+                    out.put(ex)
+                    return
+                except Exception as ex:
+                    errors += 1
+                    if errors >= 3:
+                        out.put(ex)
+                        return
+                    # drop everything queued behind it and redo from k
+                    for _k, _s, f in inflight:
+                        f.cancel()
+                    inflight.clear()
+                    k_submit = k
+                    continue
+                errors = 0
+                inflight.popleft()
+                self.consecutive_errors = 0
+                if self._air_gain is None:
+                    self._air_gain = chunk.gain
+                if k == 0 and self.first_segment_latency_s is None:
+                    self.first_segment_latency_s = time.monotonic() - self._created_mono
+                if not _put(chunk):
+                    return
+
         def _producer():
+            if self._air and self._pool is not None and self._workers > 1:
+                return _producer_pipelined()
             k = 0
             while self.running:
                 with self._lock:
                     snap = copy.deepcopy(self.state)
                 try:
-                    iq = self._make_segment(k, snap)
+                    iq = (self._make_air_segment(k, snap) if self._air
+                          else self._make_segment(k, snap))
                     self.consecutive_errors = 0
                     if k == 0 and self.first_segment_latency_s is None:
                         self.first_segment_latency_s = time.monotonic() - self._created_mono

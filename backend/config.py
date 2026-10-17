@@ -151,7 +151,19 @@ TX_TDD_MODE = _flag("TX_TDD_MODE", True)
 TX_CS16_MAX_RATE_HZ = _float("TX_CS16_MAX_RATE_HZ", 10.0e6)
 TX_CS8_MAX_RATE_HZ = _float("TX_CS8_MAX_RATE_HZ", 27.5e6)
 
+# Above TX_CS8_MAX_RATE_HZ the "tezuka" kind can use 4-bit complex samples (cs4,
+# a quarter of the 16-bit link load) up to TX_CS4_MAX_RATE_HZ -- but only with a
+# Tezuka FPGA image built with CS4TX=1, which any other image plays back as
+# noise. Hence off by default; set TX_CS4_ENABLED=1 once that image is running.
+# The limit is the link: measured ~44 Msps (1 byte per sample), 40 keeps some margin.
+TX_CS4_ENABLED = _flag("TX_CS4_ENABLED", False)
+TX_CS4_MAX_RATE_HZ = _float("TX_CS4_MAX_RATE_HZ", 40.0e6)
+
 LIVE_START_LEAD_AUTO = _flag("LIVE_START_LEAD_AUTO", False)
+# Worker processes that generate and pack live segments in parallel (8-/4-bit
+# TX streams). One segment is about 0.5-1.5 CPU-seconds per second of signal at
+# 30 Msps, so a single worker cannot keep real time on a loaded PC.
+LIVE_GEN_WORKERS = max(1, int(_float("LIVE_GEN_WORKERS", min(6, max(2, (os.cpu_count() or 4) - 2)))))
 LIVE_START_LEAD_MARGIN_S = _float("LIVE_START_LEAD_MARGIN_S", 0.3)
 DEFAULT_SAMPLE_RATE = _float("DEFAULT_SAMPLE_RATE", 2.6e6)
 DEFAULT_FORMAT = _str("DEFAULT_FORMAT", "int16")

@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from backend import config, geometry, scenario, generator, inspector, auth
 from backend.ephem import ephemeris, precise, ephemeris_source, ephemeris_fit
 from backend.analysis import receiver, lnav_display
-from backend.rf import transmit, device
+from backend.rf import air, transmit, device
 from backend.rf.frontend import rf_frontend
 from backend.session import live, lead_calib
 from backend.store import trajectory, scenario_lib
@@ -1505,6 +1505,8 @@ def _tee_spectrogram(chunks, sample_rate: float, on_row, track_prn: int | None =
                 work_q.task_done()
                 break
             try:
+                # packed air chunks carry a short complex excerpt for this tap
+                chunk = getattr(chunk, "preview", chunk)
                 freqs, db = inspector.spectrum(chunk, sample_rate, nfft=256)
                 on_row(freqs, db)
                 if track_prn is not None and on_cn0 is not None:
@@ -1684,8 +1686,17 @@ def live_start(body: dict, request: Request):
             def on_cn0(metric_db):
                 q.append({"cn0_db": metric_db})
             track_prn = body.get("track_prn")
+            # 8-/4-bit Tezuka streams are scaled and packed in the generator's
+            # worker process (backend.rf.air): at tens of Msps that work in
+            # this process starves the TX pump of the GIL.
+            air_fmt = (air.air_format_for(params.kind, params.sample_rate)
+                       if params.level_dbfs is not None and not params.baseband_offset_hz
+                       else None)
+            source = (session.air_segments(air_fmt, level_dbfs=params.level_dbfs,
+                                           tx_scale=params.tx_scale)
+                      if air_fmt is not None else session.segments())
             chunk_source = _tee_spectrogram(
-                session.segments(), params.sample_rate, on_row,
+                source, params.sample_rate, on_row,
                 track_prn=int(track_prn) if track_prn else None, on_cn0=on_cn0)
             th = threading.Thread(
                 target=transmit.stream,

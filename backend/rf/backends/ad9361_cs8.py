@@ -112,6 +112,22 @@ def _push(handle, block) -> None:
     buf.push()
 
 
+AIR_BYTES_PER_SAMPLE = 2
+
+
+def air_format_for(sample_rate: float):
+    from backend.rf import air
+    return air.format_by_name("cs8")
+
+
+def write_air(handle, blocks) -> None:
+    """``blocks``: one packed uint8 block (TX1), see backend.rf.air."""
+    raw = blocks[0]
+    buf = _buffer(handle, len(raw) // 2)
+    buf.write(bytearray(raw))
+    buf.push()
+
+
 def write(handle, blocks) -> None:
     """``blocks``: one complex array (TX1)."""
     _push(handle, blocks[0])
