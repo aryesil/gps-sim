@@ -69,6 +69,7 @@ def run_rate(mode: str, uri: str, rate: float, seconds: float) -> dict:
     # coherent tone: integer number of cycles in the RX capture
     tone = round(rate / 8 / (rate / block)) * (rate / block)
     h = be.open_tx(uri, 1.57542e9, rate)
+    be.set_active_channels(h, [0])      # like dual_tx.acquire for TX1
     res = {"rate": rate, "mode": mode}
     try:
         be.set_gain(h, 0, ad9361._MUTE_GAIN_DB)
@@ -79,26 +80,27 @@ def run_rate(mode: str, uri: str, rate: float, seconds: float) -> dict:
         t0 = [time.monotonic()]
 
         def pump():
-            pos = 0
+            # the tone has a whole number of cycles per block, so one block
+            # repeated is phase-continuous: host cost stays out of the measurement
+            b = _tone_block(block, 0, rate, tone, amp)
             while not stop.is_set():
-                b = _tone_block(block, pos, rate, tone, amp)
                 be.write(h, [b])
-                pos += block
                 pushed[0] += block
 
         th = threading.Thread(target=pump, daemon=True)
         th.start()
         time.sleep(1.0)                     # let the DMA fill and settle
+        # TX throughput first, with no RX traffic on the shared libiio link
         t0[0] = time.monotonic()
         p0 = pushed[0]
-        h.rx_enabled_channels = [0]
-        h.rx_buffer_size = block
-        end = t0[0] + seconds
-        captures = []
-        while time.monotonic() < end:
-            captures.append(np.asarray(h.rx()))
+        time.sleep(seconds)
         dt = time.monotonic() - t0[0]
         res["push_ratio"] = (pushed[0] - p0) / dt / rate
+        # then one RX capture of the tone (loopback)
+        h.rx_enabled_channels = [0]
+        h.rx_buffer_size = block
+        h.rx()                              # discard: buffer start-up
+        captures = [np.asarray(h.rx())]
         res.update(analyze(captures[-1], rate, tone))
         res["pass"] = verdict(res, rate) and res["push_ratio"] > 0.98
         stop.set()
