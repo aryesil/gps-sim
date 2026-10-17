@@ -42,6 +42,7 @@ from backend.rf.backends import BACKENDS
 from backend.rf.transmit import TransmitError
 
 _BLOCK_SAMPLES = 65536
+_TEMP_CONFIRM_S = 0.05  # gap between the confirming re-reads of an over-limit sample
 _TEMP_CHECK_S = 2.0      # die-temperature guard period (config.TX_MAX_TEMP_C)
 _GET_TIMEOUT_S = 0.5     # how long the pump waits for a slot before feeding silence
 _PUT_TIMEOUT_S = 10.0    # how long push() waits for pump to drain before giving up
@@ -103,6 +104,16 @@ class _Card:
                 next_temp = time.monotonic() + _TEMP_CHECK_S
                 reader = getattr(self.backend, "temperature_c", None)
                 t = reader(self.handle) if reader is not None else None
+                if t is not None and t >= limit:
+                    # The die sensor throws isolated wild samples (seen: +104 C
+                    # and -22 C against a steady ~68 C); trip only when a quick
+                    # re-read agrees.
+                    for _ in range(2):
+                        time.sleep(_TEMP_CONFIRM_S)
+                        t2 = reader(self.handle)
+                        if t2 is None or t2 < limit:
+                            t = None
+                            break
                 if t is not None and t >= limit:
                     self.error = TransmitError(
                         f"AD9361 die temperature {t:.1f} C reached the "

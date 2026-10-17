@@ -391,3 +391,18 @@ def test_queue_depth_keeps_headroom_time_at_high_rates():
     assert dual_tx._queue_depth(2_600_000) == dual_tx._QUEUE_DEPTH
     depth = dual_tx._queue_depth(20_000_000)
     assert depth * dual_tx._BLOCK_SAMPLES / 20e6 >= dual_tx._QUEUE_HEADROOM_S
+
+
+def test_pump_ignores_isolated_temperature_spike(monkeypatch):
+    from backend import config
+    from backend.rf.backends import ad9361
+    monkeypatch.setattr(config, "TX_MAX_TEMP_C", 85.0)
+    monkeypatch.setattr(dual_tx, "_TEMP_CHECK_S", 0.0)
+    monkeypatch.setattr(dual_tx, "_TEMP_CONFIRM_S", 0.0)
+    reads = iter([104.4])                    # one wild sample, then steady
+    monkeypatch.setattr(ad9361, "temperature_c", lambda h: next(reads, 68.0))
+    sink = dual_tx.acquire("TX1", "ip:fake", 1.57542e9, 2.6e6, -50.0, "pluto")
+    card = dual_tx._card
+    time.sleep(0.3)
+    assert card.error is None
+    sink.close()
