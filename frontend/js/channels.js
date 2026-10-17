@@ -84,8 +84,9 @@ window.addChannel = function () {
         <label>Device URI <input id="${id}-uri" value="ip:192.168.3.1"></label>
         <label>SDR kind <select id="${id}-kind">
           <option value="pluto">Pluto / IIO clone</option>
+          <option value="pluto_cs8">Tezuka TX cs8 (8-bit)</option>
           <option value="bladerf">bladeRF</option>
-        </select><span class="info" title="Which driver stack talks to the URI above: PlutoSDR/AD936x IIO clones (libiio), or a Nuand bladeRF (libbladeRF). Both TX1/TX2 slots must agree on this -- they're two ports of the same physical card.">i</span></label>
+        </select><span class="info" title="Which driver stack talks to the URI above: PlutoSDR/AD936x IIO clones (libiio), a Nuand bladeRF (libbladeRF), or a Tezuka LibreSDR image with the TX cs8 FPGA mode (8-bit complex samples, TX1 only). Both TX1/TX2 slots must agree on this -- they're two ports of the same physical card.">i</span></label>
         <div class="device-row">
           <button id="${id}-dev-connect" class="btn-secondary">Connect</button>
           <span id="${id}-dev-status" class="dev-status dev-off">not connected</span>
