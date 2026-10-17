@@ -39,3 +39,8 @@ scripts/validate_scenario.py
 fpga/sim/work/
 
 fpga/vec/
+
+# Vivado droppings
+*.str
+vivado*.jou
+vivado*.log
