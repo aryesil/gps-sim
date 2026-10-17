@@ -143,6 +143,14 @@ TX_MAX_TEMP_C = _float("TX_MAX_TEMP_C", 85.0)
 # backend stays in FDD. 0 keeps FDD, e.g. for loopback self-tests that RX.
 TX_TDD_MODE = _flag("TX_TDD_MODE", True)
 
+# Tezuka ("tezuka" SDR kind) picks the TX sample format from the sample rate:
+# 16-bit complex up to TX_CS16_MAX_RATE_HZ, then 8-bit complex (cs8, halves the
+# link load) up to TX_CS8_MAX_RATE_HZ. The libiio network link to a LibreSDR
+# sustains ~55-60 MB/s, which measured ~14 Msps for cs16 and ~27-30 Msps for
+# cs8; keep the cs16 limit at ~70% of that and the cs8 limit just under it.
+TX_CS16_MAX_RATE_HZ = _float("TX_CS16_MAX_RATE_HZ", 10.0e6)
+TX_CS8_MAX_RATE_HZ = _float("TX_CS8_MAX_RATE_HZ", 27.5e6)
+
 LIVE_START_LEAD_AUTO = _flag("LIVE_START_LEAD_AUTO", False)
 LIVE_START_LEAD_MARGIN_S = _float("LIVE_START_LEAD_MARGIN_S", 0.3)
 DEFAULT_SAMPLE_RATE = _float("DEFAULT_SAMPLE_RATE", 2.6e6)

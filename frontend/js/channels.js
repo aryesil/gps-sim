@@ -84,9 +84,10 @@ window.addChannel = function () {
         <label>Device URI <input id="${id}-uri" value="ip:192.168.3.1"></label>
         <label>SDR kind <select id="${id}-kind">
           <option value="pluto">Pluto / IIO clone</option>
-          <option value="pluto_cs8">Tezuka TX cs8 (8-bit)</option>
+          <option value="tezuka">Tezuka (auto 16/8-bit)</option>
+          <option value="pluto_cs8">Tezuka TX cs8 (8-bit only)</option>
           <option value="bladerf">bladeRF</option>
-        </select><span class="info" title="Which driver stack talks to the URI above: PlutoSDR/AD936x IIO clones (libiio), a Nuand bladeRF (libbladeRF), or a Tezuka LibreSDR image with the TX cs8 FPGA mode (8-bit complex samples, TX1 only). Both TX1/TX2 slots must agree on this -- they're two ports of the same physical card.">i</span></label>
+        </select><span class="info" title="Which driver stack talks to the URI above: PlutoSDR/AD936x IIO clones (libiio), a Nuand bladeRF (libbladeRF), or a Tezuka LibreSDR image with the TX cs8 FPGA mode (8-bit complex samples, TX1 only). Tezuka (auto) picks 16-bit up to 10 Msps and 8-bit above, from the sample rate; 8-bit drives TX1 only. Both TX1/TX2 slots must agree on this -- they're two ports of the same physical card.">i</span></label>
         <div class="device-row">
           <button id="${id}-dev-connect" class="btn-secondary">Connect</button>
           <span id="${id}-dev-status" class="dev-status dev-off">not connected</span>
@@ -115,8 +116,8 @@ window.addChannel = function () {
         <label title="Live Start only: run on the real current GPS time (needed by phones / A-GPS receivers)"><input type="checkbox" id="${id}-start-now"> Live: now</label>
         <label>Duration s <input type="number" id="${id}-duration" value="300"></label>
         <label title="Auto-stop live transmission when duration expires"><input type="checkbox" id="${id}-duration-autostop" checked> Auto-stop after duration</label>
-        <label>Sample rate <select id="${id}-rate" title="auto: the lowest rate that holds every selected system">
-          <option value="auto" selected>auto</option><option>2600000</option><option>4000000</option><option>5000000</option><option>8000000</option><option>10000000</option><option>15000000</option>
+        <label>Sample rate <select id="${id}-rate" title="auto: the lowest rate that holds every selected system. With the Tezuka kind, rates up to 10 Msps are sent as 16-bit samples and higher ones as 8-bit (the network link cannot carry more).">
+          <option value="auto" selected>auto</option><option value="2600000">2.6 Msps</option><option value="5000000">5 Msps</option><option value="10000000">10 Msps</option><option value="15000000">15 Msps</option><option value="20000000">20 Msps</option><option value="25000000">25 Msps</option><option value="27500000">27.5 Msps</option>
         </select></label>
         <label>Format <select id="${id}-fmt"><option>int16</option><option>int8</option></select></label>
         <label>RINEX <input id="${id}-rinex-path" value="AUTO" size="26"></label>
@@ -211,7 +212,7 @@ window.addChannel = function () {
             <label><input type="checkbox" id="${id}-sys-I"> NavIC</label>
           </fieldset>
           <fieldset class="band-set"><legend>RF bands (native)</legend>
-            <label><input type="checkbox" id="${id}-band-L1" checked disabled> L1 <span class="hint">1575.42 MHz</span></label>
+            <label><input type="checkbox" id="${id}-band-L1" title="GPS/QZSS/SBAS L1 C/A, Galileo E1, BeiDou B1I. GLONASS G1 is a separate band: leave all boxes empty to get every selected system on its own native band."> L1 <span class="hint">1575.42 MHz</span></label>
             <label><input type="checkbox" id="${id}-band-L2" title="GPS L2C, GLONASS L2OF"> L2 <span class="hint">1227.60 MHz</span></label>
             <label><input type="checkbox" id="${id}-band-L5" title="GPS/QZSS L5, Galileo E5a, BeiDou B2a, NavIC L5-SPS"> L5 <span class="hint">1176.45 MHz</span></label>
           </fieldset>
@@ -468,7 +469,7 @@ function wireChannelActions(id) {
         else box.checked = true;
       }
     });
-    ['L2', 'L5'].forEach(b => {
+    ['L1', 'L2', 'L5'].forEach(b => {
       const box = document.getElementById(`${id}-band-${b}`);
       box.disabled = !isNative;
       if (!isNative) box.checked = false;
@@ -536,8 +537,7 @@ function wireChannelActions(id) {
       s => document.getElementById(`${id}-sys-${s}`).checked);
     const bandBoxes = ['L1', 'L2', 'L5'].filter(
       b => document.getElementById(`${id}-band-${b}`).checked);
-    const bands = (bandBoxes.length && !(bandBoxes.length === 1 && bandBoxes[0] === 'L1'))
-      ? bandBoxes.join(',') : '';
+    const bands = bandBoxes.join(',');
     const token = ++_loReqToken;
     fetch(`/api/native/band_centre?systems=${encodeURIComponent(sys.join(','))}` +
           `&bands=${encodeURIComponent(bands)}`)
@@ -565,8 +565,7 @@ function wireChannelActions(id) {
       s => document.getElementById(`${id}-sys-${s}`).checked);
     const bandBoxes = ['L1', 'L2', 'L5'].filter(
       b => document.getElementById(`${id}-band-${b}`).checked);
-    const bands = (bandBoxes.length && !(bandBoxes.length === 1 && bandBoxes[0] === 'L1'))
-      ? bandBoxes.join(',') : '';
+    const bands = bandBoxes.join(',');
     const token = ++_fsReqToken;
     fetch(`/api/native/band_centre?systems=${encodeURIComponent(sys.join(','))}` +
           `&bands=${encodeURIComponent(bands)}`)
@@ -603,18 +602,9 @@ function wireChannelActions(id) {
   _refreshLoHz();
   _refreshAutoFs();
 
-  // Band checkboxes: L1 is always implicitly available (it's the legacy
-  // default), so never let a user land on zero bands checked -- fall back
-  // to L1 rather than send /api/generate a request `_engineBody()` would
-  // turn into `bands: []` (422 on the backend).
-  ['L2', 'L5'].forEach(b => {
-    document.getElementById(`${id}-band-${b}`).addEventListener('change', () => {
-      const anyChecked = ['L1', 'L2', 'L5'].some(
-        x => document.getElementById(`${id}-band-${x}`).checked);
-      if (!anyChecked) document.getElementById(`${id}-band-L1`).checked = true;
-      _refreshLoHz();
-    });
-  });
+  // Band checkboxes are independent. None ticked means no "bands" key is
+  // sent, so every selected system uses its own native band (GPS on L1,
+  // GLONASS on G1, BeiDou on B1I, ...); ticking any sends that explicit list.
 
   // Scenario library: save/load this channel's whole config by name, the
   // same file-per-name pattern as trajectory save/load (backend/scenario_lib.py).
@@ -988,11 +978,8 @@ function wireChannelActions(id) {
     if (sys.length > 0) out.systems = sys;
     const bandBoxes = ["L1", "L2", "L5"].filter(
       b => document.getElementById(`${id}-band-${b}`).checked);
-    // ["L1"] alone is the implicit legacy default -- omit it so an untouched
-    // panel still produces a byte-identical request.
-    if (bandBoxes.length && !(bandBoxes.length === 1 && bandBoxes[0] === "L1")) {
-      out.bands = bandBoxes;
-    }
+    // No box ticked: omit "bands" (each system on its own native band).
+    if (bandBoxes.length) out.bands = bandBoxes;
     return Object.keys(out).length ? out : null;
   }
 

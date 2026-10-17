@@ -112,11 +112,16 @@ def _open_device(params: TxParams):
                             xo_ppm=params.xo_ppm)
 
 
-def _dac_full_scale(kind: str) -> float:
+def _dac_full_scale(kind: str, sample_rate: float | None = None) -> float:
     from backend.rf.backends import BACKENDS
     backend = BACKENDS.get(kind)
     if backend is None:
         raise TransmitError(f"unknown SDR kind {kind!r}: must be one of {sorted(BACKENDS)}")
+    # Backends that choose their sample format from the rate (tezuka) expose
+    # the full scale of the format they will pick.
+    per_rate = getattr(backend, "dac_full_scale_for", None)
+    if per_rate is not None and sample_rate:
+        return float(per_rate(sample_rate))
     return float(backend.DAC_FULL_SCALE)
 
 
@@ -175,7 +180,7 @@ def stream(params: TxParams, dry_run: bool = False, progress_cb=None,
     if params.sample_rate < _TX_RATE_MIN:
         raise TransmitError(f"{params.sample_rate} Hz below AD936x TX minimum {_TX_RATE_MIN}")
 
-    dac_fs = _dac_full_scale(params.kind)
+    dac_fs = _dac_full_scale(params.kind, params.sample_rate)
     sink = _DrySink(params.sample_rate)
     if not dry_run:
         try:
