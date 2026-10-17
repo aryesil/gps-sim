@@ -370,5 +370,3 @@ def run_segment(base_req: scenario.ScenarioRequest, llh: tuple[float, float, flo
     _run_gps_sdr_sim(argv, duration_s)
     return outdir
 
-
-_original_run = run

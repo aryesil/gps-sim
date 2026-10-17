@@ -171,28 +171,6 @@ window.attachSpectrumHover = function (canvasId, readoutId) {
   });
 };
 
-window.drawCorrelationCurve = function (canvasId, chips, amp) {
-  const { g, W, H } = fitCanvas(canvasId);
-  g.clearRect(0, 0, W, H);
-  if (!amp.length) return;
-  const hi = _arrayMax(amp);
-  g.strokeStyle = '#a06'; g.lineWidth = 1; g.beginPath();
-  amp.forEach((v, k) => {
-    const x = (chips[k] / 1023) * W, y = H - (v / hi) * (H - 4);
-    k === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
-  });
-  g.stroke();
-};
-
-window.loadCorrelationCurve = async function (canvasId, readoutId, outdir, prn) {
-  const r = await fetch(`/api/correlation?outdir=${encodeURIComponent(outdir)}&prn=${prn}`);
-  const out = document.getElementById(readoutId);
-  if (!r.ok) { out.textContent = 'correlation error ' + r.status; return; }
-  const d = await r.json();
-  drawCorrelationCurve(canvasId, d.code_phase_chips, d.amplitude);
-  out.textContent = `G${d.prn}: Doppler ${d.doppler_hz.toFixed(0)} Hz, peak ${d.metric_db.toFixed(1)} dB`;
-};
-
 // GPS-only runs: one bar per acquired PRN, height = metric_db from the
 // inspect step (backend/inspector.py:compare -> acquire).
 // Multi-GNSS runs: inspector is GPS L1 C/A only, so there is no per-PRN

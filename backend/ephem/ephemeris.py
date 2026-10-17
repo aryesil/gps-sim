@@ -64,7 +64,6 @@ _VARMAP_STATE = {
 }
 
 _KEPLER_SYS = frozenset("GJECI")
-_STATE_SYS = frozenset("RS")
 
 
 _GPS_EPOCH = dt.datetime(1980, 1, 6)

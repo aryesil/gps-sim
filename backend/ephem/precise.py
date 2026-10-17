@@ -36,7 +36,6 @@ from dataclasses import dataclass, field
 from backend.gpstime import GPSTime, WEEK_SECONDS
 
 # SP3 "bad or absent" sentinels.
-_SP3_BAD_POS_KM = 0.0            # an all-zero position row = no data for that SV/epoch
 _SP3_BAD_CLOCK_US = 999999.999999
 
 
