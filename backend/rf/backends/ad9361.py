@@ -17,6 +17,7 @@ import logging
 
 import numpy as np
 
+from backend import config
 from backend.rf._iio_probe import probe_temp_channel
 from backend.rf.transmit import TransmitError
 
@@ -99,6 +100,45 @@ def _set_ensm_mode(handle, mode: str) -> None:
         pass
 
 
+_FDD_FLAG = "adi,frequency-division-duplex-mode-enable"
+
+
+def _set_duplex_mode(handle, fdd: bool) -> bool:
+    """Switch the chip between FDD and TDD through the driver's debugfs
+    (duplex flag + ``initialize``). The ENSM only offers the ``tx`` state in
+    TDD. Re-initialising resets the whole device (rates, LOs, gains), so this
+    runs before the TX configuration, and TX is silenced around it: TX LO off,
+    attenuation to the maximum as soon as the chip is back. The setting is
+    not persistent. Returns True when the chip is in the requested mode."""
+    ctrl = getattr(handle, "_ctrl", None)
+    da = getattr(ctrl, "debug_attrs", None) if ctrl is not None else None
+    want = "1" if fdd else "0"
+    try:
+        if da is None or _FDD_FLAG not in da or "initialize" not in da:
+            return False
+        if str(da[_FDD_FLAG].value).strip() == want:
+            return True
+        _set_tx_lo_powerdown(handle, True)
+        _set_ensm_mode(handle, "alert")
+        da[_FDD_FLAG].value = want
+        da["initialize"].value = "1"
+    except Exception as ex:
+        _log.warning("AD9361 duplex mode switch failed (%s); staying as is", ex)
+        return False
+    for c in range(2):
+        try:
+            setattr(handle, f"tx_hardwaregain_chan{c}", _MUTE_GAIN_DB)
+        except Exception:
+            pass
+    _set_tx_lo_powerdown(handle, True)
+    _set_rx_lo_powerdown(handle, True)
+    _set_ensm_mode(handle, "alert")
+    try:
+        return str(da[_FDD_FLAG].value).strip() == want
+    except Exception:
+        return False
+
+
 def _count_tx_channels(handle) -> int:
     """Complex TX channels the DDS core really exposes. A stock
     PlutoSDR/AD9363 runs 1R1T (voltage0/1 only); 2 needs a 2R2T mode
@@ -175,6 +215,11 @@ def open_tx(uri: str, lo_hz: float, sample_rate: float, *,
 
 
 def _configure_tx(sdr, lo_hz, sample_rate, rf_bandwidth_hz, xo_ppm):
+    # First: re-initialising the chip wipes everything configured below.
+    sdr._gs_tdd = bool(config.TX_TDD_MODE) and _set_duplex_mode(sdr, fdd=False)
+    if config.TX_TDD_MODE and not sdr._gs_tdd:
+        _log.warning("TX_TDD_MODE is on but the chip could not be put in TDD; "
+                     "transmitting in FDD (RX path stays powered, hotter)")
     n_tx = _count_tx_channels(sdr)
     sdr._gs_n_tx = n_tx
     sdr._gs_active = list(range(n_tx))
@@ -206,7 +251,7 @@ def _configure_tx(sdr, lo_hz, sample_rate, rf_bandwidth_hz, xo_ppm):
         pass
     _set_rx_lo_powerdown(sdr, True)
     _set_tx_lo_powerdown(sdr, False)
-    _set_ensm_mode(sdr, "fdd")
+    _set_ensm_mode(sdr, "tx" if sdr._gs_tdd else "fdd")
     err = _tx_rate_error_ppm(sdr, sample_rate)
     if err is not None and abs(err) > 0.05:
         # The BBPLL setting the driver picks depends on its previous state;
@@ -287,6 +332,15 @@ def close(handle) -> None:
     _set_rx_lo_powerdown(handle, True)
     _set_tx_lo_powerdown(handle, True)
     _set_ensm_mode(handle, "alert")
+    leave_tdd(handle)
+
+
+def leave_tdd(handle) -> None:
+    """Back to the device's normal FDD mode after a TDD transmit, so RX users
+    of the same radio (probe_close, other tools) find it as usual."""
+    if getattr(handle, "_gs_tdd", False):
+        handle._gs_tdd = False
+        _set_duplex_mode(handle, fdd=True)
 
 
 def probe_open(uri: str):

@@ -14,10 +14,14 @@ against the requested one (below ~0.98 the link cannot keep up).
 from __future__ import annotations
 
 import argparse
+import os
 import threading
 import time
 
 import numpy as np
+
+# The loopback receives through the same chip; TDD's tx state switches RX off.
+os.environ.setdefault("TX_TDD_MODE", "0")
 
 
 def analyze(iq: np.ndarray, rate: float, tone_hz: float) -> dict:

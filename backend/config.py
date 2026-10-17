@@ -136,6 +136,13 @@ LIVE_START_LEAD_S = _float("LIVE_START_LEAD_S", 2.5)
 # (85 C operating ambient); boards without a heatsink can get there at high rates.
 TX_MAX_TEMP_C = _float("TX_MAX_TEMP_C", 85.0)
 
+# Run AD9361 TX in TDD mode (ENSM "tx" state) instead of FDD. In FDD the RX
+# signal path stays powered during transmit; the "tx" state switches it off,
+# which measured ~26 C cooler at 20 Msps on a LibreSDR (no heatsink).
+# Needs the driver's debugfs (initialize + duplex flag); without it the
+# backend stays in FDD. 0 keeps FDD, e.g. for loopback self-tests that RX.
+TX_TDD_MODE = _flag("TX_TDD_MODE", True)
+
 LIVE_START_LEAD_AUTO = _flag("LIVE_START_LEAD_AUTO", False)
 LIVE_START_LEAD_MARGIN_S = _float("LIVE_START_LEAD_MARGIN_S", 0.3)
 DEFAULT_SAMPLE_RATE = _float("DEFAULT_SAMPLE_RATE", 2.6e6)

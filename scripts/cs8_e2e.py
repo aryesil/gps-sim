@@ -13,12 +13,16 @@ TX gain is refused above --max-gain (default -50 dB).
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import pathlib
 import threading
 import time
 
 import numpy as np
+
+# The loopback receives through the same chip; TDD's tx state switches RX off.
+os.environ.setdefault("TX_TDD_MODE", "0")
 
 
 def main() -> int:

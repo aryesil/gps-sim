@@ -141,3 +141,4 @@ def close(handle) -> None:
     _base._set_rx_lo_powerdown(handle, True)
     _base._set_tx_lo_powerdown(handle, True)
     _base._set_ensm_mode(handle, "alert")
+    _base.leave_tdd(handle)
