@@ -121,3 +121,10 @@ def test_leave_tdd_restores_fdd_once():
     n = len(phy.log)
     ad9361.leave_tdd(h)            # second call: nothing to do
     assert len(phy.log) == n
+
+
+def test_kernel_buffers_cover_dma_headroom_at_high_rates():
+    assert ad9361.kernel_buffers_for(2_600_000) == ad9361._KERNEL_BUFFERS
+    n = ad9361.kernel_buffers_for(20_000_000)
+    assert n * ad9361._KERNEL_BUFFER_SAMPLES / 20e6 >= ad9361._DMA_HEADROOM_S
+    assert n <= 128

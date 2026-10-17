@@ -14,6 +14,7 @@ per-channel TX gain the way ad9361 does.
 from __future__ import annotations
 
 import logging
+import math
 
 import numpy as np
 
@@ -29,12 +30,23 @@ _XO_NOMINAL_HZ = 40e6        # PlutoSDR / AD936x reference oscillator
 _RF_BW_MIN_HZ = 200e3        # AD9361 TX analog filter programmable range
 _RF_BW_MAX_HZ = 40e6
 _KERNEL_BUFFERS = 16
+_KERNEL_BUFFER_SAMPLES = 65536   # dual_tx._BLOCK_SAMPLES: one kernel buffer per pushed block
+_DMA_HEADROOM_S = 0.2            # signal time the DAC DMA can run on without the host
 
 # pyadi-iio's tx() casts the complex array to int16 and writes the raw words
 # into the DMA buffer; the AD9361 DAC uses the 12 MOST significant bits of
 # each word. Full scale is therefore int16's, not 12-bit's (ADI's Pluto
 # examples scale unit signals by 2**14 for 6 dB headroom).
 DAC_FULL_SCALE = 32767
+
+
+def kernel_buffers_for(sample_rate: float) -> int:
+    """Kernel DMA buffers for a TX rate. The DAC repeats its last buffer when it
+    runs dry and the host never sees it, so the buffers have to ride out link and
+    iiod stalls: 16 blocks are 400 ms at 2.6 Msps but only 52 ms at 20 Msps.
+    """
+    n = int(math.ceil(_DMA_HEADROOM_S * float(sample_rate) / _KERNEL_BUFFER_SAMPLES))
+    return min(max(_KERNEL_BUFFERS, n), 128)
 
 
 def _tx_rate_error_ppm(handle, nominal_hz: float) -> float | None:
@@ -246,7 +258,7 @@ def _configure_tx(sdr, lo_hz, sample_rate, rf_bandwidth_hz, xo_ppm):
         # GIL held by segment generation) underruns the DAC DMA, which
         # the host never sees. Must be set before the first tx() creates
         # the buffer.
-        sdr._txdac.set_kernel_buffers_count(_KERNEL_BUFFERS)
+        sdr._txdac.set_kernel_buffers_count(kernel_buffers_for(sample_rate))
     except Exception:
         pass
     _set_rx_lo_powerdown(sdr, True)
