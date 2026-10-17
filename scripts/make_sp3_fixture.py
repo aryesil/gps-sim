@@ -8,7 +8,7 @@ PRN so a broadcast-vs-precise comparison shows non-zero, bounded deltas.
 
 Because the underlying curve is a smooth Kepler orbit, interpolation accuracy
 can be checked against geometry.sat_state at an off-grid epoch
-(tests/test_precise.py). The per-PRN bias/clock offsets are recorded in
+(tests/ephem/test_precise.py). The per-PRN bias/clock offsets are recorded in
 igs_sample_truth.json.
 
 Run from the repo root:  python scripts/make_sp3_fixture.py

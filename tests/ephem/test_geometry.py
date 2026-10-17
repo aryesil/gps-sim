@@ -9,7 +9,7 @@ import pytest
 from backend import geometry
 from backend.ephem import ephemeris
 
-FIXDIR = pathlib.Path(__file__).parent / "fixtures"
+FIXDIR = pathlib.Path(__file__).parents[1] / "fixtures"
 RX_LLH = (41.0082, 28.9784, 100.0)
 T_RX = 475200.0  # GPS TOW seconds, fixed for the fixture day (== fixture toe)
 

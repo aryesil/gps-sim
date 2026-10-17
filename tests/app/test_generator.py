@@ -10,7 +10,7 @@ import pytest
 from backend import generator, scenario
 from tests._fake_binary_launcher import launcher_for
 
-_FIX = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+_FIX = pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_sample.rnx"
 
 
 def test_parse_progress_reads_time_line():

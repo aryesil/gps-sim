@@ -22,7 +22,7 @@ pytestmark = [
     pytest.mark.xfail(reason="F3: generator.run's subprocess crashes only under pytest", strict=False),
 ]
 
-FIX = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+FIX = pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_sample.rnx"
 RX_LLH = (41.0082, 28.9784, 100.0)
 
 

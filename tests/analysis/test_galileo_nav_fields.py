@@ -12,7 +12,7 @@ from backend.analysis import inav_encode, nav_encoders
 from backend.ephem import ephemeris
 from backend.synth import signals
 
-_RINEX = str(pathlib.Path(__file__).parent / "fixtures" / "brdc_mixed.rnx")
+_RINEX = str(pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_mixed.rnx")
 _START = dt.datetime(2026, 9, 1, 6)
 
 

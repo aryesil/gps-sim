@@ -13,7 +13,7 @@ from backend.ephem.precise import (
     InterpolationWindowError, SatelliteNotInProduct, parse_sp3, _neville_clean,
 )
 
-FIXDIR = pathlib.Path(__file__).parent / "fixtures"
+FIXDIR = pathlib.Path(__file__).parents[1] / "fixtures"
 SP3 = FIXDIR / "igs_sample.sp3"
 TRUTH = json.loads((FIXDIR / "igs_sample_truth.json").read_text())
 BRDC = FIXDIR / "brdc_sample.rnx"

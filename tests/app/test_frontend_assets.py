@@ -1,6 +1,6 @@
 import pathlib
 
-F = pathlib.Path(__file__).parent.parent / "frontend"
+F = pathlib.Path(__file__).parents[2] / "frontend"
 
 
 def _rd(name):

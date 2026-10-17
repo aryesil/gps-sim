@@ -38,7 +38,7 @@ def test_list_names_empty_when_no_recordings(tmp_path, monkeypatch):
 
 def test_live_start_with_record_flag_creates_replayable_recording(monkeypatch):
     monkeypatch.setattr(config, "ALLOW_TX", True)
-    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    fixture = pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_sample.rnx"
     r = client.post("/api/live/start", json={
         "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
         "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,

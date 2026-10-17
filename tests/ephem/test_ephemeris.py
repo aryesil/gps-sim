@@ -7,7 +7,7 @@ import pytest
 
 from backend.ephem import ephemeris
 
-FIX = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+FIX = pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_sample.rnx"
 
 
 def test_parse_rinex_returns_prn_keyed_ephemeris():

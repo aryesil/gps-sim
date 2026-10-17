@@ -9,7 +9,7 @@ from backend import geometry
 from backend.gpstime import GPSTime
 from backend.ephem.precise import PreciseEphemerisProvider
 
-FIX = pathlib.Path(__file__).parent / "fixtures"
+FIX = pathlib.Path(__file__).parents[1] / "fixtures"
 WEEK = 2433
 TOE = 475200.0
 

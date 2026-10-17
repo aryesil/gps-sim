@@ -129,7 +129,7 @@ def test_live_start_honours_explicit_slot_selection(monkeypatch):
     import pathlib
     monkeypatch.setattr(config, "ALLOW_TX", True)
     from backend import app as app_module
-    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    fixture = pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_sample.rnx"
     r = client.post("/api/live/start", json={
         "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
         "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
@@ -147,7 +147,7 @@ def test_live_start_sse_carries_rf_plan_when_layer_enabled(monkeypatch):
     import pathlib
     monkeypatch.setattr(config, "ALLOW_TX", True)
     monkeypatch.setattr(config, "RF_FRONTEND_ENABLED", True)
-    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    fixture = pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_sample.rnx"
     r = client.post("/api/live/start", json={
         "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
         "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
@@ -169,7 +169,7 @@ def test_live_start_forwards_kind_to_tx_params(monkeypatch):
         return real_stream(params, **kwargs)
 
     monkeypatch.setattr(transmit, "stream", spy_stream)
-    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    fixture = pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_sample.rnx"
     r = client.post("/api/live/start", json={
         "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
         "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
@@ -191,7 +191,7 @@ def test_live_start_defaults_kind_to_pluto(monkeypatch):
         return real_stream(params, **kwargs)
 
     monkeypatch.setattr(transmit, "stream", spy_stream)
-    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    fixture = pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_sample.rnx"
     r = client.post("/api/live/start", json={
         "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
         "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
@@ -439,7 +439,7 @@ def test_live_start_forwards_native_band_selection(monkeypatch):
     is a real distinct band with its own, much higher, sample-rate floor)."""
     import pathlib
     monkeypatch.setattr(config, "ALLOW_TX", True)
-    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    fixture = pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_sample.rnx"
     r = client.post("/api/live/start", json={
         "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
         "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
@@ -465,7 +465,7 @@ def test_live_start_uses_the_resolved_bands_real_sample_rate(monkeypatch):
         seen["lo_hz"] = params.lo_hz
         return real_stream(params, **kwargs)
     monkeypatch.setattr(transmit, "stream", spy_stream)
-    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    fixture = pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_sample.rnx"
     r = client.post("/api/live/start", json={
         "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
         "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
@@ -484,7 +484,7 @@ def test_live_start_rejects_beidou_with_l1_below_the_spanning_rate(monkeypatch):
     import pathlib
     monkeypatch.setattr(config, "ALLOW_TX", True)
     from backend import app as app_module
-    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_mixed.rnx"
+    fixture = pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_mixed.rnx"
     r = client.post("/api/live/start", json={
         "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
         "start_utc": "2026-09-01T06:00:00", "confirm_isolated": True,
@@ -516,7 +516,7 @@ def test_live_start_auto_stops_after_max_duration(monkeypatch):
     slot's stop event) even if nobody calls /api/live/stop."""
     import pathlib
     monkeypatch.setattr(config, "ALLOW_TX", True)
-    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    fixture = pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_sample.rnx"
     r = client.post("/api/live/start", json={
         "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
         "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
@@ -557,7 +557,7 @@ def test_live_start_runs_timeline_steps_in_order(monkeypatch):
     (timeline_step) and to the persistent audit log."""
     import pathlib
     monkeypatch.setattr(config, "ALLOW_TX", True)
-    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    fixture = pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_sample.rnx"
     r = client.post("/api/live/start", json={
         "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
         "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
@@ -582,7 +582,7 @@ def test_live_start_now_runs_on_current_time_plus_lead(monkeypatch):
         real_init(self, base_req, *a, **k)
 
     monkeypatch.setattr(live.LiveSession, "__init__", spy_init)
-    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    fixture = pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_sample.rnx"
     t0 = dt.datetime.utcnow()
     r = client.post("/api/live/start", json={
         "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
@@ -606,7 +606,7 @@ def test_live_status_reports_slot_state():
 
 def _live_body(**extra):
     import pathlib
-    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    fixture = pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_sample.rnx"
     return {"rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
             "start_utc": "2024-01-01T00:00:00", "confirm_isolated": True,
             "dry_run": True, "duration_s": 3600, "max_duration_s": 0.05, **extra}
@@ -665,7 +665,7 @@ def test_live_start_now_reports_first_segment_lead(monkeypatch):
     import pathlib
     monkeypatch.setattr(config, "ALLOW_TX", True)
     monkeypatch.setattr(config, "LIVE_START_LEAD_AUTO", False)
-    fixture = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+    fixture = pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_sample.rnx"
     r = client.post("/api/live/start", json={
         "rinex_path": str(fixture), "lat": 41.0, "lon": 29.0, "alt": 100.0,
         "start_utc": "now", "confirm_isolated": True, "engine": "native",

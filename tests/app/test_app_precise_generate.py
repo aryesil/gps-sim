@@ -16,7 +16,7 @@ from backend import app as app_mod
 from backend.app import app
 
 client = TestClient(app)
-FIXDIR = pathlib.Path(__file__).parent / "fixtures"
+FIXDIR = pathlib.Path(__file__).parents[1] / "fixtures"
 SP3 = str(FIXDIR / "igs_sample.sp3")
 BRDC = str(FIXDIR / "brdc_sample.rnx")
 START = dt.datetime(2026, 8, 28, 11, 59, 42)

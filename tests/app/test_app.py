@@ -9,7 +9,7 @@ from backend import app as appmod
 
 client = TestClient(appmod.app)
 
-_MIXED = str(pathlib.Path(__file__).parent / "fixtures" / "brdc_mixed.rnx")
+_MIXED = str(pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_mixed.rnx")
 
 
 @pytest.fixture(name="client")

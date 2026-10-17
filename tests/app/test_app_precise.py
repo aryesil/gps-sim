@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from backend.app import app
 
 client = TestClient(app)
-FIXDIR = pathlib.Path(__file__).parent / "fixtures"
+FIXDIR = pathlib.Path(__file__).parents[1] / "fixtures"
 SP3 = str(FIXDIR / "igs_sample.sp3")
 BRDC = str(FIXDIR / "brdc_sample.rnx")
 RX = {"lat": 41.0082, "lon": 28.9784, "alt": 100.0}

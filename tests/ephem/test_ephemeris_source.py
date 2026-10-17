@@ -10,7 +10,7 @@ from backend.ephem.ephemeris_source import (
     build_state_fns, normalise_mode, EphemerisModeError,
 )
 
-FIXDIR = pathlib.Path(__file__).parent / "fixtures"
+FIXDIR = pathlib.Path(__file__).parents[1] / "fixtures"
 TRUTH = json.loads((FIXDIR / "igs_sample_truth.json").read_text())
 WEEK, TOE = TRUTH["gps_week"], TRUTH["toe_sow"]
 

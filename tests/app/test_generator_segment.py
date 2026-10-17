@@ -14,7 +14,7 @@ pytestmark = [
     pytest.mark.xfail(reason="F3: generator.run_segment's subprocess crashes only under pytest", strict=False),
 ]
 
-_FIX = pathlib.Path(__file__).parent / "fixtures" / "brdc_sample.rnx"
+_FIX = pathlib.Path(__file__).parents[1] / "fixtures" / "brdc_sample.rnx"
 
 
 def _base_req(rinex_path):

@@ -9,7 +9,7 @@ import pytest
 
 from backend.synth import fading
 
-_JS = pathlib.Path(__file__).parent.parent / "frontend" / "js" / "fading.js"
+_JS = pathlib.Path(__file__).parents[2] / "frontend" / "js" / "fading.js"
 _KEY = bytes(range(7, 39)).hex()
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None,
