@@ -360,12 +360,54 @@ def _demod(iq, fs, code, *, chip_hz, code_len, carrier_ctr_hz, dopp_hz,
             out[k] = float(fr[np.argmax(np.abs(np.fft.fft(sq)))]) / 2.0
         return out, nbk
 
-    p_full = _subcorr(d)
-    fblk, nb = _block_freqs(p_full)
-    if nb > 3:
+    def _robust_line(x, y):
+        """Aykırı değerlere dayanıklı doğru uydurma (eğim, kesişim).
+
+        Theil-Sen (ikili eğimlerin medyanı) başlangıç verir, sonra MAD
+        tabanlı kırpma + en küçük kareler ile rafine edilir. Kod fazı
+        kayınca (aşağıya bakın) son bloklar rastgele frekans verir; düz
+        polyfit bu aykırılarla bozulup taşıyıcıyı hiç kilitleyemiyordu.
+        """
+        i, j = np.triu_indices(x.size, 1)
+        sl = float(np.median((y[j] - y[i]) / (x[j] - x[i])))
+        ic = float(np.median(y - sl * x))
+        res = y - (sl * x + ic)
+        thr = max(3.0, 4.0 * 1.4826 * float(np.median(np.abs(res - np.median(res)))))
+        keep = np.abs(res) < thr
+        if keep.sum() >= 3:
+            sl, ic = np.polyfit(x[keep], y[keep], 1)
+        return float(sl), float(ic)
+
+    # Kod fazı Doppler sürüklenmesini de izlemeli: kod hızı taşıyıcıya
+    # chip_hz/carrier_ctr_hz ile bağlı olduğundan, sabit-Doppler replikası
+    # c1 Hz/s'lik sürüklenmede 0.5*c1*T^2*oran chip kayar (L5'te -0.4 Hz/s,
+    # 25 s'de ~1 chip). Kayma ~1 chip'e varınca korelasyon çöker ve sonraki
+    # bloklar gürültü olur. Bu yüzden sürüklenmeyi bloklardan kestirip
+    # replikayı (kod + taşıyıcı) chirp'li olarak yeniden korele ediyoruz;
+    # kalan düzeltme ihmal edilebilir olunca (kayma < 0.2 chip; blok frekansları 1 Hz nicemli) duruyoruz.
+    ratio = chip_hz / carrier_ctr_hz
+    t_tot = nsym * sym_s
+    drift = 0.0
+    c0 = c1 = 0.0
+    nb = 0
+    # İlk tur yalnızca ilk ~12 s'lik önek üzerinde (kayma henüz <0.5 chip,
+    # korelasyon sağlam) sürüklenmeyi kestirir; tam uzunluklu turlar ancak
+    # chirp'li replikayla koşar, böylece maliyet ~1 tam geçiş + önek kalır.
+    n_pre = 1200 if nsym > 1500 else None
+    for it in range(4):
+        pre = it == 0 and n_pre is not None
+        p_full = _subcorr(d, drift=drift, nlim=n_pre if pre else None)
+        fblk, nb = _block_freqs(p_full)
+        if nb <= 3:
+            break
         bt_s = (np.arange(nb) + 0.5) * B * sym_s
-        c1, c0 = np.polyfit(bt_s, fblk, 1)
-        d += float(c0)
+        c1, c0 = _robust_line(bt_s, fblk)
+        slip = (abs(c0) * t_tot + 0.5 * abs(c1) * t_tot * t_tot) * ratio
+        if not pre and (slip < 0.2 or it == 3):
+            break
+        d += c0
+        drift += c1
+    if nb > 3:
         t_sub = (np.arange(nsym, dtype=np.float64)[:, None]
                  + (np.arange(m, dtype=np.float64)[None, :] + 0.5) / m) * sym_s
         p_full = p_full * np.exp(-1j * (2.0 * np.pi * float(c0) * t_sub + np.pi * float(c1) * (t_sub ** 2)))
