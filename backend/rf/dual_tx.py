@@ -30,6 +30,7 @@ machinery.
 """
 from __future__ import annotations
 
+import math
 import queue
 import threading
 import time
@@ -44,9 +45,19 @@ _BLOCK_SAMPLES = 65536
 _TEMP_CHECK_S = 2.0      # die-temperature guard period (config.TX_MAX_TEMP_C)
 _GET_TIMEOUT_S = 0.5     # how long the pump waits for a slot before feeding silence
 _PUT_TIMEOUT_S = 10.0    # how long push() waits for pump to drain before giving up
-_QUEUE_DEPTH = 8         # ~8 blocks of smoothing headroom per slot
+_QUEUE_DEPTH = 8         # minimum blocks of smoothing headroom per slot
+_QUEUE_HEADROOM_S = 0.2   # ...and at least this much signal time at high rates
 _SLOT_CHAN = {"TX1": 0, "TX2": 1}
 _CHAN_SLOT = {v: k for k, v in _SLOT_CHAN.items()}
+
+
+def _queue_depth(sample_rate: float) -> int:
+    """Blocks a slot queue holds. 8 blocks are 26 ms at 20 Msps, shorter than the
+    per-segment scaling/clipping the feeder does between two 1 s chunks, so the
+    pump ran dry once per segment; keep at least _QUEUE_HEADROOM_S of signal.
+    """
+    blocks = int(math.ceil(_QUEUE_HEADROOM_S * float(sample_rate) / _BLOCK_SAMPLES))
+    return max(_QUEUE_DEPTH, blocks)
 
 
 class _Card:
@@ -148,7 +159,7 @@ class _Card:
 
     def register(self, slot: str) -> None:
         with self.lock:
-            self.queues[slot] = queue.Queue(maxsize=_QUEUE_DEPTH)
+            self.queues[slot] = queue.Queue(maxsize=_queue_depth(self.sample_rate))
             self.underflow.setdefault(slot, 0)
             self.active += 1
 

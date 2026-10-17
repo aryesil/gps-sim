@@ -384,3 +384,10 @@ def test_pump_keeps_running_below_temperature_limit(monkeypatch):
     time.sleep(0.3)
     assert card.error is None
     sink.close()
+
+
+def test_queue_depth_keeps_headroom_time_at_high_rates():
+    # 8 blocks are 200 ms at 2.6 Msps but only 26 ms at 20 Msps
+    assert dual_tx._queue_depth(2_600_000) == dual_tx._QUEUE_DEPTH
+    depth = dual_tx._queue_depth(20_000_000)
+    assert depth * dual_tx._BLOCK_SAMPLES / 20e6 >= dual_tx._QUEUE_HEADROOM_S
