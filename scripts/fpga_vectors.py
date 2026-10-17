@@ -34,8 +34,16 @@ Cases: ca1 e1b e1c b1i (single channel, 2 blocks), gce12 (12 channels,
 2 blocks), gce45 (whole GCE plan, 1 block), gapcase (gce12 blocks 0,1,3),
 latecase (gce12 blocks 0,1 then block 0 again), maxch (64 synthetic channels,
 1 block).  Plan cases use fs = 30 Msps and the standard test scenario of
-tests/fpga/test_cmdgen.py.  The pack_par/pack_st helpers for the packed RTL
-records are added by the task that defines those layouts.
+tests/fpga/test_cmdgen.py.
+
+Pipe test vectors (ca1 e1b e1c b1i, and `pair` = ca1 channel in slot 0 + e1c
+channel in slot 1, 2 blocks each):
+  fpga/vec/<name>_par.hex  one packed PAR record (gs_defs.vh, 173 bit =
+                           44 hex digits) per line, block-major, channel
+                           (slot) minor: line = block*NCH + slot.
+  fpga/vec/<name>_st.hex   same order, packed ST record (148 bit = 37 digits).
+  fpga/vec/pair_term.hex   same format as <name>_term.hex.
+`pack_par(chan)` / `pack_st(chan)` return python ints following gs_defs.vh.
 """
 from __future__ import annotations
 
@@ -61,6 +69,7 @@ B = W.BLOCK
 RINEX = ROOT / "data" / "rinex" / "BRDC_2026289.rnx"
 FS = 30e6
 CASES = ["ca1", "e1b", "e1c", "b1i", "gce12", "gce45", "gapcase", "latecase", "maxch"]
+PIPE_CASES = ["ca1", "e1b", "e1c", "b1i"]     # + "pair" (see write_pair)
 
 
 def _wr(path, lines):
@@ -110,6 +119,61 @@ def write_cmdfmt_vh(path=VH_PATH):
     pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="\n") as f:
         f.write(cmdfmt_vh())
+
+
+# ------------------------------------------------- packed pipe records
+def pack_par(c) -> int:
+    """PAR record of gs_defs.vh (173 bit) from a cmdfmt.ChannelBlock."""
+    cb = {0: 0, 1: 1, -1: 2}[c.cboc]
+    m18 = (1 << W.COEF_BITS) - 1
+    v = (int(bool(c.valid)) | (int(c.boc) & 1) << 1 | cb << 2 | c.kind << 4
+         | c.prn << 6 | (c.carr_inc & 0xFFFFFFFF) << 12
+         | (c.code_inc & ((1 << 43) - 1)) << 44 | c.sign_bits << 87
+         | (c.coef[0] & m18) << 119 | (c.coef[1] & m18) << 137
+         | (c.coef[2] & m18) << 155)
+    return v
+
+
+def pack_st(c) -> int:
+    """ST record of gs_defs.vh (148 bit) from a cmdfmt.ChannelBlock."""
+    lim = c.code_len << W.CODE_FRAC_BITS
+    assert 0 <= c.sign_phase0 < lim and 0 <= c.code_phase0 < lim
+    return (c.carr_phase0 | c.code_phase0 << 32 | c.sign_phase0 << 84
+            | c.sign_idx0 << 136 | (c.code_phase0 >> 45) << 141)
+
+
+def write_pipe_vectors(name, blocks, d=VEC_DIR):
+    """blocks = [(idx, [ChannelBlock])]; slot = list position."""
+    par = [f"{pack_par(c):044x}" for _, ch in blocks for c in ch]
+    st = [f"{pack_st(c):037x}" for _, ch in blocks for c in ch]
+    _wr(pathlib.Path(d) / f"{name}_par.hex", par)
+    _wr(pathlib.Path(d) / f"{name}_st.hex", st)
+
+
+def block_terms(m, blocks):
+    ti, tq = [], []
+    for _, chans in blocks:
+        si = np.zeros(B, np.int64)
+        sq = np.zeros(B, np.int64)
+        for c in chans:
+            _, a, b, _ = m.channel_terms(c)
+            si += a
+            sq += b
+        ti.append(si)
+        tq.append(sq)
+    return np.concatenate(ti), np.concatenate(tq)
+
+
+def write_pair(d=VEC_DIR):
+    """Two channels (ca1 in slot 0, e1c in slot 1) summed, 2 blocks."""
+    ba = build_case("ca1")["feed"]
+    bb = build_case("e1c")["feed"]
+    blocks = [(i, ba[i][1] + bb[i][1]) for i in range(2)]
+    m = EngineModel(FS)
+    ti, tq = block_terms(m, blocks)
+    write_term_vector("pair", ti, tq, d)
+    write_pipe_vectors("pair", blocks, d)
+    return dict(name="pair", samples=len(ti))
 
 
 # -------------------------------------------------------------- vectors
@@ -282,17 +346,9 @@ def write_case(name, d=VEC_DIR):
     write_out_vector(name, out, d)
     write_cnt(name, m, d)
     if cs["term"]:
-        ti, tq = [], []
-        for _, chans in cs["feed"]:
-            si = np.zeros(B, np.int64)
-            sq = np.zeros(B, np.int64)
-            for c in chans:
-                _, a, b, _ = m.channel_terms(c)
-                si += a
-                sq += b
-            ti.append(si)
-            tq.append(sq)
-        write_term_vector(name, np.concatenate(ti), np.concatenate(tq), d)
+        ti, tq = block_terms(m, cs["feed"])
+        write_term_vector(name, ti, tq, d)
+        write_pipe_vectors(name, cs["feed"], d)
     return dict(name=name, samples=len(out), underruns=m.underruns,
                 dropped_late=m.dropped_late, clipped=m.clipped)
 
@@ -309,8 +365,13 @@ def main(argv=None):
     else:
         if not a.name:
             ap.error("case needs a name")
-        for n in (CASES if a.name == "all" else [a.name]):
-            print(write_case(n))
+        if a.name == "pair":
+            print(write_pair())
+        else:
+            for n in (CASES if a.name == "all" else [a.name]):
+                print(write_case(n))
+            if a.name == "all":
+                print(write_pair())
     return 0
 
 
