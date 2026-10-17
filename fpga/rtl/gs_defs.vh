@@ -19,8 +19,23 @@
 `endif
 
 // ---------------------------------------------------------------------------
-// Packed record layouts (GS_PAR_W, GS_ST_W, GS_SCI_W) are added here by the
-// pipe task (Task 2), together with scripts/fpga_vectors.py pack_par/pack_st.
+// Packed record layouts (normative; loader -> pipe, pipe -> scanner).
+// PAR (static, written by the loader into the shadow bank), GS_PAR_W = 173:
+//   [0] valid  [1] boc  [3:2] cboc (wire encoding 0,1=+1,2=-1)  [5:4] kind
+//   [11:6] prn  [43:12] carr_inc  [86:44] code_inc (43 bit)
+//   [118:87] sign_bits  [136:119] coef0  [154:137] coef1  [172:155] coef2
+// ST (dynamic initial state), GS_ST_W = 148:
+//   [31:0] carr_phase  [83:32] cp (code phase, 52 bit)  [135:84] sp_frac
+//   [140:136] per (= sign_idx0, since sign_phase0 < code_len<<40)
+//   [147:141] cur_widx (= code_phase0 >> 45)
+// A loader write (l_we) writes PAR+ST of the shadow entry, clears cur_loaded
+// (cur_widx taken from ST) and clears nxt_loaded.
+// SCI (scanner info, comb from sc_slot/sc_bank), GS_SCI_W = 25:
+//   [0] valid  [2:1] kind  [8:3] prn  [9] cur_loaded  [16:10] cur_widx
+//   [23:17] nxt_widx  [24] nxt_loaded
 // ---------------------------------------------------------------------------
+`define GS_PAR_W 173
+`define GS_ST_W  148
+`define GS_SCI_W 25
 
 `endif
