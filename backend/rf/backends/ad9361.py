@@ -116,6 +116,17 @@ def _count_tx_channels(handle) -> int:
     return 2   # unknown (older pyadi, mocks): keep the historic assumption
 
 
+def temperature_c(handle) -> float | None:
+    """AD9361 die temperature in deg C, or None when the driver has no sensor."""
+    try:
+        ch = probe_temp_channel(getattr(handle, "_ctrl", None))
+        if ch is None:
+            return None
+        return float(ch.attrs["input"].value) / 1000.0
+    except Exception:
+        return None
+
+
 def n_tx_channels(handle) -> int:
     """Complex TX channels the hardware has."""
     return int(getattr(handle, "_gs_n_tx", 2))

@@ -354,3 +354,33 @@ def test_open_failure_closes_the_device_handle(monkeypatch):
         dual_tx.acquire("TX1", "ip:1.2.3.4", 1575420000.0, 2_600_000.0, -30.0)
     assert _FakeAD9361.instances[-1].destroyed is True
     assert dual_tx._card is None
+
+
+def test_pump_stops_when_die_temperature_exceeds_limit(monkeypatch):
+    from backend import config
+    from backend.rf.backends import ad9361
+    monkeypatch.setattr(config, "TX_MAX_TEMP_C", 70.0)
+    monkeypatch.setattr(dual_tx, "_TEMP_CHECK_S", 0.0)
+    monkeypatch.setattr(ad9361, "temperature_c", lambda h: 91.5)
+    sink = dual_tx.acquire("TX1", "ip:fake", 1.57542e9, 2.6e6, -50.0, "pluto")
+    card = dual_tx._card
+    for _ in range(100):
+        if card.error is not None:
+            break
+        time.sleep(0.02)
+    assert isinstance(card.error, transmit.TransmitError)
+    assert "91.5" in str(card.error) and "TX_MAX_TEMP_C" in str(card.error)
+    sink.close()
+
+
+def test_pump_keeps_running_below_temperature_limit(monkeypatch):
+    from backend import config
+    from backend.rf.backends import ad9361
+    monkeypatch.setattr(config, "TX_MAX_TEMP_C", 85.0)
+    monkeypatch.setattr(dual_tx, "_TEMP_CHECK_S", 0.0)
+    monkeypatch.setattr(ad9361, "temperature_c", lambda h: 60.0)
+    sink = dual_tx.acquire("TX1", "ip:fake", 1.57542e9, 2.6e6, -50.0, "pluto")
+    card = dual_tx._card
+    time.sleep(0.3)
+    assert card.error is None
+    sink.close()

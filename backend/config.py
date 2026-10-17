@@ -131,6 +131,11 @@ LIVE_START_LEAD_S = _float("LIVE_START_LEAD_S", 2.5)
 # yazar; aynı cihaz/hız/sistem/bant için sonraki Start Now'ın öncü süresi
 # medyan ölçüm + TX tamponu + LIVE_START_LEAD_MARGIN_S olur (backend/session/
 # lead_calib.py). Ölçüm yokken sabit değer kullanılır.
+# AD9361 die temperature (deg C) above which a running TX stream is stopped.
+# 0 disables the guard. The chip's absolute maximum junction temperature is 125 C
+# (85 C operating ambient); boards without a heatsink can get there at high rates.
+TX_MAX_TEMP_C = _float("TX_MAX_TEMP_C", 85.0)
+
 LIVE_START_LEAD_AUTO = _flag("LIVE_START_LEAD_AUTO", False)
 LIVE_START_LEAD_MARGIN_S = _float("LIVE_START_LEAD_MARGIN_S", 0.3)
 DEFAULT_SAMPLE_RATE = _float("DEFAULT_SAMPLE_RATE", 2.6e6)

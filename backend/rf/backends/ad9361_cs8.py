@@ -35,6 +35,7 @@ set_gain = _base.set_gain
 probe_open = _base.probe_open
 probe_close = _base.probe_close
 probe_info = _base.probe_info
+temperature_c = _base.temperature_c
 
 
 def n_tx_channels(handle) -> int:

@@ -32,13 +32,16 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 
 import numpy as np
 
+from backend import config
 from backend.rf.backends import BACKENDS
 from backend.rf.transmit import TransmitError
 
 _BLOCK_SAMPLES = 65536
+_TEMP_CHECK_S = 2.0      # die-temperature guard period (config.TX_MAX_TEMP_C)
 _GET_TIMEOUT_S = 0.5     # how long the pump waits for a slot before feeding silence
 _PUT_TIMEOUT_S = 10.0    # how long push() waits for pump to drain before giving up
 _QUEUE_DEPTH = 8         # ~8 blocks of smoothing headroom per slot
@@ -80,7 +83,21 @@ class _Card:
     def _pump_loop(self) -> None:
         zero = np.zeros(_BLOCK_SAMPLES, dtype=np.complex64)
         stop = self.stop
+        next_temp = time.monotonic() + _TEMP_CHECK_S
         while not stop.is_set():
+            # Isı koruması: ısınan bir kart (soğutucusuz, yüksek hız) çipin
+            # sınırına gitmeden yayın durdurulur; hata üreticiye iletilir.
+            limit = float(getattr(config, "TX_MAX_TEMP_C", 0.0) or 0.0)
+            if limit > 0 and time.monotonic() >= next_temp:
+                next_temp = time.monotonic() + _TEMP_CHECK_S
+                reader = getattr(self.backend, "temperature_c", None)
+                t = reader(self.handle) if reader is not None else None
+                if t is not None and t >= limit:
+                    self.error = TransmitError(
+                        f"AD9361 die temperature {t:.1f} C reached the "
+                        f"{limit:.0f} C limit (TX_MAX_TEMP_C); stream stopped")
+                    stop.set()
+                    return
             with self.lock:
                 slots = dict(self.queues)
             blocks = []
