@@ -1,0 +1,5 @@
+*.sh eol=lf
+*.v eol=lf
+*.vh eol=lf
+*.hex eol=lf
+*.mem eol=lf
