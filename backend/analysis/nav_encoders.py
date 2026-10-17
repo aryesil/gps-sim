@@ -140,6 +140,19 @@ GST_WEEK_OFFSET = 1024
 
 # BeiDou Time runs 14 s behind GPS time and its week count starts 1356 GPS
 # weeks later (BDS-SIS-ICD 5.1.2).
+#
+# Why 14 s: both GPST and BDT are continuous (no leap seconds) and both equal
+# UTC at their own epoch. BDT started at 2006-01-01 00:00:00 UTC, when GPST was
+# already 14 s ahead of UTC (the 14 leap seconds inserted since 1980). Leap
+# seconds after 2006 (2008, 2012, 2015, 2016) moved both scales together, so
+# GPST - BDT stays exactly 14 s (GPST-UTC = 18 s now, BDT-UTC = 4 s).
+#
+# Inside this code base BeiDou toe/toc are kept on the GPS scale (BDT + 14 s)
+# so the engine can use one clock; they are shifted by this constant only
+# where something is broadcast. Anything that uses toe by its *value* rather
+# than as an interval (the -omega_e * toe node term in geometry._orbit,
+# ephem.cpp and ephemeris_fit) must undo that shift: see
+# geometry.SYS_PARAMS["C"]["toe_offset_s"].
 BDT_MINUS_GPS_S = -14.0
 BDT_WEEK_OFFSET = 1356
 

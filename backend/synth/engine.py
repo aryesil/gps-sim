@@ -879,7 +879,7 @@ def run(req, progress_cb=None) -> pathlib.Path:
             # Fit on the toe grid (BDT grid for BeiDou), not at the run
             # start itself -- see ephemeris.align_epochs(kepler_grid_s).
             def _fit_epoch(sc):
-                off = 14.0 if sc == "C" else 0.0
+                off = 14.0 if sc == "C" else 0.0   # GPST - BDT, see nav_encoders
                 return GPSTime(p_week, ((p_sow - off) // _TOE_GRID_S)
                                * _TOE_GRID_S + off)
             fit_source = getattr(provider.product, "source", "precise")
