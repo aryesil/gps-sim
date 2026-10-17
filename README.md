@@ -2,7 +2,7 @@
 
 A controlled, observable, and reproducible multi-constellation GNSS signal testing workbench.
 
-Pick a place and time on a map, generate baseband IQ recordings across multiple GNSS bands, check them with a built-in software receiver, decode broadcast navigation messages directly from IQ, and — into a cable and never over the air — replay them live to a PlutoSDR-class SDR or a Nuand bladeRF. Every RF-relevant action is written to a persistent audit log.
+Pick a place and time on a map, generate baseband IQ recordings across multiple GNSS bands, check them with a built-in software receiver, decode broadcast navigation messages directly from IQ, and — into a cable and never over the air — replay them live to a PlutoSDR-class SDR, a Tezuka LibreSDR or a Nuand bladeRF. Every RF-relevant action is written to a persistent audit log.
 
 **High-Performance Native C++ Engine:**  
 Powered by a built-in C++20 engine that renders **GPS (L1 C/A, L2C, L5), GLONASS (G1, G2), Galileo (E1, E5a), BeiDou (B1I, B2a), QZSS (L1 C/A, L5), SBAS (L1), and NavIC (L5)** from a correlated multi-constellation geometry (synchronized receive epoch so cross-system acquisition lines up). Supports completely arbitrary constellation selection (Galileo-only, BeiDou-only, GPS-free multi-GNSS), per-satellite land-mobile-satellite channel fading (seeded or cryptographically unpredictable ChaCha20), and multi-band RF routing (1575.42 MHz L1 group, 1602 MHz GLONASS FDMA, 1227.60 MHz L2, 1176.45 MHz L5).
@@ -47,7 +47,9 @@ Signal generation runs from broadcast ephemeris by default; in **precise mode** 
   - **Galileo E1:** I/NAV pages (250 sym/s, rate-1/2 FEC, 10-word reconstructor) compliant with Galileo OS SIS ICD Issue 2.0/2.1.
   - **BeiDou B1I:** D1 navigation frames (50 bps) with BCH (15,11,1) decoding, deinterleaving, and NH20 secondary code wipe-off.
   - **SBAS L1:** RTCA DO-229 / ICAO Annex 10 compliant 500 sym/s stream, rate-1/2 K=7 convolutional FEC, direct-form CRC-24Q, Type 9 GEO navigation messages.
-- **Transmit (opt-in)** — push IQ to a PlutoSDR-class device (`pyadi-iio`) or a Nuand bladeRF (`libbladeRF`), selectable per channel (`kind: pluto` or `kind: bladerf`), with underflow tracking, thread cancellation, and fail-safe auto-stop timeouts. An RF frontend layer plans LO-offsets (`DISABLED` / `MANUAL` / `AUTO`) between the AD9361 LO and target frequency, auto-triggering TX quadrature calibration.
+- **Transmit (opt-in)** — push IQ to a PlutoSDR-class device (`pyadi-iio`), a Tezuka LibreSDR or a Nuand bladeRF (`libbladeRF`), selectable per channel (`kind: pluto`, `tezuka`, `pluto_cs8` or `bladerf`), with underflow tracking, thread cancellation, and fail-safe auto-stop timeouts. An RF frontend layer plans LO-offsets (`DISABLED` / `MANUAL` / `AUTO`) between the AD9361 LO and target frequency, auto-triggering TX quadrature calibration.
+  - **Tezuka automatic sample format** — `kind: tezuka` picks the TX format from the sample rate: 16-bit complex up to 10 Msps, 8-bit complex (cs8, needs the Tezuka image built with `CS8TX=1`) from 10 up to 27.5 Msps, and refuses anything above. The libiio network link of a LibreSDR sustains roughly 55-60 MB/s, which measured about 14 Msps for 16-bit and 27-30 Msps for 8-bit samples; the defaults leave headroom below that. 8-bit mode drives TX1 only. `pluto_cs8` forces 8-bit at any rate.
+  - **Thermal management** — the AD9361 runs in TDD mode while transmitting (ENSM `tx` state, RX path off), which measured 26-40 °C cooler than FDD on a LibreSDR without heatsink, and a die-temperature guard stops the stream above `TX_MAX_TEMP_C`.
 - **Live Session (`Start Now`)** — direct in-memory live streaming to SDR with zero disk wait:
   - **Strict Time Continuity** — GPS transmit time advances strictly forward ($t = k \times 1.0\text{ s}$ for $k=0, 1, 2, \dots$); time never rewinds or replays.
   - **Live Controls & Scripting** — jog receiver coordinates and shift GPS time on-the-fly while transmitting; scheduled timeline scripting (`jog` and `time_shift` at $t + N\text{ s}$).
@@ -78,15 +80,11 @@ Many signal generators emit raw samples without self-validation tools. This work
 ./scripts/run_server.sh      # serves http://127.0.0.1:8000
 ```
 
+On Windows, `run_server.bat` starts the same server.
+
 `setup.sh` creates `.venv`, runs `pip install -e ".[dev]"`, and builds native SDR libraries into the virtual environment prefix (`libiio` + `libad9361-iio` for Pluto, `libbladeRF` for bladeRF). Specify `SDR_KIND=pluto|bladerf|both` to skip interactive prompts.
 
 `run_server.sh` activates `.venv`, sets dynamic library paths, and launches Uvicorn. Pass `ALLOW_TX=1 ./scripts/run_server.sh` to enable hardware transmission.
-
-Run the test suite:
-
-```sh
-pytest -q
-```
 
 ---
 
@@ -158,9 +156,12 @@ backend/
   rf/               Hardware transmission:
                     transmit.py (SDR streaming, buffer management, underflow tracking)
                     device.py (control links), dual_tx.py (TX1/TX2 arbitration)
-                    backends/ (ad9361.py via pyadi-iio, bladerf.py via libbladeRF)
+                    backends/ (ad9361.py via pyadi-iio, ad9361_cs8.py 8-bit TX for Tezuka,
+                              tezuka.py picks 16/8-bit from the sample rate, bladerf.py via libbladeRF)
                     frontend/ (LO-offset planner, automatic TX quadrature calibration)
   session/          live.py (LiveSession: in-memory streaming, time progression, jog, timeline)
+
+scripts/            setup.sh, run_server.sh / run_server.bat
 
 frontend/           Vanilla JavaScript and CSS (no build step required):
   index.html        Single-page application (Channels, Trajectory Builder, Log)
@@ -192,9 +193,9 @@ The frontend is organized into three main views accessible from the sidebar:
 
 ### 1. Channels
 Each channel card controls an independent transmission channel (up to two slots: TX1 and TX2):
-- **Hardware Config:** Device URI, SDR Kind (Pluto or bladeRF), TX Slot, LO Frequency (with Auto resolution), TX Gain (−50 dB default), Dry Run, Auto-Stop timeout, Session Recording.
-- **Simulation Config:** Map reference position, Start UTC, Duration, Sample Rate (auto-resolves lowest rate for chosen constellations), Format (`int16` / `int8`), RINEX path (`AUTO` or manual).
-- **Constellation & Band Selector:** Freely toggle GPS, GLONASS, Galileo, BeiDou, QZSS, SBAS, and NavIC, and select RF bands (L1, L2, L5). GPS is not mandatory.
+- **Hardware Config:** Device URI, SDR Kind (Pluto, Tezuka auto 16/8-bit, Tezuka 8-bit only, or bladeRF), TX Slot, LO Frequency (with Auto resolution), TX Gain (−50 dB default), Dry Run, Auto-Stop timeout, Session Recording.
+- **Simulation Config:** Map reference position, Start UTC, Duration, Sample Rate (`auto` resolves the lowest rate for the chosen constellations; manual presets are 2.6, 4, 5, 8, 10, 15, 20, 25 and 27.5 Msps), Format (`int16` / `int8`), RINEX path (`AUTO` or manual).
+- **Constellation & Band Selector:** Freely toggle GPS, GLONASS, Galileo, BeiDou, QZSS, SBAS, and NavIC, and select RF bands. L1, L2 and L5 are independent checkboxes, none ticked by default: with none ticked every selected system uses its own native band (GPS L1, GLONASS G1, BeiDou B1I, ...), with any ticked only those bands are generated (a GLONASS selection then needs no L1 box, but L1 alone does not include G1). GPS is not mandatory.
 - **Advanced Sub-Tabs:**
   - **SP3:** Manual SP3 loading and interactive broadcast-vs-precise comparison charts.
   - **RF Impairments:** CFO, sample clock drift, phase noise, IQ imbalance, DC offset, AWGN.
@@ -225,7 +226,7 @@ Displays the persistent JSONL audit trail merged with the live `/ws/events` WebS
 
 ### Real-time live transmission (`Start Now`)
 1. Connect SDR TX to the receiver RF input via **≥ 40 dB in-line attenuation** (cabled setup only).
-2. Set Device URI (e.g., `ip:192.168.3.1`) and select SDR kind (`pluto` or `bladerf`).
+2. Set Device URI (e.g., `ip:192.168.3.1`) and select SDR kind (`pluto`, `tezuka` or `bladerf`). Choose a sample rate of up to 27.5 Msps with `tezuka`; the 16-bit/8-bit switch happens by itself at 10 Msps.
 3. Check `Live: now` to synchronize with current real-world GPS time (essential for smartphones and A-GPS receivers).
 4. Uncheck `Auto-stop after duration` to allow continuous streaming indefinitely, or specify an auto-stop duration.
 5. Confirm the isolated setup prompt and click **Start Now**. The signal is synthesized directly in memory and streamed via DMA without disk bottlenecks.
@@ -263,6 +264,10 @@ Configured via environment variables (see `backend/config.py`):
 | `LIVE_START_LEAD_S` | `2.5` | `Live: now` lead (s): how far ahead of the wall clock segment 0 is stamped. |
 | `LIVE_START_LEAD_AUTO` | `0` | Opt-in. When `1`, each session measures its first-segment latency (stored in `DATA_DIR/live_lead.json`) and the next `Live: now` for the same device/rate/systems/band uses median + TX buffer + `LIVE_START_LEAD_MARGIN_S` (default `0.3`). Every session reports `lead_report` (`lag_s` > 0 = on-air GPS time behind real time) in the SSE stream either way. |
 | `DEVICE_URI` | `ip:192.168.3.1` | Default SDR URI (`pyadi-iio` URI for PlutoSDR, bladeRF identifier for bladeRF). |
+| `TX_CS16_MAX_RATE_HZ` | `10000000` | `tezuka` kind: highest sample rate sent as 16-bit complex. |
+| `TX_CS8_MAX_RATE_HZ` | `27500000` | `tezuka` kind: highest sample rate sent as 8-bit complex; higher rates are rejected. |
+| `TX_TDD_MODE` | `1` | Run the AD9361 in TDD (`tx` state) while transmitting; `0` keeps FDD, e.g. for loopback self-tests that also receive. |
+| `TX_MAX_TEMP_C` | `85` | AD9361 die temperature above which a running stream is stopped; `0` disables the guard. |
 | `RF_FRONTEND_ENABLED` | `0` | Enables LO-offset planning and automatic TX quadrature calibration. |
 | `DEFAULT_SAMPLE_RATE` | `2600000` | Default fallback sample rate in Hz. |
 | `DEFAULT_FORMAT` | `int16` | Default complex sample quantization (`int16`, `int12`, `int8`). |
@@ -305,20 +310,7 @@ Unlicensed over-the-air transmission on GNSS frequencies violates spectrum regul
 
 ## Testing
 
-Run the test suite across unit, integration, and validation layers:
-
-```sh
-pytest -q
-```
-
-The test suite contains **880+ automated tests** covering:
-- C++ native engine ABI bindings, multi-band planning, and NCO phase continuity.
-- Signal codes across GPS (L1/L2/L5), Galileo (E1/E5a), BeiDou (B1I/B2a), GLONASS (FDMA), QZSS, SBAS, and NavIC.
-- FEC and CRC routines (Viterbi rate-1/2, DO-229 CRC-24Q, Galileo I/NAV framing).
-- RINEX download, parsing, realignments, and SP3 orbit/clock interpolation.
-- End-to-end multi-GNSS software receiver fixes and blind navigation message decoding.
-- Live in-memory streaming, thread safety, timeline actions, and continuous time progression.
-- Hardware transmit backends (PlutoSDR and bladeRF mocks), LO planners, and audit logs.
+The automated tests (unit, integration and validation layers, run with `pytest -q`) are kept out of this repository and are not tracked in git. They cover the native engine bindings, signal codes, FEC and CRC routines, ephemeris handling, the software receiver and blind nav decoders, live streaming, and the SDR transmit backends with mocked hardware.
 
 ---
 
@@ -328,9 +320,10 @@ The test suite contains **880+ automated tests** covering:
 - **Standards Compliance:**
   - **SBAS L1:** Implements RTCA DO-229 / ICAO Annex 10 standards: direct-form CRC-24Q, rate-1/2 FEC, 1-second preamble sync (0x53, 0x9A, 0xC6), MT 1/2/7/9/10/18/24/25/26 framing.
   - **Galileo E1:** Implements Galileo OS SIS ICD Issue 2.0/2.1: time-reversed polynomial FEC (G1=0o117, G2=0o155 with inverted G2), BPSK symbol polarity (bit 0 $\to$ +1, bit 1 $\to$ −1), and structured I/NAV word mapping. The 250-symbol half-page interleaver is an 8-row × 30-column block (column-write / row-read, `out[j*30+i] = c[i*8+j]`). An I/NAV page lasts 2 s (1 s even + 1 s odd part). `af0..af2` are referenced to the E1-E5b combination in I/NAV and to E1-E5a in F/NAV (IF_a = IF_b + Δ, Δ = BGD(E1,E5a) − BGD(E1,E5b)); RINEX records carry a `clk_ref` tag (from `DataSrc`) and the generator/encoders apply Δ so dual-frequency E1/E5a receivers see a consistent clock. I/NAV word 5 `ai0..ai2` are 0 on purpose: no ionospheric delay is injected into Galileo signals.
-  - **BeiDou B1I:** Implements BeiDou SIS ICD: D1 navigation framing, BCH (15,11,1) error correction, and NH20 secondary code modulation.
+  - **BeiDou B1I:** Implements BeiDou SIS ICD: D1 navigation framing, BCH (15,11,1) error correction, and NH20 secondary code modulation. BDT runs 14 s behind GPST. Inside the pipeline BeiDou `toe`/`toc` stay on the GPS scale, the nav encoders broadcast them minus 14 s, and the Omega earth-rotation term uses `toe - 14 s` so a receiver evaluating the broadcast message gets the same satellite position as the simulator.
 - **Multi-GNSS Software Receiver Fix:** Built-in receiver performs code-phase pseudorange extraction, least-squares navigation positioning, and geodetic coordinate transformations on the WGS-84 ellipsoid normal.
-- **SDR Hardware Channels:** Up to two concurrent physical TX slots (`TX1`, `TX2`) supported on dual-channel SDR platforms.
+- **SDR Hardware Channels:** Up to two concurrent physical TX slots (`TX1`, `TX2`) supported on dual-channel SDR platforms. The Tezuka 8-bit path drives TX1 only.
+- **Network throughput ceiling:** over libiio on a 1 Gbit link, 16-bit streaming holds about 14 Msps and 8-bit about 27-30 Msps (measured, LibreSDR). Multi-constellation, multi-band scenarios that need a higher rate cannot be streamed live over that link.
 
 ---
 
