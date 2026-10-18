@@ -103,13 +103,15 @@ class CommandStream:
     prefill can be exactly 'cfg + a few blocks'). ``first_block`` labels the
     absolute index of plan block 0 (continuing sessions use the running count).
     ``cfg_nch``: None = channels in use, "max" = ``nch_max(fs)``, or an int.
+    ``sample_offset``: plan sample at which plan block 0 starts (see
+    ``generate_blocks``).
     """
 
     def __init__(self, band, *, first_block: int = 0, n_blocks: int | None = None,
                  level_dbfs: float | None = -15.0, cfg: bool = True,
                  trim: bool = True, group_blocks: int = GROUP_BLOCKS,
                  shift: int = 0, min_per_system: int = 3,
-                 cfg_nch: int | str | None = None):
+                 cfg_nch: int | str | None = None, sample_offset: int = 0):
         if group_blocks < 1:
             raise ValueError("group_blocks must be >= 1")
         fs = float(band.fs)
@@ -135,8 +137,9 @@ class CommandStream:
                                 f"[{self.nch}, {self.channel_plan.nch_max}]")
         self._gen = generate_blocks(band, first_block=first_block,
                                     n_blocks=n_blocks, out_lsb=self.out_lsb,
-                                    limit_fs=fs, min_per_system=min_per_system)
-        self.total_blocks = min(int(band.total_samples) // int(band.block_samples),
+                                    sample_offset=sample_offset, limit_fs=fs, min_per_system=min_per_system)
+        self.total_blocks = min((int(band.total_samples) - int(sample_offset))
+                                // int(band.block_samples),
                                 n_blocks if n_blocks is not None else 1 << 62)
 
     def __iter__(self) -> Iterator[DmaBuffer]:

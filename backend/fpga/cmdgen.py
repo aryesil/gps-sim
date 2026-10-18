@@ -255,7 +255,7 @@ class _Stream:
 
 
 def generate_blocks(band, first_block: int = 0, n_blocks: int | None = None,
-                    out_lsb: float = 32767.0, *,
+                    out_lsb: float = 32767.0, *, sample_offset: int = 0,
                     active: Callable[[int, int], bool] | None = None,
                     limit_fs: float | None = None, f_eng: float = 250e6,
                     min_per_system: int = 3
@@ -263,8 +263,11 @@ def generate_blocks(band, first_block: int = 0, n_blocks: int | None = None,
     """Yield ``(first_block + j, [ChannelBlock, ...])`` for plan blocks
     j = 0 .. total_samples // block_samples - 1 (at most ``n_blocks``).
 
-    Plan block j covers samples [j*B, (j+1)*B); ``first_block`` only labels the
-    absolute command index.  A trailing partial block is not emitted.  The
+    Plan block j covers samples [j*B + sample_offset, (j+1)*B + sample_offset)
+    of the plan; ``first_block`` only labels the absolute command index.
+    ``sample_offset`` lets a plan that starts earlier than the first emitted
+    block (on a whole code/data period, since a plan's code phase is relative
+    to its start) serve a later block.  A trailing partial block is not emitted.  The
     optional keyword ``active(ch, j)`` lets a caller drop a channel from a
     block (satellite set/rise); a dropped channel simply has no record and
     nothing else moves, as every parameter is a function of the absolute
@@ -298,7 +301,8 @@ def generate_blocks(band, first_block: int = 0, n_blocks: int | None = None,
             raise ValueError(f"channel {st.ch}: primary code differs from the "
                              f"ROM code for kind {st.kind} prn {st.sv.prn}")
     scale = 0.25 * float(out_lsb) / math.sqrt(nsv) if nsv else float(out_lsb)
-    nblk = int(band.total_samples) // bs
+    sample_offset = int(sample_offset)
+    nblk = (int(band.total_samples) - sample_offset) // bs
     if n_blocks is not None:
         nblk = min(nblk, int(n_blocks))
     gains = [float(st.sv.gain) for st in statics]
@@ -313,7 +317,7 @@ def generate_blocks(band, first_block: int = 0, n_blocks: int | None = None,
                 if active is not None and not active(st.ch, j):
                     continue
                 sv = st.sv
-                f, ph, rate, cp0 = _kinematics(sv, st.L, st.rate_nom, j * bs, fs)
+                f, ph, rate, cp0 = _kinematics(sv, st.L, st.rate_nom, j * bs + sample_offset, fs)
                 cinc, cph = _carr_words(f, ph, fs)
                 lim = st.L * _FRAC
                 cp_fx = _rnd((cp0 % st.L) * _FRAC)

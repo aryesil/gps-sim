@@ -127,6 +127,11 @@ def _generate_segment_air(seg_req, iq_filename, air_name, level_dbfs, tx_scale, 
     return chunk, iq_filename
 
 
+def _gnss_lead_samples(first_block: int, fs: float) -> int:
+    """Samples between the whole-second plan start and block ``first_block``."""
+    return (int(first_block) * 65536) % int(round(fs))
+
+
 def _gnss_segment(seg_req, first_block, fs, level_dbfs, shift):
     """One FPGA command segment (module-level so a worker process can run it):
     plan the band, then pack its command buffers. Returns
@@ -143,7 +148,8 @@ def _gnss_segment(seg_req, first_block, fs, level_dbfs, shift):
     if abs(band.fs - fs) > 1e-6:
         raise RuntimeError(f"planned band rate {band.fs} differs from the TX rate {fs}")
     cs = CommandStream(band, first_block=first_block, level_dbfs=level_dbfs,
-                       cfg=(first_block == 0), cfg_nch="max", shift=shift)
+                       cfg=(first_block == 0), cfg_nch="max", shift=shift,
+                       sample_offset=_gnss_lead_samples(first_block, fs))
     info = {"nch": cs.nch, "nch_max": cs.channel_plan.nch_max, "dropped": len(cs.dropped)}
     return list(cs), info
 
@@ -298,6 +304,7 @@ class LiveSession:
         import multiprocessing
         from backend.ephem import ephemeris
         block = 65536
+        first_n = int(segment_blocks)
         steady = max(int(segment_blocks), int(round(fs / block)))
         workers = max(1, int(workers if workers is not None else config.LIVE_GEN_WORKERS))
         self.running = True
@@ -309,7 +316,7 @@ class LiveSession:
 
         def submit():
             nonlocal first_block
-            n = int(segment_blocks) if first_block == 0 else steady
+            n = first_n if first_block == 0 else steady
             with self._lock:
                 snap = copy.deepcopy(self.state)
             req = self._gnss_request(first_block, n, fs, snap)
@@ -339,12 +346,20 @@ class LiveSession:
         ``_segment_request``)."""
         base = self.base_req
         block = 65536
-        t = first_block * block / float(fs) + snap.time_offset_s
-        eph_block = math.floor(t / _EPH_REFRESH_S) * _EPH_REFRESH_S
+        # A plan's code, secondary-code and data-bit phases are relative to its
+        # start, so a segment's plan starts on the whole second at or before the
+        # segment (a whole number of every signal's code / bit period) and the
+        # command generator skips ``_gnss_lead_samples`` into it.
+        fs_i = int(round(fs))
+        whole_s = (first_block * block) // fs_i
+        lead = _gnss_lead_samples(first_block, fs)
+        t = whole_s + snap.time_offset_s
+        eph_block = math.floor((t + lead / fs) / _EPH_REFRESH_S) * _EPH_REFRESH_S
         return dataclasses.replace(
             base, lat=snap.llh[0], lon=snap.llh[1], alt=snap.llh[2],
             start=base.start + dt.timedelta(seconds=t),
-            duration_s=n_blocks * block / float(fs), route=None, engine="native",
+            duration_s=(lead + n_blocks * block + 2) / float(fs), route=None,
+            engine="native",
             eph_epoch=base.start + dt.timedelta(seconds=eph_block),
             in_memory=True, skip_meta=True)
 
