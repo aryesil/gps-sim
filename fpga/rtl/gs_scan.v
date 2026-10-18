@@ -52,6 +52,10 @@ module gs_scan (
     output reg [3:0] sc_pipe,
     output reg [`GS_SCAN_SW-1:0] sc_slot,
     output reg sc_bank,
+    // per-pipe copies of sc_slot / sc_bank (identical values; dont_touch so they are
+    // not merged: each copy drives the read addresses of one pipe only)
+    output reg [`GS_P*`GS_SCAN_SW-1:0] sc_slot_p,
+    output reg [`GS_P-1:0] sc_bank_p,
     input  [`GS_P*`GS_SCI_W-1:0] sc_info_all,
     output reg sc_we,
     output reg [3:0] sc_wpipe,
@@ -62,7 +66,7 @@ module gs_scan (
     output reg [6:0] sc_wwidx,
     input  shadow_bank,
     input  shadow_dirty,
-    output reg shadow_clean
+    output reg shadow_clean     // comb. from registers (always @*)
 );
     localparam SW    = `GS_SCAN_SW;
     localparam NPOS  = `GS_P * `GS_SLOTS;     // entries per bank
@@ -84,6 +88,15 @@ module gs_scan (
     end
 
     // ---- scan address counter (stage t) ----
+    wire [SW-1:0] slot_nx = (sc_slot == `GS_SLOTS-1) ? {SW{1'b0}} : sc_slot + 1'b1;
+    wire          bank_nx = (sc_slot == `GS_SLOTS-1 && sc_pipe == `GS_P-1) ? ~sc_bank : sc_bank;
+    (* dont_touch = "true" *) reg [`GS_P*SW-1:0] sc_slot_p_i;
+    (* dont_touch = "true" *) reg [`GS_P-1:0]    sc_bank_p_i;
+    always @(posedge clk) begin
+        sc_slot_p_i <= rst ? {`GS_P*SW{1'b0}} : {`GS_P{slot_nx}};
+        sc_bank_p_i <= rst ? {`GS_P{1'b0}}   : {`GS_P{bank_nx}};
+    end
+    always @* begin sc_slot_p = sc_slot_p_i; sc_bank_p = sc_bank_p_i; end
     always @(posedge clk) begin
         if (rst) begin
             sc_pipe <= 0; sc_slot <= 0; sc_bank <= 0;
@@ -194,20 +207,28 @@ module gs_scan (
     end
 
     // ---- shadow_clean ----
+    // The fetch decision (late: info_r -> compares) only reaches this logic
+    // registered (s2v): cnt restarts one clock after a fetch on the shadow bank
+    // (so "clean" is at most one position later than with the combinational
+    // fetch), and the shadow_clean output is gated with the registered fetch of
+    // the clock after the decision (so it still drops in that clock).
     reg [15:0] cnt;
     reg we_d; reg wb_d;         // write register inside the pipes (one clock after sc_we)
     always @(posedge clk) begin we_d <= rst ? 1'b0 : sc_we; wb_d <= sc_wbank; end
-    wire inflight = (s2v & (s2_bank == shadow_bank)) | (s3v & (s3_bank == shadow_bank)) |
+    wire fq = s2v & (s2_bank == shadow_bank);       // fetch decided last clock, on the shadow bank
+    wire inflight = fq | (s3v & (s3_bank == shadow_bank)) |
                     (s4v & (s4_bank == shadow_bank)) | (sc_we & (sc_wbank == shadow_bank)) |
                     (we_d & (wb_d == shadow_bank));
     wire count_en = s1v & is_sh;
-    wire [15:0] cnt_n = (kill | (fetch & is_sh)) ? 16'd0 :
+    wire [15:0] cnt_n = (kill | fq) ? 16'd0 :
                         (count_en && cnt < NPOS) ? cnt + 16'd1 : cnt;
+    reg clean_r;
     always @(posedge clk) begin
-        if (rst) begin cnt <= 0; shadow_clean <= 0; end
+        if (rst) begin cnt <= 0; clean_r <= 1'b0; end
         else begin
             cnt <= cnt_n;
-            shadow_clean <= ~kill & ~(fetch & is_sh) & ~inflight & (cnt_n == NPOS);
+            clean_r <= ~kill & ~inflight & (cnt_n == NPOS);
         end
     end
+    always @* shadow_clean = clean_r & ~fq;
 endmodule

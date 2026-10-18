@@ -70,7 +70,11 @@ module gs_loader (input clk, input rst,
   // RAM read address is the plain read pointer (no dependence on the parser);
   // words read are collected in a 4-entry skid s0..s3 (s0 = head).  A read is
   // issued only while skid + in-flight <= 2 (registered counts only).
-  reg  [31:0] s0, s1, s2, s3;
+  // skid: 4-entry circular buffer sb0..sb3 (hp = head index, sk_n = entries); a pop
+  // only moves hp / sk_n (no data shifting, so the pop does not fan out to the
+  // data flops' enables)
+  reg [31:0] sb0, sb1, sb2, sb3;
+  reg  [1:0]  hp;
   reg  [2:0]  sk_n;
   reg         infl, hv;
   wire        issue = (wp != rp) & ({1'b0, sk_n} + infl <= 4'd2);
@@ -79,26 +83,23 @@ module gs_loader (input clk, input rst,
     if (wr_en) mem[wp[AW-1:0]] <= cmd_data;
     q <= mem[rp[AW-1:0]];
   end
-  reg [31:0] t0, t1, t2, t3;
-  reg  [2:0] tn;
+  wire [1:0]  wix = hp + sk_n[1:0];                  // slot of the word arriving from the RAM
+  wire [31:0] s0  = (hp == 2'd0) ? sb0 : (hp == 2'd1) ? sb1 : (hp == 2'd2) ? sb2 : sb3;
+  wire [2:0]  sk_nx = sk_n + infl - fifo_pop;
   always @(posedge clk) begin
-    if (rst) begin wp <= 0; rp <= 0; sk_n <= 0; infl <= 1'b0; hv <= 1'b0; end
+    if (infl && wix == 2'd0) sb0 <= q;
+    if (infl && wix == 2'd1) sb1 <= q;
+    if (infl && wix == 2'd2) sb2 <= q;
+    if (infl && wix == 2'd3) sb3 <= q;
+  end
+  always @(posedge clk) begin
+    if (rst) begin wp <= 0; rp <= 0; sk_n <= 0; hp <= 0; infl <= 1'b0; hv <= 1'b0; end
     else begin
       if (wr_en) wp <= wp + 1'b1;
       if (issue) rp <= rp + 1'b1;
       infl <= issue;
-      t0 = s0; t1 = s1; t2 = s2; t3 = s3; tn = sk_n;
-      if (fifo_pop) begin t0 = t1; t1 = t2; t2 = t3; tn = tn - 1'b1; end
-      if (infl) begin
-        case (tn)
-          3'd0: t0 = q;
-          3'd1: t1 = q;
-          3'd2: t2 = q;
-          default: t3 = q;
-        endcase
-        tn = tn + 1'b1;
-      end
-      s0 <= t0; s1 <= t1; s2 <= t2; s3 <= t3; sk_n <= tn; hv <= (tn != 0);
+      if (fifo_pop) hp <= hp + 1'b1;
+      sk_n <= sk_nx; hv <= (sk_nx != 0);
     end
   end
 
@@ -112,8 +113,9 @@ module gs_loader (input clk, input rst,
 
   // ----------------------------------------------------------------- parser
   localparam S_HDR = 0, S_CFG = 1, S_B = 2, S_WAIT = 3, S_CLR = 4, S_REC = 5,
-             S_WR = 6, S_FIN = 7, S_SKIP = 8, S_SET = 9, S_HD2 = 10, S_HD3 = 11;
-  reg [3:0]  st;
+             S_WR = 6, S_FIN = 7, S_SKIP = 8, S_SET = 9, S_HD2 = 10, S_HD3 = 11,
+             S_RPC = 12, S_RPB = 13;      // replay load after a failed CFG / BLOCK header
+  (* fsm_encoding = "one_hot" *) reg [3:0]  st;
   reg [2:0]  cnt;
   reg [15:0] hlen;
   reg [31:0] h0, h1, h2, h3;
@@ -138,7 +140,7 @@ module gs_loader (input clk, input rst,
   end
   // deferred header checks (registered arithmetic)
   reg [10:0] chk_len;
-  reg        chk_big, chk_bad, hd_cfg, hd_blk;
+  reg        chk_big, chk_bad, hd_cfg, hd_blk, h1_big;
 
   // record fields
   wire [5:0]  r_ch   = rec[`GS_F_CH_HI:`GS_F_CH_LO];
@@ -172,6 +174,13 @@ module gs_loader (input clk, input rst,
   wire [6:0] wr_pipe = wr_ch % `GS_P;
   wire [6:0] wr_slot = wr_ch / `GS_P;
 
+  // par_r/st_r are loaded every clock of S_CLR (zero) / S_WR (record): the value is
+  // stable there, so no enable depends on load_enable; l_we marks the valid clock.
+  always @(posedge clk) begin
+    if (st == S_CLR) begin par_r <= 0; st_r <= 0; end
+    else if (st == S_WR) begin par_r <= par_w; st_r <= st_w; end
+  end
+
   task enter_skip; begin
     st <= S_SKIP; dropped_late <= dropped_late + 1'b1;
   end endtask
@@ -180,7 +189,7 @@ module gs_loader (input clk, input rst,
     take = 1'b0;
     case (st)
       S_HDR: if (wv) take = 1'b1;
-      S_CFG: if (wv && cnt != 6) take = 1'b1;     // cnt 6: check cycle
+      S_CFG: if (wv && cnt != 6 && cnt != 7) take = 1'b1;     // cnt 7, 6: check cycles
       S_B:   if (wv && cnt <= 3) take = 1'b1;     // cnt 4, 5: check cycles
       S_REC: if (wv && tgt_eq) take = 1'b1;
       S_SKIP: if (wv && left_nz) take = 1'b1;
@@ -218,15 +227,15 @@ module gs_loader (input clk, input rst,
             else if (hd_blk) st <= S_B;
             else begin bad_words <= bad_words + 1'b1; st <= S_HDR; cnt <= 0; end
           end
-          S_CFG: if (take || cnt == 6) begin
-            if (cnt != 1 && cnt != 6) cnt <= cnt + 1'b1;
+          S_CFG: if (take || cnt >= 6) begin
+            if (cnt != 1 && cnt < 6) cnt <= cnt + 1'b1;
             case (cnt)
-              1: begin h1 <= w; cnt <= 6; end   // nch; checked in cycle cnt 6
+              1: begin h1 <= w; cnt <= 7; end   // nch; compared in cnt 7, checked in cnt 6
+              7: begin h1_big <= (h1 > 32'd64); cnt <= 6; end
               6: begin
-                if (h1 > 32'd64) begin          // bad nch: restart at header+1
+                if (h1_big) begin               // bad nch: restart at header+1
                   bad_words <= bad_words + 1'b1;
-                  st <= S_HDR; cnt <= 0;
-                  rq0 <= h1; rq1 <= rq0; rq2 <= rq1; rq_n <= rq_n + 1'b1;
+                  st <= S_RPC;
                 end else cnt <= 2;
               end
               2: h2 <= w;       // fs
@@ -252,14 +261,21 @@ module gs_loader (input clk, input rst,
               default: begin       // 6
                 if (chk_bad) begin
                   bad_words <= bad_words + 1'b1;     // restart at header+1
-                  st <= S_HDR; cnt <= 0;
-                  rq0 <= h1; rq1 <= h2; rq2 <= h3; rq_n <= 2'd3;
+                  st <= S_RPB;
                 end else begin
                   blk_idx <= {h2, h1}; blk_nch <= h3[6:0]; left <= chk_len[9:0] - 10'd4; left_nz <= (chk_len != 11'd4);
                   wi <= 0; cl_ch <= h3[6:0]; st <= S_SET; cnt <= 0;
                 end
               end
             endcase
+          end
+          S_RPC: begin                     // replay after a bad CFG: h1 goes in front of the buffer
+            st <= S_HDR; cnt <= 0;
+            rq0 <= h1; rq1 <= rq0; rq2 <= rq1; rq_n <= rq_n + 1'b1;
+          end
+          S_RPB: begin                     // replay after a bad BLOCK header: h1, h2, h3
+            st <= S_HDR; cnt <= 0;
+            rq0 <= h1; rq1 <= h2; rq2 <= h3; rq_n <= 2'd3;
           end
           S_SET: st <= S_WAIT;
           S_WAIT: begin
@@ -272,7 +288,6 @@ module gs_loader (input clk, input rst,
             else if (load_enable) begin
               l_we <= 1'b1; shadow_dirty <= 1'b1; l_bank <= shadow_bank;
               l_pipe <= wr_pipe[3:0]; l_slot <= wr_slot[`GS_SLOT_W-1:0];
-              par_r <= 0; st_r <= 0;
               cl_ch <= cl_ch + 1'b1;
               if (cl_ch == TOTAL - 1) st <= (blk_nch == 0) ? S_FIN : S_REC;
             end
@@ -291,7 +306,6 @@ module gs_loader (input clk, input rst,
             else if (load_enable) begin
               l_we <= 1'b1; shadow_dirty <= 1'b1; l_bank <= shadow_bank;
               l_pipe <= wr_pipe[3:0]; l_slot <= wr_slot[`GS_SLOT_W-1:0];
-              par_r <= par_w; st_r <= st_w;
               st <= (!left_nz) ? S_FIN : S_REC;
             end
           end

@@ -3,20 +3,20 @@
 // LAT_SINCOS = 3 clocks: an index presented in cycle n gives out_cos/out_sin
 // valid in cycle n+3. A new index is accepted every clock.
 //
-// Storage: ONE quarter-wave table, 1024 x 16, inferred as a single dual-port
-// BRAM18 (port A = cos address r, port B = sin address 1024-r), registered
-// output. The Python table (roms.sincos_table) is exactly reconstructible:
+// Storage: ONE quarter-wave table, 1024 x 32 ({sin, cos}, one read address r),
+// inferred as a single RAMB36 (2 RAMB18), registered output.  The Python table
+// (roms.sincos_table) is exactly reconstructible:
 //   cos_q[r] = round(32767*cos(2*pi*r/4096)),  r = 0..1023
 //   sin_q[r] = cos_q[1024-r] for r = 1..1023, sin_q[0] = 0   (verified)
 // and the quadrant extension is exact (roms.table_value): q = idx[11:10],
 // (c,s) = (C,S) , (-S,C) , (-C,-S) , (S,-C). So no extra table is needed.
 //
-// Init file: `GS_SINCOS_MEM (default {GS_MEMDIR,"gs_sincos.mem"}), 1024 lines,
-// 4 hex digits each, the quarter-wave COS entries cos_q[0..1023].
+// Init file: `GS_SINCOS_MEM (default {GS_MEMDIR,"gs_sincos2.mem"}), 1024 lines,
+// 8 hex digits each: {sin_q[r], cos_q[r]}, r = 0..1023 (scripts/fpga_vectors.py).
 `include "gs_defs.vh"
 
 `ifndef GS_SINCOS_MEM
-`define GS_SINCOS_MEM {`GS_MEMDIR, "gs_sincos.mem"}
+`define GS_SINCOS_MEM {`GS_MEMDIR, "gs_sincos2.mem"}
 `endif
 
 module gs_sincos (
@@ -31,34 +31,37 @@ module gs_sincos (
     output reg  signed [15:0] out_cm,
     output reg  signed [15:0] out_sm,
     output wire               pre_nc,
-    output wire               pre_ns
+    output wire               pre_ns,
+    // the same signs one clock earlier (comb. from the index register q1)
+    output wire               nx_nc,
+    output wire               nx_ns
 );
-    (* ram_style = "block" *) reg [15:0] tab [0:1023];
+    // One 1024 x 32 table {sin_q[r], cos_q[r]}: a single read address r = idx[9:0]
+    // (no 1024-r complement in front of the BRAM).  The init file holds both halves
+    // (a derived init in an initial block is not synthesisable).
+    (* ram_style = "block" *) reg [31:0] tab [0:1023];
     initial $readmemh(`GS_SINCOS_MEM, tab);
 
     wire [9:0] ra = in_idx[9:0];
-    wire [10:0] rb_f = 11'd1024 - {1'b0, in_idx[9:0]};
-    wire [9:0]  rb   = rb_f[9:0];                     // 1024-r, wraps to 0 for r = 0
 
     // stage 1: BRAM read (address registered inside the BRAM)
-    reg [15:0] da, db;
+    reg [31:0] dab;
     reg [1:0]  q1, q2;
-    reg        z1, z2;                                // r == 0 -> sin_q = 0
     always @(posedge clk) begin
-        da <= tab[ra];
-        db <= tab[rb];
+        dab <= tab[ra];
         q1 <= in_idx[11:10];
-        z1 <= (in_idx[9:0] == 10'd0);
     end
 
     // stage 2: BRAM output register
     reg signed [15:0] c0, s0;
     always @(posedge clk) begin
-        c0 <= da;
-        s0 <= z1 ? 16'sd0 : db;
+        c0 <= dab[15:0];
+        s0 <= dab[31:16];
         q2 <= q1;
     end
 
+    assign nx_nc = q1[1] ^ q1[0];     // pre_nc one clock earlier
+    assign nx_ns = q1[1];
     assign pre_nc = (q2 == 2'd1) | (q2 == 2'd2);
     assign pre_ns = q2[1];
     always @(posedge clk) begin

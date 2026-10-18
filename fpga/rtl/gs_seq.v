@@ -41,6 +41,8 @@ module gs_seq (input clk, input rst, input enable,
   reg [31:0] under_r;
   reg [`GS_BLOCK_LOG2-1:0] scnt;      // index of the next sample within its block
   reg [4:0]  quiet;
+  reg        le_r;            // == (quiet == 0), registered
+  reg        cont;            // == (s_valid && !s_last), registered (slot counter enable)
 
   wire [6:0] tc = (nch_l + `GS_P - 1) / `GS_P;
   wire [4:0] T  = (tc < 4) ? 5'd4 : tc[4:0];
@@ -53,42 +55,52 @@ module gs_seq (input clk, input rst, input enable,
   assign underruns  = under_r;
   assign running    = started;
   assign target_idx = tgt_r;
-  assign load_enable = (quiet == 0);
+  assign load_enable = le_r;
 
   wire ready_blk = shadow_loaded & shadow_clean;
   reg  at_edge;       // == (scnt == 0), registered
-  always @(posedge clk) begin pr1 <= play_r + 64'd1; tg1 <= tgt_r + 64'd1; sl1 <= ((!started && cfg_valid) ? cfg_start : start_l) + 64'd1; end
+  // sl1 = source + 1 in two registered steps (low half + its carry, then the upper half):
+  // the settle time of sl1 after cfg_start changes is 2 clocks (a block is loaded
+  // long after the CFG that sets cfg_start, see gs_loader)
+  wire [63:0] sl_src = (!started && cfg_valid) ? cfg_start : start_l;
+  reg  [31:0] sl_lo1, sl_hi0;
+  reg         sl_cy;
+  always @(posedge clk) begin
+    pr1 <= play_r + 64'd1; tg1 <= tgt_r + 64'd1;
+    sl_lo1 <= sl_src[31:0] + 32'd1; sl_cy <= &sl_src[31:0]; sl_hi0 <= sl_src[63:32];
+    sl1 <= {sl_hi0 + {31'd0, sl_cy}, sl_lo1};
+  end
 
   always @(posedge clk) begin
     if (rst) begin
       started <= 1'b0; bank_r <= 1'b0; play_r <= 0; start_l <= 0; tgt_r <= 0; nch_l <= 0;
-      under_r <= 0; scnt <= 0; at_edge <= 1'b1; quiet <= 0; s_valid <= 1'b0; s_slot <= 0;
+      under_r <= 0; scnt <= 0; at_edge <= 1'b1; quiet <= 0; le_r <= 1'b1; cont <= 1'b0; s_valid <= 1'b0; s_slot <= 0;
       s_first <= 1'b0; s_last <= 1'b0; s_mute <= 1'b0;
     end else begin
-      if (quiet != 0) quiet <= quiet - 1'b1;
+      if (quiet != 0) begin quiet <= quiet - 1'b1; le_r <= (quiet == 5'd1); end
       if (!started && cfg_valid) begin nch_l <= cfg_nch; start_l <= cfg_start; tgt_r <= cfg_start; end
-      if (s_valid && !s_last) begin
+      if (cont) begin
         s_slot <= s_slot + 1'b1; s_first <= 1'b0;
-        s_last <= (slot_n2 == T);
+        s_last <= (slot_n2 == T); cont <= (slot_n2 != T);
       end else begin
-        s_valid <= 1'b0; s_first <= 1'b0; s_last <= 1'b0;
+        s_valid <= 1'b0; s_first <= 1'b0; s_last <= 1'b0; s_slot <= 0;
         if (enable && out_space) begin
           if (!started) begin
             if (cfg_valid && ready_blk) begin
-              started <= 1'b1; bank_r <= ~bank_r; play_r <= start_l; tgt_r <= sl1; quiet <= SWAP_QUIET;
+              started <= 1'b1; bank_r <= ~bank_r; play_r <= start_l; tgt_r <= sl1; quiet <= SWAP_QUIET; le_r <= 1'b0;
               s_mute <= 1'b0;
-              s_valid <= 1'b1; s_slot <= 0; s_first <= 1'b1; scnt <= scnt + 1'b1; at_edge <= (scnt == {`GS_BLOCK_LOG2{1'b1}});
+              s_valid <= 1'b1; s_slot <= 0; s_first <= 1'b1; cont <= 1'b1; scnt <= scnt + 1'b1; at_edge <= (scnt == {`GS_BLOCK_LOG2{1'b1}});
             end
           end else begin
             if (at_edge) begin
               play_r <= pr1; tgt_r <= tg1;
               if (ready_blk) begin
-                bank_r <= ~bank_r; quiet <= SWAP_QUIET; s_mute <= 1'b0;
+                bank_r <= ~bank_r; quiet <= SWAP_QUIET; le_r <= 1'b0; s_mute <= 1'b0;
               end else begin
                 under_r <= under_r + 1'b1; s_mute <= 1'b1;
               end
             end
-            s_valid <= 1'b1; s_slot <= 0; s_first <= 1'b1; scnt <= scnt + 1'b1; at_edge <= (scnt == {`GS_BLOCK_LOG2{1'b1}});
+            s_valid <= 1'b1; s_slot <= 0; s_first <= 1'b1; cont <= 1'b1; scnt <= scnt + 1'b1; at_edge <= (scnt == {`GS_BLOCK_LOG2{1'b1}});
           end
         end
       end

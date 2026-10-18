@@ -6,8 +6,8 @@
 // out_valid/out_i/out_q.
 //
 // Latency (clocks), sample start = cycle of s_first (decision clock + 1):
-//   out_valid is high  (T-1) + LAT_PIPE(6) + LAT_REDUCE  clocks after s_first,
-//   i.e. 17 clocks for P=12 and T=4 (LAT_REDUCE = 8); (T-1) is the issue of the
+//   out_valid is high  (T-1) + LAT_PIPE(7) + LAT_REDUCE  clocks after s_first,
+//   i.e. 18 clocks for P=12 and T=4 (LAT_REDUCE = 8); (T-1) is the issue of the
 //   last slot.  In-flight depth = ceil(that / T) + 1 samples: a sink whose
 //   out_space means ">= 16 free entries" is therefore always sufficient (the
 //   sequencer samples out_space in the decision clock only; it never needs to
@@ -81,6 +81,8 @@ module gs_top (
     // ---- scanner
     wire  [3:0] sc_pipe, sc_wpipe;
     wire  [`GS_SCAN_SW-1:0] sc_slot, sc_wslot;
+    wire [P*`GS_SCAN_SW-1:0] sc_slot_p;
+    wire [P-1:0] sc_bank_p;
     wire        sc_bank, sc_we, sc_wbank, sc_wwhich;
     wire [31:0] sc_wword;
     wire  [6:0] sc_wwidx;
@@ -88,6 +90,7 @@ module gs_top (
 
     gs_scan u_scan (.clk(clk), .rst(rst),
         .sc_pipe(sc_pipe), .sc_slot(sc_slot), .sc_bank(sc_bank),
+        .sc_slot_p(sc_slot_p), .sc_bank_p(sc_bank_p),
         .sc_info_all(sc_info_all),
         .sc_we(sc_we), .sc_wpipe(sc_wpipe), .sc_wslot(sc_wslot), .sc_wbank(sc_wbank),
         .sc_wwhich(sc_wwhich), .sc_wword(sc_wword), .sc_wwidx(sc_wwidx),
@@ -106,7 +109,7 @@ module gs_top (
                 .s_first(s_first), .s_last(s_last), .s_mute(s_mute),
                 .l_we(l_we), .l_pipe(l_pipe), .l_slot(l_slot), .l_bank(l_bank),
                 .l_par(l_par), .l_st(l_st),
-                .sc_slot(sc_slot), .sc_bank(sc_bank),
+                .sc_slot(sc_slot_p[g*`GS_SCAN_SW +: `GS_SCAN_SW]), .sc_bank(sc_bank_p[g]),
                 .sc_info(sc_info_all[g*`GS_SCI_W +: `GS_SCI_W]),
                 .sc_we(sc_we), .sc_wpipe(sc_wpipe), .sc_wslot(sc_wslot),
                 .sc_wbank(sc_wbank), .sc_wwhich(sc_wwhich),

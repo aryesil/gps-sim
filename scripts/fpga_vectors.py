@@ -15,6 +15,8 @@ File formats (all text, one entry per line, lowercase hex, $readmemh ready)
   fpga/mem/gs_sincos.mem       1024 lines `cccc`: quarter-wave cos values
                                roms._TABLE[0][r], r = 0..1023, int16 two's
                                complement (4 hex digits).
+  fpga/mem/gs_sincos2.mem      1024 lines `sssscccc`: {sin, cos} per quarter-wave index
+                               r (sin = cos[1024-r], 0 for r = 0), the gs_sincos init.
   fpga/mem/gs_sincos_full.mem  4096 lines `ccccssss`, same packing, index idx =
                                0..4095 from roms.table_value(idx).
   fpga/vec/<name>_cmd.hex      32-bit command words (CFG record then BLOCK
@@ -92,6 +94,10 @@ def write_rom_mem(d=MEM_DIR):
     _wr(d / "gs_base.mem", [f"{int(w):04x}" for w in base])
     c, _ = roms._TABLE
     _wr(d / "gs_sincos.mem", [f"{int(x) & 0xFFFF:04x}" for x in c])
+    # {sin, cos} per quarter-wave index r (sin_q[r] = cos_q[1024-r], sin_q[0] = 0): one
+    # 1024 x 32 table, a single read address in gs_sincos (no complement before the BRAM)
+    _wr(d / "gs_sincos2.mem",
+        [f"{(int(c[1024 - r]) if r else 0) & 0xFFFF:04x}{int(c[r]) & 0xFFFF:04x}" for r in range(1024)])
     full = [roms.table_value(i) for i in range(roms.FULL)]
     _wr(d / "gs_sincos_full.mem",
         [f"{x & 0xFFFF:04x}{y & 0xFFFF:04x}" for x, y in full])
