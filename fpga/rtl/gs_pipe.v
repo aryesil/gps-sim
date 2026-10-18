@@ -41,39 +41,35 @@
 //  * Entries with valid==0 contribute zero and their state is not written.
 `include "gs_defs.vh"
 
-// One bank of per-slot (8 slots) storage.  Separate async-read arrays, one
-// write port each; the write sources are arbitrated per array.  The wide arrays
-// (parb, st) are split into NGP / NGS column groups, each with its own address
-// and enable copy (fan-out / placement); the groups hold identical addresses.
+// One bank of per-slot (8 slots) mutable state (ST, CUR, NXT).  Separate
+// async-read arrays, one write port each; the write sources are arbitrated per
+// array.  The wide array st is split into NGS column groups, each with its own
+// address and enable copy (fan-out / placement); the groups hold identical
+// addresses.  PAR (written only by the loader) is one array per pipe with the
+// bank as the top address bit, see gs_pipe_par.
 `define GS_NGP 3
 `define GS_NGS 3
 module gs_pipe_bank (
     input  wire        clk,
     // read A: pipe issue (one address copy per array group: placement/fan-out)
-    input  wire [3*`GS_NGP-1:0] ra_pb,   // parb groups (group 0 also parh)
     input  wire [3*`GS_NGS-1:0] ra_st,   // st groups
     input  wire  [2:0] ra_m,        // curw, curx
-    output wire [11:0] a_parh,      // PAR[11:0]
-    output wire [160:0] a_parb,     // PAR[172:12]
     output wire [140:0] a_st,       // ST[140:0]
     output wire [31:0] a_curw,
     output wire  [7:0] a_curx,      // {cur_loaded, cur_widx}
     // read B: scanner
     input  wire  [2:0] rb,
-    output wire [`GS_SCI_W-1:0] b_sci,
+    output wire [15:0] b_scx,       // SCI without the PAR bits: {nxtl, nxt_widx, cur_widx, cur_loaded}
     // read C: pipe at the write stage (NXT)
     input  wire  [2:0] rc,
     output wire [31:0] c_nxtw,
     output wire  [6:0] c_nxtx,
     output wire        c_nxtl,
     // loader write (enable and slot copies per array group)
-    input  wire [`GS_NGP-1:0] lw_en_p,
-    input  wire [3*`GS_NGP-1:0] lw_slot_p,
     input  wire [`GS_NGS-1:0] lw_en_s,
     input  wire [3*`GS_NGS-1:0] lw_slot_s,
     input  wire        lw_en,       // curx, nxtl
     input  wire  [2:0] lw_slot_m,   // curx, nxtl
-    input  wire [`GS_PAR_W-1:0] lw_par,
     input  wire [`GS_ST_W-1:0]  lw_st,
     // pipe write
     input  wire [`GS_NGS-1:0] pw_en_s,
@@ -96,14 +92,11 @@ module gs_pipe_bank (
 );
     localparam NGP = `GS_NGP;
     localparam NGS = `GS_NGS;
-    localparam PBW = 161;           // parb width
-    localparam PGW = 54;            // parb group width (last group: 161 - 2*54 = 53)
     localparam SGW = 47;            // st group width (3 * 47 = 141)
     // ST[31:0] (carrier phase) is stored with the +2^19 table-rounding offset
     // already applied by the loader (phase' = phase + 2^19 mod 2^32), so the
     // table index is phase'[31:20] without an adder in front of the BRAM.
     wire [140:0] lw_st_adj = lw_st[140:0];
-    reg [11:0]  parh [0:7];
     reg [31:0]  curw [0:7];
     reg [7:0]   curx [0:7];
     reg [38:0]  nxtw [0:7];         // {widx, word}
@@ -111,7 +104,6 @@ module gs_pipe_bank (
     integer i;
     initial begin
         for (i = 0; i < 8; i = i + 1) begin
-            parh[i] = 12'd0;
             curw[i] = 32'd0; curx[i] = 8'd0; nxtw[i] = 39'd0; nxtl[i] = 1'b0;
         end
     end
@@ -132,7 +124,6 @@ module gs_pipe_bank (
     wire  [2:0] nl_wa   = lw_en ? lw_slot_m : sw_slot_x;
 
     always @(posedge clk) begin
-        if (lw_en_p[0]) parh[lw_slot_p[2:0]] <= lw_par[11:0];
         if (cw_we) curw[cw_wa] <= cw_wd;
         if (cx_we) curx[cx_wa] <= cx_wd;
         if (swn_en) nxtw[sw_slot_n] <= {sw_widx, sw_word};
@@ -141,16 +132,6 @@ module gs_pipe_bank (
 
     genvar g;
     generate
-        for (g = 0; g < NGP; g = g + 1) begin : g_pb
-            localparam LO = g * PGW;
-            localparam W  = (g == NGP-1) ? PBW - (NGP-1)*PGW : PGW;
-            reg [W-1:0] arr [0:7];
-            integer k;
-            initial for (k = 0; k < 8; k = k + 1) arr[k] = {W{1'b0}};
-            always @(posedge clk)
-                if (lw_en_p[g]) arr[lw_slot_p[g*3 +: 3]] <= lw_par[12+LO +: W];
-            assign a_parb[LO +: W] = arr[ra_pb[g*3 +: 3]];
-        end
         for (g = 0; g < NGS; g = g + 1) begin : g_st
             localparam LO = g * SGW;
             reg [SGW-1:0] arr [0:7];
@@ -164,13 +145,11 @@ module gs_pipe_bank (
         end
     endgenerate
 
-    assign a_parh = parh[ra_pb[2:0]];
     assign a_curw = curw[ra_m];
     assign a_curx = curx[ra_m];
 
-    wire [11:0] bh = parh[rb];
     wire [7:0]  bx = curx[rb];
-    assign b_sci = {nxtl[rb], nxtw[rb][38:32], bx[6:0], bx[7], bh[11:6], bh[5:4], bh[0]};
+    assign b_scx = {nxtl[rb], nxtw[rb][38:32], bx[6:0], bx[7]};
 
     assign c_nxtw = nxtw[rc][31:0];
     assign c_nxtx = nxtw[rc][38:32];
@@ -227,11 +206,12 @@ module gs_pipe #(parameter PIDX = 0) (
     // st column groups, misc), so no copy drives more than a few RAMs.
     localparam NGP = `GS_NGP;
     localparam NGS = `GS_NGS;
-    (* dont_touch = "true" *) reg  [2*NGP-1:0] lwe_p;       // loader write enables [bank*NGP + group]
+    (* dont_touch = "true" *) reg    [NGP-1:0] lwe_p;       // loader PAR write enable per column group
+    (* dont_touch = "true" *) reg    [NGP-1:0] lq_bkp;      // loader bank (top PAR address bit) per column group
     (* dont_touch = "true" *) reg  [2*NGS-1:0] lwe_s;
     (* dont_touch = "true" *) reg  [1:0] lwe_m;             // misc (curx, nxtl)
     (* dont_touch = "true" *) reg  [1:0] swc, swn;          // scanner CUR / NXT write, per bank
-    (* dont_touch = "true" *) reg [2*3*NGP-1:0] lq_slp;     // loader slot copies [(bank*NGP + group)*3]
+    (* dont_touch = "true" *) reg [3*NGP-1:0] lq_slp;       // loader slot copies [group*3]
     (* dont_touch = "true" *) reg [2*3*NGS-1:0] lq_sls;
     (* dont_touch = "true" *) reg        [5:0] lq_slm;      // [bank*3]
     (* dont_touch = "true" *) reg        [17:0] sq_slot;    // scanner write slot [bank*9 + {nxtw,curw,curx}*3]
@@ -243,14 +223,15 @@ module gs_pipe #(parameter PIDX = 0) (
     wire l_mine = l_we && (l_pipe == PIDX);
     wire s_mine = sc_we && (sc_wpipe == PIDX);
     always @(posedge clk) begin
-        lwe_p  <= rst ? {2*NGP{1'b0}} : {{NGP{l_mine &&  l_bank}}, {NGP{l_mine && !l_bank}}};
+        lwe_p  <= rst ? {NGP{1'b0}} : {NGP{l_mine}};
+        lq_bkp <= {NGP{l_bank}};
         lwe_s  <= rst ? {2*NGS{1'b0}} : {{NGS{l_mine &&  l_bank}}, {NGS{l_mine && !l_bank}}};
         lwe_m  <= rst ? 2'b00 : {l_mine && l_bank, l_mine && !l_bank};
         swc[0] <= rst ? 1'b0 : (s_mine && !sc_wbank && !sc_wwhich);
         swc[1] <= rst ? 1'b0 : (s_mine &&  sc_wbank && !sc_wwhich);
         swn[0] <= rst ? 1'b0 : (s_mine && !sc_wbank &&  sc_wwhich);
         swn[1] <= rst ? 1'b0 : (s_mine &&  sc_wbank &&  sc_wwhich);
-        lq_slp <= {2*NGP{l_slot}}; lq_sls <= {2*NGS{l_slot}}; lq_slm <= {2{l_slot}};
+        lq_slp <= {NGP{l_slot}}; lq_sls <= {2*NGS{l_slot}}; lq_slm <= {2{l_slot}};
         lq_par <= l_par; lq_st <= l_st;
         sq_slot <= {6{sc_wslot}};
         sq_word <= sc_wword; sq_widx <= sc_wwidx;
@@ -261,12 +242,14 @@ module gs_pipe #(parameter PIDX = 0) (
     // stage-1 registers.
     (* dont_touch = "true" *) reg        p0_v, p0_first, p0_last, p0_mute;
     (* dont_touch = "true" *) reg [NGP+NGS:0] p0_bk;       // bank copies (stage-1 muxes): parb groups, st groups, misc
-    (* dont_touch = "true" *) reg [2*3*(NGP+NGS+1)-1:0] p0_sl;  // slot copies [bank*3*(NGP+NGS+1) + {parb groups, st groups, misc}*3]
+    (* dont_touch = "true" *) reg [3*NGP-1:0] p0_slp;      // PAR read slot copies [group*3] (group 0 also parh)
+    (* dont_touch = "true" *) reg [2*3*(NGS+1)-1:0] p0_sl;  // slot copies [bank*3*(NGS+1) + {st groups, misc}*3]
     always @(posedge clk) begin
         if (rst) p0_v <= 1'b0; else p0_v <= s_valid;
         p0_first <= s_first; p0_last <= s_last; p0_mute <= s_mute;
         p0_bk <= {(NGP+NGS+1){s_bank}};
-        p0_sl <= {(2*(NGP+NGS+1)){s_slot}};
+        p0_slp <= {NGP{s_slot}};
+        p0_sl <= {(2*(NGS+1)){s_slot}};
     end
 
     // stage-3 write controls (declared early, driven below)
@@ -280,12 +263,10 @@ module gs_pipe #(parameter PIDX = 0) (
     wire        w_cross;
     wire [140:0] w_st;
 
-    wire [11:0]  a_parh [0:1];
-    wire [160:0] a_parb [0:1];
     wire [140:0] a_st   [0:1];
     wire [31:0]  a_curw [0:1];
     wire [7:0]   a_curx [0:1];
-    wire [`GS_SCI_W-1:0] b_sci [0:1];
+    wire [15:0]  b_scx [0:1];
     wire [31:0]  c_nxtw [0:1];
     wire [6:0]   c_nxtx [0:1];
     wire         c_nxtl [0:1];
@@ -295,16 +276,14 @@ module gs_pipe #(parameter PIDX = 0) (
         for (b = 0; b < 2; b = b + 1) begin : g_bank
             gs_pipe_bank u_bank (
                 .clk(clk),
-                .ra_pb(p0_sl[b*3*(NGP+NGS+1) +: 3*NGP]),
-                .ra_st(p0_sl[b*3*(NGP+NGS+1)+3*NGP +: 3*NGS]),
-                .ra_m(p0_sl[b*3*(NGP+NGS+1)+3*(NGP+NGS) +: 3]),
-                .a_parh(a_parh[b]), .a_parb(a_parb[b]), .a_st(a_st[b]),
+                .ra_st(p0_sl[b*3*(NGS+1) +: 3*NGS]),
+                .ra_m(p0_sl[b*3*(NGS+1)+3*NGS +: 3]),
+                .a_st(a_st[b]),
                 .a_curw(a_curw[b]), .a_curx(a_curx[b]),
-                .rb(sc_slot), .b_sci(b_sci[b]),
+                .rb(sc_slot), .b_scx(b_scx[b]),
                 .rc(r3_sl[b*3 +: 3]), .c_nxtw(c_nxtw[b]), .c_nxtx(c_nxtx[b]), .c_nxtl(c_nxtl[b]),
-                .lw_en_p(lwe_p[b*NGP +: NGP]), .lw_slot_p(lq_slp[b*3*NGP +: 3*NGP]),
                 .lw_en_s(lwe_s[b*NGS +: NGS]), .lw_slot_s(lq_sls[b*3*NGS +: 3*NGS]),
-                .lw_en(lwe_m[b]), .lw_slot_m(lq_slm[b*3 +: 3]), .lw_par(lq_par), .lw_st(lq_st),
+                .lw_en(lwe_m[b]), .lw_slot_m(lq_slm[b*3 +: 3]), .lw_st(lq_st),
                 .pw_en_s(r3_wvs[b*NGS +: NGS]), .pw_slot_s(r3_sls[b*3*NGS +: 3*NGS]),
                 .pw_en(r3_wv[b]), .pw_slot_m(r3_sl[b*3 +: 3]),
                 .pw_st(w_st),
@@ -315,7 +294,32 @@ module gs_pipe #(parameter PIDX = 0) (
         end
     endgenerate
 
-    assign sc_info = sc_bank ? b_sci[1] : b_sci[0];
+    // PAR: one array per column group, address {bank, slot}; written by the
+    // loader only (shadow half), read by the pipe (active half) and the scanner.
+    wire [11:0]  a_parh;
+    wire [160:0] a_parb;
+    reg [11:0]   parh [0:15];
+    integer ik;
+    initial for (ik = 0; ik < 16; ik = ik + 1) parh[ik] = 12'd0;
+    always @(posedge clk) if (lwe_p[0]) parh[{lq_bkp[0], lq_slp[2:0]}] <= lq_par[11:0];
+    assign a_parh = parh[{p0_bk[0], p0_slp[2:0]}];
+    wire [11:0] bh = parh[{sc_bank, sc_slot}];
+    genvar gp;
+    generate
+        for (gp = 0; gp < NGP; gp = gp + 1) begin : g_pb
+            localparam LO = gp * 54;
+            localparam W  = (gp == NGP-1) ? 161 - (NGP-1)*54 : 54;
+            reg [W-1:0] arr [0:15];
+            integer k;
+            initial for (k = 0; k < 16; k = k + 1) arr[k] = {W{1'b0}};
+            always @(posedge clk)
+                if (lwe_p[gp]) arr[{lq_bkp[gp], lq_slp[gp*3 +: 3]}] <= lq_par[12+LO +: W];
+            assign a_parb[LO +: W] = arr[{p0_bk[gp], p0_slp[gp*3 +: 3]}];
+        end
+    endgenerate
+
+    wire [15:0] b_scxm = sc_bank ? b_scx[1] : b_scx[0];
+    assign sc_info = {b_scxm, bh[11:6], bh[5:4], bh[0]};
     always @(posedge clk) sc_info_q <= sc_info;
 
     // ---------------------------------------------------------- stage 1
@@ -332,8 +336,8 @@ module gs_pipe #(parameter PIDX = 0) (
         r1_last  <= p0_last;
         r1_mute  <= p0_mute;
         r1_bank  <= p0_bk[0];
-        r1_slot  <= p0_sl[2:0];
-        r1_parh  <= p0_bk[0] ? a_parh[1] : a_parh[0];
+        r1_slot  <= p0_sl[3*NGS +: 3];
+        r1_parh  <= a_parh;
         r1_curw  <= p0_bk[NGP+NGS] ? a_curw[1] : a_curw[0];
         r1_curx  <= p0_bk[NGP+NGS] ? a_curx[1] : a_curx[0];
     end
@@ -344,7 +348,7 @@ module gs_pipe #(parameter PIDX = 0) (
         for (gi = 0; gi < NGP; gi = gi + 1) begin : g_r1p
             localparam LO = gi * 54;
             localparam W  = (gi == NGP-1) ? 161 - (NGP-1)*54 : 54;
-            always @(posedge clk) r1_parb[LO +: W] <= p0_bk[gi] ? a_parb[1][LO +: W] : a_parb[0][LO +: W];
+            always @(posedge clk) r1_parb[LO +: W] <= a_parb[LO +: W];
         end
         for (gi = 0; gi < NGS; gi = gi + 1) begin : g_r1s
             always @(posedge clk) r1_st[gi*47 +: 47] <= p0_bk[NGP+gi] ? a_st[1][gi*47 +: 47] : a_st[0][gi*47 +: 47];
