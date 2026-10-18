@@ -177,10 +177,18 @@ class GnssDevice:
                 return (hi << 32) | lo
         raise DeviceError("PLAY_IDX high word keeps changing")
 
+    def read_many(self, offsets) -> list:
+        """Several registers in order; transports with a per-access cost
+        (ssh) override this to batch them."""
+        return [self.read32(o) for o in offsets]
+
     def status(self) -> GnssStatus:
-        st = self.read32(REG_STATUS) & 0xFFFFFFFF
-        play = self.play_idx()
-        counters = {k: self.read32(r) & 0xFFFFFFFF for k, r in _COUNTER_REGS.items()}
+        vals = [v & 0xFFFFFFFF for v in self.read_many(
+            [REG_STATUS, REG_PLAY_HI, REG_PLAY_LO, REG_PLAY_HI,
+             *_COUNTER_REGS.values()])]
+        st, hi, lo, hi2 = vals[:4]
+        play = (hi << 32) | lo if hi == hi2 else self.play_idx()
+        counters = dict(zip(_COUNTER_REGS, vals[4:]))
         return GnssStatus.decode(st, play, counters)
 
 
@@ -237,6 +245,20 @@ class RemoteDevmem(GnssDevice):
             return int(out.split()[-1], 0) & 0xFFFFFFFF
         except (ValueError, IndexError) as ex:
             raise DeviceError(f"unparsable devmem output {out!r}") from ex
+
+    def read_many(self, offsets) -> list:
+        """One ssh round trip for all offsets (devmem in a board-side loop)."""
+        addrs = " ".join(f"{self.base + o:#x}" for o in offsets)
+        out = self._run(["sh", "-c",
+                         f"for a in {addrs}; do {self.tool} $a 32; done"])
+        try:
+            vals = [int(t, 0) & 0xFFFFFFFF for t in out.split()]
+        except ValueError as ex:
+            raise DeviceError(f"unparsable devmem output {out!r}") from ex
+        if len(vals) != len(offsets):
+            raise DeviceError(f"devmem batch returned {len(vals)} of "
+                              f"{len(offsets)} values")
+        return vals
 
     def write32(self, offset: int, value: int) -> None:
         self._run([self.tool, f"{self.base + offset:#x}", "32",
