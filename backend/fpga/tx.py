@@ -146,9 +146,9 @@ class GnssTx:
         with self._lock:
             fed = self.fed_blocks
         elapsed = (now - self.t_enable) if self.t_enable is not None else 0.0
-        play_s = st.play_idx / self.fs
+        play_s = st.play_idx * W.BLOCK / self.fs
         first = self.first_block or 0
-        lead = first + fed - st.play_idx / W.BLOCK     # blocks the host is ahead
+        lead = first + fed - st.play_idx               # blocks the host is ahead
         if st.playing and self._offset_s is None:
             self._offset_s = elapsed - play_s           # start-up latency
         lag = (elapsed - play_s - self._offset_s) if self._offset_s is not None else None
@@ -162,7 +162,7 @@ class GnssTx:
                          st.underruns - prev.underruns)
         return {
             "elapsed_s": play_s,
-            "samples": st.play_idx,
+            "samples": st.play_idx * W.BLOCK,
             "underflow": st.sample_fifo_underflows,
             "device_underrun": st.underruns,
             "clipped": st.clipped,
@@ -287,8 +287,8 @@ def stream(params, session, dry_run: bool = False, progress_cb=None, cancel=None
         last = tx.stop()
     st = tx.last_status
     return {
-        "elapsed_s": (st.play_idx / tx.fs) if st else 0.0,
-        "samples": st.play_idx if st else 0,
+        "elapsed_s": (st.play_idx * W.BLOCK / tx.fs) if st else 0.0,
+        "samples": (st.play_idx * W.BLOCK) if st else 0,
         "underflow": st.sample_fifo_underflows if st else 0,
         "device_underrun": st.underruns if st else 0,
         "clipped": st.clipped if st else 0,

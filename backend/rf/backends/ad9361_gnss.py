@@ -79,15 +79,29 @@ def _enter_gnss(sdr) -> None:
     sdr._gs_gnss_len = 0
 
 
+_MIN_BUF_WORDS = 1 << 14      # 64 KiB: one kernel buffer carries CFG and block groups
+
+
 def _buffer(handle, n: int):
+    """One kernel DMA buffer, reused for every push (``push(count)`` sends only
+    the first ``count`` words).  Re-creating a Buffer right after destroying
+    one fails on libiio ("OSError: [Errno 0]" on every second create), so a
+    larger one is only allocated when a push does not fit."""
     buf = getattr(handle, "_gs_gnss_buf", None)
-    if buf is not None and handle._gs_gnss_len == n:
+    if buf is not None and handle._gs_gnss_len >= n:
         return buf
     import iio
     handle._gs_gnss_buf = None
-    handle._gs_gnss_buf = iio.Buffer(handle._txdac, n, False)   # cyclic=False
-    handle._gs_gnss_len = n
-    return handle._gs_gnss_buf
+    cap = max(n, _MIN_BUF_WORDS)
+    last = None
+    for _ in range(2):
+        try:
+            handle._gs_gnss_buf = iio.Buffer(handle._txdac, cap, False)   # cyclic=False
+            handle._gs_gnss_len = cap
+            return handle._gs_gnss_buf
+        except OSError as ex:
+            last = ex
+    raise last
 
 
 def write_words(handle, words) -> None:
@@ -96,7 +110,7 @@ def write_words(handle, words) -> None:
     w = np.ascontiguousarray(words, dtype="<u4")
     buf = _buffer(handle, int(w.size))
     buf.write(bytearray(w.tobytes()))
-    buf.push()
+    buf.push(int(w.size))
 
 
 def write(handle, blocks) -> None:

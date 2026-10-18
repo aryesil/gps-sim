@@ -17,7 +17,7 @@
 //                              empty (divclk view), b6 cmd FIFO full seen,
 //                              [31:16] queued command words = async cmd FIFO
 //                              level + gs_top internal FIFO level
-//   0x10/0x14 PLAY_IDX LO/HI   RO  64-bit sample index. Not coherent: read
+//   0x10/0x14 PLAY_IDX LO/HI   RO  64-bit block index (blocks of 65536 samples). Not coherent: read
 //                              HI, LO, HI and retry if HI differs.
 //   0x18 UNDERRUNS         RO  (engine counters, relative to last clear)
 //   0x1C DROPPED_LATE, 0x20 CLIPPED, 0x24 CHIP_LATE, 0x28 BAD_WORDS

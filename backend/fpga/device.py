@@ -104,7 +104,7 @@ class GnssStatus:
 
     @property
     def play_block(self) -> float:
-        return self.play_idx / W.BLOCK
+        return float(self.play_idx)        # the register counts blocks
 
 
 _COUNTER_REGS = {
@@ -359,7 +359,7 @@ class FakeEngine:
                 continue
             idx, chans = it
             out = self.model.feed_block(idx, chans)
-            self.play_idx += len(out)
+            self.play_idx += len(out) // W.BLOCK   # the register counts blocks
             if self.keep_samples and len(out):
                 self.samples.append(out)
 
