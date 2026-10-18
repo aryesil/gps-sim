@@ -44,3 +44,6 @@ fpga/vec/
 *.str
 vivado*.jou
 vivado*.log
+
+# OOC synthesis reports
+fpga/synth/reports/
