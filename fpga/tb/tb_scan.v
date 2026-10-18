@@ -20,7 +20,9 @@ module tb_scan;
     wire [3:0] sc_pipe; wire [SW-1:0] sc_slot; wire sc_bank;
     wire sc_we; wire [3:0] sc_wpipe; wire [SW-1:0] sc_wslot; wire sc_wbank;
     wire sc_wwhich; wire [31:0] sc_wword; wire [6:0] sc_wwidx;
-    wire [P*`GS_SCI_W-1:0] info_all;
+    wire [P*`GS_SCI_W-1:0] info_all_c;
+    reg  [P*`GS_SCI_W-1:0] info_all;      // the pipes register sc_info (sc_info_q)
+    always @(posedge clk) info_all <= info_all_c;
     reg shadow_bank = 1'b1, shadow_dirty = 0;
     wire shadow_clean;
 
@@ -47,7 +49,7 @@ module tb_scan;
     genvar gp;
     generate for (gp = 0; gp < P; gp = gp + 1) begin : g_info
         wire [31:0] ei = (sc_bank * P + gp) * S + sc_slot;
-        assign info_all[gp*`GS_SCI_W +: `GS_SCI_W] = {e_nxtl[ei], e_nxtw[ei], e_curw[ei], e_curl[ei],
+        assign info_all_c[gp*`GS_SCI_W +: `GS_SCI_W] = {e_nxtl[ei], e_nxtw[ei], e_curw[ei], e_curl[ei],
                                                       e_prn[ei], e_kind[ei], e_valid[ei]};
     end endgenerate
 

@@ -42,12 +42,16 @@
 `include "gs_defs.vh"
 
 // One bank of per-slot (8 slots) storage.  Separate async-read arrays, one
-// write port each; the write sources are arbitrated per array.
+// write port each; the write sources are arbitrated per array.  The wide arrays
+// (parb, st) are split into NGP / NGS column groups, each with its own address
+// and enable copy (fan-out / placement); the groups hold identical addresses.
+`define GS_NGP 3
+`define GS_NGS 3
 module gs_pipe_bank (
     input  wire        clk,
     // read A: pipe issue (one address copy per array group: placement/fan-out)
-    input  wire  [2:0] ra_pb,       // parh, parb
-    input  wire  [2:0] ra_st,       // st
+    input  wire [3*`GS_NGP-1:0] ra_pb,   // parb groups (group 0 also parh)
+    input  wire [3*`GS_NGS-1:0] ra_st,   // st groups
     input  wire  [2:0] ra_m,        // curw, curx
     output wire [11:0] a_parh,      // PAR[11:0]
     output wire [160:0] a_parb,     // PAR[172:12]
@@ -63,15 +67,18 @@ module gs_pipe_bank (
     output wire  [6:0] c_nxtx,
     output wire        c_nxtl,
     // loader write (enable and slot copies per array group)
-    input  wire        lw_en,
-    input  wire  [2:0] lw_slot_p,   // parh, parb
-    input  wire  [2:0] lw_slot_s,   // st
+    input  wire [`GS_NGP-1:0] lw_en_p,
+    input  wire [3*`GS_NGP-1:0] lw_slot_p,
+    input  wire [`GS_NGS-1:0] lw_en_s,
+    input  wire [3*`GS_NGS-1:0] lw_slot_s,
+    input  wire        lw_en,       // curx, nxtl
     input  wire  [2:0] lw_slot_m,   // curx, nxtl
     input  wire [`GS_PAR_W-1:0] lw_par,
     input  wire [`GS_ST_W-1:0]  lw_st,
     // pipe write
+    input  wire [`GS_NGS-1:0] pw_en_s,
+    input  wire [3*`GS_NGS-1:0] pw_slot_s,
     input  wire        pw_en,
-    input  wire  [2:0] pw_slot_s,   // st
     input  wire  [2:0] pw_slot_m,   // curw, curx
     input  wire [140:0] pw_st,
     input  wire        px_en,       // word crossing: CUR <- NXT
@@ -81,17 +88,22 @@ module gs_pipe_bank (
     // scanner write (separate registered enables for CUR / NXT)
     input  wire        swc_en,
     input  wire        swn_en,
-    input  wire  [2:0] sw_slot,
+    input  wire  [2:0] sw_slot_n,   // nxtw
+    input  wire  [2:0] sw_slot_w,   // curw
+    input  wire  [2:0] sw_slot_x,   // curx, nxtl
     input  wire [31:0] sw_word,
     input  wire  [6:0] sw_widx
 );
+    localparam NGP = `GS_NGP;
+    localparam NGS = `GS_NGS;
+    localparam PBW = 161;           // parb width
+    localparam PGW = 54;            // parb group width (last group: 161 - 2*54 = 53)
+    localparam SGW = 47;            // st group width (3 * 47 = 141)
     // ST[31:0] (carrier phase) is stored with the +2^19 table-rounding offset
     // already applied by the loader (phase' = phase + 2^19 mod 2^32), so the
     // table index is phase'[31:20] without an adder in front of the BRAM.
     wire [140:0] lw_st_adj = lw_st[140:0];
     reg [11:0]  parh [0:7];
-    reg [160:0] parb [0:7];
-    reg [140:0] st   [0:7];
     reg [31:0]  curw [0:7];
     reg [7:0]   curx [0:7];
     reg [38:0]  nxtw [0:7];         // {widx, word}
@@ -99,7 +111,7 @@ module gs_pipe_bank (
     integer i;
     initial begin
         for (i = 0; i < 8; i = i + 1) begin
-            parh[i] = 12'd0; parb[i] = 161'd0; st[i] = 141'd0;
+            parh[i] = 12'd0;
             curw[i] = 32'd0; curx[i] = 8'd0; nxtw[i] = 39'd0; nxtl[i] = 1'b0;
         end
     end
@@ -109,34 +121,50 @@ module gs_pipe_bank (
     // assignments, the tool turned the RAMs into always-write RAMs with a
     // read-back of the old value through a second address (huge fan-out on the
     // scanner slot, extra LUT in the data path).
-    wire        st_we   = pw_en | lw_en;
-    wire  [2:0] st_wa   = pw_en ? pw_slot_s : lw_slot_s;
-    wire [140:0] st_wd  = pw_en ? pw_st : lw_st_adj;
     wire        cw_we   = px_en | swc_en;
-    wire  [2:0] cw_wa   = px_en ? pw_slot_m : sw_slot;
+    wire  [2:0] cw_wa   = px_en ? pw_slot_m : sw_slot_w;
     wire [31:0] cw_wd   = px_en ? px_word : sw_word;
     wire        cx_we   = px_en | lw_en | swc_en;
-    wire  [2:0] cx_wa   = px_en ? pw_slot_m : (lw_en ? lw_slot_m : sw_slot);
+    wire  [2:0] cx_wa   = px_en ? pw_slot_m : (lw_en ? lw_slot_m : sw_slot_x);
     wire  [7:0] cx_wd   = px_en ? {px_loaded, px_widx} :
                           (lw_en ? {1'b0, lw_st[147:141]} : {1'b1, sw_widx});
     wire        nl_we   = lw_en | swn_en;
-    wire  [2:0] nl_wa   = lw_en ? lw_slot_m : sw_slot;
+    wire  [2:0] nl_wa   = lw_en ? lw_slot_m : sw_slot_x;
 
     always @(posedge clk) begin
-        if (lw_en) begin
-            parh[lw_slot_p] <= lw_par[11:0];
-            parb[lw_slot_p] <= lw_par[`GS_PAR_W-1:12];
-        end
-        if (st_we) st[st_wa]   <= st_wd;
+        if (lw_en_p[0]) parh[lw_slot_p[2:0]] <= lw_par[11:0];
         if (cw_we) curw[cw_wa] <= cw_wd;
         if (cx_we) curx[cx_wa] <= cx_wd;
-        if (swn_en) nxtw[sw_slot] <= {sw_widx, sw_word};
+        if (swn_en) nxtw[sw_slot_n] <= {sw_widx, sw_word};
         if (nl_we) nxtl[nl_wa] <= ~lw_en;
     end
 
-    assign a_parh = parh[ra_pb];
-    assign a_parb = parb[ra_pb];
-    assign a_st   = st[ra_st];
+    genvar g;
+    generate
+        for (g = 0; g < NGP; g = g + 1) begin : g_pb
+            localparam LO = g * PGW;
+            localparam W  = (g == NGP-1) ? PBW - (NGP-1)*PGW : PGW;
+            reg [W-1:0] arr [0:7];
+            integer k;
+            initial for (k = 0; k < 8; k = k + 1) arr[k] = {W{1'b0}};
+            always @(posedge clk)
+                if (lw_en_p[g]) arr[lw_slot_p[g*3 +: 3]] <= lw_par[12+LO +: W];
+            assign a_parb[LO +: W] = arr[ra_pb[g*3 +: 3]];
+        end
+        for (g = 0; g < NGS; g = g + 1) begin : g_st
+            localparam LO = g * SGW;
+            reg [SGW-1:0] arr [0:7];
+            integer k;
+            initial for (k = 0; k < 8; k = k + 1) arr[k] = {SGW{1'b0}};
+            wire          we = pw_en_s[g] | lw_en_s[g];
+            wire    [2:0] wa = pw_en_s[g] ? pw_slot_s[g*3 +: 3] : lw_slot_s[g*3 +: 3];
+            wire [SGW-1:0] wd = pw_en_s[g] ? pw_st[LO +: SGW] : lw_st_adj[LO +: SGW];
+            always @(posedge clk) if (we) arr[wa] <= wd;
+            assign a_st[LO +: SGW] = arr[ra_st[g*3 +: 3]];
+        end
+    endgenerate
+
+    assign a_parh = parh[ra_pb[2:0]];
     assign a_curw = curw[ra_m];
     assign a_curx = curx[ra_m];
 
@@ -169,7 +197,8 @@ module gs_pipe #(parameter PIDX = 0) (
     // scanner access
     input  wire  [2:0] sc_slot,
     input  wire        sc_bank,
-    output wire [`GS_SCI_W-1:0] sc_info,
+    output wire [`GS_SCI_W-1:0] sc_info,     // combinational (bench use)
+    output reg  [`GS_SCI_W-1:0] sc_info_q,   // registered copy: valid one clock after sc_slot/sc_bank
     input  wire        sc_we,
     input  wire  [3:0] sc_wpipe,
     input  wire  [2:0] sc_wslot,
@@ -194,26 +223,36 @@ module gs_pipe #(parameter PIDX = 0) (
     // ------------------------------------------------ boundary registers
     // Loader / scanner write buses are registered once at the pipe boundary.
     // Effect: loader / scanner writes land one clock later than documented.
-    (* dont_touch = "true" *) reg  [1:0] lwe;               // loader write, per bank
+    // Enable and slot copies are made per bank and per RAM array group (parb /
+    // st column groups, misc), so no copy drives more than a few RAMs.
+    localparam NGP = `GS_NGP;
+    localparam NGS = `GS_NGS;
+    (* dont_touch = "true" *) reg  [2*NGP-1:0] lwe_p;       // loader write enables [bank*NGP + group]
+    (* dont_touch = "true" *) reg  [2*NGS-1:0] lwe_s;
+    (* dont_touch = "true" *) reg  [1:0] lwe_m;             // misc (curx, nxtl)
     (* dont_touch = "true" *) reg  [1:0] swc, swn;          // scanner CUR / NXT write, per bank
-    (* dont_touch = "true" *) reg [17:0] lq_sl;             // loader slot copies [bank*9 + {par,st,misc}*3]
-    (* dont_touch = "true" *) reg  [2:0] sq_slot;
-    reg [`GS_PAR_W-1:0]    lq_par;
-    reg [`GS_ST_W-1:0]     lq_st;
-    reg             [31:0] sq_word;
-    reg              [6:0] sq_widx;
+    (* dont_touch = "true" *) reg [2*3*NGP-1:0] lq_slp;     // loader slot copies [(bank*NGP + group)*3]
+    (* dont_touch = "true" *) reg [2*3*NGS-1:0] lq_sls;
+    (* dont_touch = "true" *) reg        [5:0] lq_slm;      // [bank*3]
+    (* dont_touch = "true" *) reg        [17:0] sq_slot;    // scanner write slot [bank*9 + {nxtw,curw,curx}*3]
+    // one copy per pipe: without dont_touch the tool merged them across pipes
+    (* dont_touch = "true" *) reg [`GS_PAR_W-1:0]    lq_par;
+    (* dont_touch = "true" *) reg [`GS_ST_W-1:0]     lq_st;
+    (* dont_touch = "true" *) reg             [31:0] sq_word;
+    (* dont_touch = "true" *) reg              [6:0] sq_widx;
     wire l_mine = l_we && (l_pipe == PIDX);
     wire s_mine = sc_we && (sc_wpipe == PIDX);
     always @(posedge clk) begin
-        lwe[0] <= rst ? 1'b0 : (l_mine && !l_bank);
-        lwe[1] <= rst ? 1'b0 : (l_mine &&  l_bank);
+        lwe_p  <= rst ? {2*NGP{1'b0}} : {{NGP{l_mine &&  l_bank}}, {NGP{l_mine && !l_bank}}};
+        lwe_s  <= rst ? {2*NGS{1'b0}} : {{NGS{l_mine &&  l_bank}}, {NGS{l_mine && !l_bank}}};
+        lwe_m  <= rst ? 2'b00 : {l_mine && l_bank, l_mine && !l_bank};
         swc[0] <= rst ? 1'b0 : (s_mine && !sc_wbank && !sc_wwhich);
         swc[1] <= rst ? 1'b0 : (s_mine &&  sc_wbank && !sc_wwhich);
         swn[0] <= rst ? 1'b0 : (s_mine && !sc_wbank &&  sc_wwhich);
         swn[1] <= rst ? 1'b0 : (s_mine &&  sc_wbank &&  sc_wwhich);
-        lq_sl  <= {6{l_slot}};
+        lq_slp <= {2*NGP{l_slot}}; lq_sls <= {2*NGS{l_slot}}; lq_slm <= {2{l_slot}};
         lq_par <= l_par; lq_st <= l_st;
-        sq_slot <= sc_wslot;
+        sq_slot <= {6{sc_wslot}};
         sq_word <= sc_wword; sq_widx <= sc_wwidx;
     end
 
@@ -221,18 +260,20 @@ module gs_pipe #(parameter PIDX = 0) (
     // feed the read addresses of every array group and the bank selects of the
     // stage-1 registers.
     (* dont_touch = "true" *) reg        p0_v, p0_first, p0_last, p0_mute;
-    (* dont_touch = "true" *) reg  [3:0] p0_bk;             // bank copies (stage-1 muxes)
-    (* dont_touch = "true" *) reg [17:0] p0_sl;             // slot copies [bank*9 + {par,st,misc}*3]
+    (* dont_touch = "true" *) reg [NGP+NGS:0] p0_bk;       // bank copies (stage-1 muxes): parb groups, st groups, misc
+    (* dont_touch = "true" *) reg [2*3*(NGP+NGS+1)-1:0] p0_sl;  // slot copies [bank*3*(NGP+NGS+1) + {parb groups, st groups, misc}*3]
     always @(posedge clk) begin
         if (rst) p0_v <= 1'b0; else p0_v <= s_valid;
         p0_first <= s_first; p0_last <= s_last; p0_mute <= s_mute;
-        p0_bk <= {4{s_bank}};
-        p0_sl <= {6{s_slot}};
+        p0_bk <= {(NGP+NGS+1){s_bank}};
+        p0_sl <= {(2*(NGP+NGS+1)){s_slot}};
     end
 
     // stage-3 write controls (declared early, driven below)
     (* dont_touch = "true" *) reg  [1:0] r3_wv;             // pipe write enable per bank
-    (* dont_touch = "true" *) reg [11:0] r3_sl;             // slot copies: [bank*3] misc (write + NXT read), [6+bank*3] st
+    (* dont_touch = "true" *) reg [2*NGS-1:0] r3_wvs;       // the same per st column group [bank*NGS + group]
+    (* dont_touch = "true" *) reg  [5:0] r3_sl;             // slot copies [bank*3]: misc (write + NXT read)
+    (* dont_touch = "true" *) reg [2*3*NGS-1:0] r3_sls;     // slot copies of the st groups [(bank*NGS + group)*3]
     (* dont_touch = "true" *) reg        r3_bank;           // bank select of the NXT read mux
     (* dont_touch = "true" *) reg        r3_v;
     wire        w_en;
@@ -254,23 +295,28 @@ module gs_pipe #(parameter PIDX = 0) (
         for (b = 0; b < 2; b = b + 1) begin : g_bank
             gs_pipe_bank u_bank (
                 .clk(clk),
-                .ra_pb(p0_sl[b*9 +: 3]), .ra_st(p0_sl[b*9+3 +: 3]), .ra_m(p0_sl[b*9+6 +: 3]),
+                .ra_pb(p0_sl[b*3*(NGP+NGS+1) +: 3*NGP]),
+                .ra_st(p0_sl[b*3*(NGP+NGS+1)+3*NGP +: 3*NGS]),
+                .ra_m(p0_sl[b*3*(NGP+NGS+1)+3*(NGP+NGS) +: 3]),
                 .a_parh(a_parh[b]), .a_parb(a_parb[b]), .a_st(a_st[b]),
                 .a_curw(a_curw[b]), .a_curx(a_curx[b]),
                 .rb(sc_slot), .b_sci(b_sci[b]),
                 .rc(r3_sl[b*3 +: 3]), .c_nxtw(c_nxtw[b]), .c_nxtx(c_nxtx[b]), .c_nxtl(c_nxtl[b]),
-                .lw_en(lwe[b]), .lw_slot_p(lq_sl[b*9 +: 3]), .lw_slot_s(lq_sl[b*9+3 +: 3]),
-                .lw_slot_m(lq_sl[b*9+6 +: 3]), .lw_par(lq_par), .lw_st(lq_st),
-                .pw_en(r3_wv[b]), .pw_slot_s(r3_sl[6+b*3 +: 3]), .pw_slot_m(r3_sl[b*3 +: 3]),
+                .lw_en_p(lwe_p[b*NGP +: NGP]), .lw_slot_p(lq_slp[b*3*NGP +: 3*NGP]),
+                .lw_en_s(lwe_s[b*NGS +: NGS]), .lw_slot_s(lq_sls[b*3*NGS +: 3*NGS]),
+                .lw_en(lwe_m[b]), .lw_slot_m(lq_slm[b*3 +: 3]), .lw_par(lq_par), .lw_st(lq_st),
+                .pw_en_s(r3_wvs[b*NGS +: NGS]), .pw_slot_s(r3_sls[b*3*NGS +: 3*NGS]),
+                .pw_en(r3_wv[b]), .pw_slot_m(r3_sl[b*3 +: 3]),
                 .pw_st(w_st),
                 .px_en(r3_wv[b] && w_cross),
                 .px_word(c_nxtw[b]), .px_widx(c_nxtx[b]), .px_loaded(c_nxtl[b]),
-                .swc_en(swc[b]), .swn_en(swn[b]), .sw_slot(sq_slot),
+                .swc_en(swc[b]), .swn_en(swn[b]), .sw_slot_n(sq_slot[b*9 +: 3]), .sw_slot_w(sq_slot[b*9+3 +: 3]), .sw_slot_x(sq_slot[b*9+6 +: 3]),
                 .sw_word(sq_word), .sw_widx(sq_widx));
         end
     endgenerate
 
     assign sc_info = sc_bank ? b_sci[1] : b_sci[0];
+    always @(posedge clk) sc_info_q <= sc_info;
 
     // ---------------------------------------------------------- stage 1
     (* dont_touch = "true" *) reg         r1_v, r1_first, r1_last, r1_mute, r1_bank;
@@ -288,11 +334,22 @@ module gs_pipe #(parameter PIDX = 0) (
         r1_bank  <= p0_bk[0];
         r1_slot  <= p0_sl[2:0];
         r1_parh  <= p0_bk[0] ? a_parh[1] : a_parh[0];
-        r1_parb  <= p0_bk[1] ? a_parb[1] : a_parb[0];
-        r1_st    <= p0_bk[2] ? a_st[1]   : a_st[0];
-        r1_curw  <= p0_bk[3] ? a_curw[1] : a_curw[0];
-        r1_curx  <= p0_bk[3] ? a_curx[1] : a_curx[0];
+        r1_curw  <= p0_bk[NGP+NGS] ? a_curw[1] : a_curw[0];
+        r1_curx  <= p0_bk[NGP+NGS] ? a_curx[1] : a_curx[0];
     end
+
+    // wide RAM outputs: bank select per column group, each with its own select copy
+    genvar gi;
+    generate
+        for (gi = 0; gi < NGP; gi = gi + 1) begin : g_r1p
+            localparam LO = gi * 54;
+            localparam W  = (gi == NGP-1) ? 161 - (NGP-1)*54 : 54;
+            always @(posedge clk) r1_parb[LO +: W] <= p0_bk[gi] ? a_parb[1][LO +: W] : a_parb[0][LO +: W];
+        end
+        for (gi = 0; gi < NGS; gi = gi + 1) begin : g_r1s
+            always @(posedge clk) r1_st[gi*47 +: 47] <= p0_bk[NGP+gi] ? a_st[1][gi*47 +: 47] : a_st[0][gi*47 +: 47];
+        end
+    endgenerate
 
     wire [`GS_PAR_W-1:0] r1_par = {r1_parb, r1_parh};
     wire        p_valid = r1_par[0];
@@ -335,6 +392,8 @@ module gs_pipe #(parameter PIDX = 0) (
     reg         r2_chipn, r2_sgnn, r2_s11n, r2_s61n, r2_unl;
     reg  [17:0] r2_c0, r2_c1, r2_c2;
     reg  [12:0] r2_t0, r2_t1;           // word-crossing bounds in the wrap case: [t0, t1)
+    // wrap limit (upper 12 bits, from the kind) as a register
+    (* dont_touch = "true" *) reg [11:0] r2_limh;
     always @(posedge clk) begin
         if (rst) r2_v <= 1'b0; else r2_v <= r1_v;
         r2_first <= r1_first;
@@ -348,6 +407,7 @@ module gs_pipe #(parameter PIDX = 0) (
         r2_kind  <= p_kind;
         r2_ph    <= s_ph + p_cinc;
         r2_cps   <= {1'b0, s_cp} + {10'd0, p_kinc};
+        r2_limh  <= lim_of(p_kind) >> 40;
         r2_sps   <= {1'b0, s_sp} + {10'd0, p_kinc};
         r2_owidx <= s_cp[51:45];
         r2_per   <= s_per;
@@ -375,7 +435,6 @@ module gs_pipe #(parameter PIDX = 0) (
         end
     endfunction
 
-    wire [51:0] lim2 = lim_of(r2_kind);
     wire        cb_neg  = (r2_cboc == 2'd2);
     wire        cb_any  = (r2_cboc != 2'd0);
     wire        cb_pos  = ~(cb_neg ^ r2_s11n ^ r2_s61n);        // cboc*s11*s61 > 0
@@ -400,20 +459,23 @@ module gs_pipe #(parameter PIDX = 0) (
         r3_first <= r2_first;
         r3_last  <= r2_last;
         r3_bank  <= r2_bank;
-        r3_sl    <= {4{r2_slot}};
+        r3_wvs   <= !rst && r2_v && r2_pv ? {{NGS{r2_bank}}, {NGS{!r2_bank}}} : {2*NGS{1'b0}};
+        r3_sl    <= {2{r2_slot}};
+        r3_sls   <= {2*NGS{r2_slot}};
         r3_pv    <= r2_pv;
         r3_unl   <= r2_unl;
         r3_mute  <= r2_mute;
         r3_ph    <= r2_ph;
         r3_cps   <= r2_cps;
         r3_sps   <= r2_sps;
-        r3_dc    <= {1'b0, r2_cps} - {2'b00, lim2};
-        r3_ds    <= {1'b0, r2_sps} - {2'b00, lim2};
+        // lim = r2_limh << 40: only the upper bits of the subtraction need an adder
+        r3_dc    <= {({1'b0, r2_cps[52:40]} - {2'b00, r2_limh}), r2_cps[39:0]};
+        r3_ds    <= {({1'b0, r2_sps[52:40]} - {2'b00, r2_limh}), r2_sps[39:0]};
         r3_owidx <= r2_owidx;
         r3_idxn  <= r2_cps[51:45];                              // new word index, no wrap
-        r3_idxw  <= (r2_cps[51:40] - lim2[51:40]) >> 5;         // new word index, wrap
-        r3_xn    <= (r2_cps[51:45] != r2_owidx);                // word crossing, no wrap
-        r3_xw    <= ~(({1'b0, r2_cps[51:40]} >= r2_t0) && ({1'b0, r2_cps[51:40]} < r2_t1));  // wrap
+        r3_idxw  <= (r2_cps[51:40] - r2_limh) >> 5;              // new word index, wrap
+        r3_xn    <= (r2_cps[51:45] != r2_owidx);                 // word crossing, no wrap
+        r3_xw    <= ~(({1'b0, r2_cps[51:40]} >= r2_t0) && ({1'b0, r2_cps[51:40]} < r2_t1));   // wrap
         r3_per   <= r2_per;
         r3_mag   <= mag_z;
         r3_nc    <= a_neg ^ nx_nc;

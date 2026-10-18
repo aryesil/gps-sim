@@ -99,18 +99,22 @@ module gs_top (
 
     // ---- pipes
     wire [P-1:0]    p_valid, p_late;
+    // reset copy per pipe (a global rst fanned out to >1000 loads); the pipes see
+    // the reset one clock later than the other modules
+    (* dont_touch = "true" *) reg [P-1:0] rst_p;
+    always @(posedge clk) rst_p <= {P{rst}};
     wire [P*38-1:0] p_i, p_q;
     genvar g;
     generate
         for (g = 0; g < P; g = g + 1) begin : g_pipe
             wire signed [37:0] oi, oq;
-            gs_pipe #(.PIDX(g)) u_pipe (.clk(clk), .rst(rst),
+            gs_pipe #(.PIDX(g)) u_pipe (.clk(clk), .rst(rst_p[g]),
                 .s_valid(s_valid), .s_slot(s_slot), .s_bank(s_bank),
                 .s_first(s_first), .s_last(s_last), .s_mute(s_mute),
                 .l_we(l_we), .l_pipe(l_pipe), .l_slot(l_slot), .l_bank(l_bank),
                 .l_par(l_par), .l_st(l_st),
                 .sc_slot(sc_slot_p[g*`GS_SCAN_SW +: `GS_SCAN_SW]), .sc_bank(sc_bank_p[g]),
-                .sc_info(sc_info_all[g*`GS_SCI_W +: `GS_SCI_W]),
+                .sc_info(), .sc_info_q(sc_info_all[g*`GS_SCI_W +: `GS_SCI_W]),
                 .sc_we(sc_we), .sc_wpipe(sc_wpipe), .sc_wslot(sc_wslot),
                 .sc_wbank(sc_wbank), .sc_wwhich(sc_wwhich),
                 .sc_wword(sc_wword), .sc_wwidx(sc_wwidx),

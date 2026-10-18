@@ -39,7 +39,7 @@
 module gs_loader (input clk, input rst,
   input cmd_valid, input [31:0] cmd_data, output cmd_ready,
   input [63:0] target_idx, input shadow_bank, input load_enable,
-  output reg l_we, output reg [3:0] l_pipe, output reg [`GS_SLOT_W-1:0] l_slot, output reg l_bank,
+  (* max_fanout = 32 *) output reg l_we, (* max_fanout = 32 *) output reg [3:0] l_pipe, (* max_fanout = 32 *) output reg [`GS_SLOT_W-1:0] l_slot, (* max_fanout = 32 *) output reg l_bank,
   output [`GS_PAR_W-1:0] l_par, output [`GS_ST_W-1:0] l_st,
   output reg shadow_dirty, output reg shadow_loaded,
   output reg cfg_valid, output reg [6:0] cfg_nch, output reg [31:0] cfg_fs, cfg_shift, output reg [63:0] cfg_start,
@@ -106,10 +106,13 @@ module gs_loader (input clk, input rst,
   // -------------------------------------------------------- source / replay
   reg [31:0] rq0, rq1, rq2;
   reg [1:0]  rq_n;
-  wire        wv = (rq_n != 0) | hv;
-  wire [31:0] w  = (rq_n != 0) ? rq0 : s0;
+  // registered copies of (rq_n != 0): one for the control (take / wv), one for the
+  // word select (32-bit mux); dont_touch so the two are not merged
+  (* dont_touch = "true" *) reg rq_nzt, rq_nzw;
+  wire        wv = rq_nzt | hv;
+  wire [31:0] w  = rq_nzw ? rq0 : s0;
   reg         take;
-  assign fifo_pop = take & (rq_n == 0);
+  assign fifo_pop = take & ~rq_nzt;
 
   // ----------------------------------------------------------------- parser
   localparam S_HDR = 0, S_CFG = 1, S_B = 2, S_WAIT = 3, S_CLR = 4, S_REC = 5,
@@ -199,17 +202,21 @@ module gs_loader (input clk, input rst,
 
   always @(posedge clk) begin
     l_we <= 1'b0; shadow_dirty <= 1'b0;
+    // address bus registered every clock (no load_enable in its path); it is only
+    // meaningful in the clock where l_we is high
+    l_bank <= shadow_bank; l_pipe <= wr_pipe[3:0]; l_slot <= wr_slot[`GS_SLOT_W-1:0];
     tgt_q <= target_idx;
     if (rst) begin
-      st <= S_HDR; cnt <= 0; rq_n <= 0; ld_done <= 1'b0; ldly <= 0;
+      st <= S_HDR; cnt <= 0; rq_n <= 0; rq_nzt <= 1'b0; rq_nzw <= 1'b0; ld_done <= 1'b0; ldly <= 0;
       shadow_loaded <= 1'b0; cfg_valid <= 1'b0; cfg_nch <= 0; cfg_fs <= 0;
       cfg_shift <= 0; cfg_start <= 0; dropped_late <= 0; bad_words <= 0;
       left <= 0; left_nz <= 1'b0; wi <= 0; cl_ch <= 0; blk_idx <= 0; blk_nch <= 0; hlen <= 0;
       tgt_q <= 0;
     end else begin
       // replay buffer shift (overridden by a failure below)
-      if (take && rq_n != 0) begin
+      if (take && rq_nzt) begin
         rq0 <= rq1; rq1 <= rq2; rq_n <= rq_n - 1'b1;
+        rq_nzt <= (rq_n != 2'd1); rq_nzw <= (rq_n != 2'd1);
       end
       begin
         case (st)
@@ -271,11 +278,11 @@ module gs_loader (input clk, input rst,
           end
           S_RPC: begin                     // replay after a bad CFG: h1 goes in front of the buffer
             st <= S_HDR; cnt <= 0;
-            rq0 <= h1; rq1 <= rq0; rq2 <= rq1; rq_n <= rq_n + 1'b1;
+            rq0 <= h1; rq1 <= rq0; rq2 <= rq1; rq_n <= rq_n + 1'b1; rq_nzt <= 1'b1; rq_nzw <= 1'b1;
           end
           S_RPB: begin                     // replay after a bad BLOCK header: h1, h2, h3
             st <= S_HDR; cnt <= 0;
-            rq0 <= h1; rq1 <= h2; rq2 <= h3; rq_n <= 2'd3;
+            rq0 <= h1; rq1 <= h2; rq2 <= h3; rq_n <= 2'd3; rq_nzt <= 1'b1; rq_nzw <= 1'b1;
           end
           S_SET: st <= S_WAIT;
           S_WAIT: begin
@@ -286,8 +293,7 @@ module gs_loader (input clk, input rst,
             if (!tgt_eq) enter_skip;
             else if (cl_ch >= TOTAL) st <= (blk_nch == 0) ? S_FIN : S_REC;
             else if (load_enable) begin
-              l_we <= 1'b1; shadow_dirty <= 1'b1; l_bank <= shadow_bank;
-              l_pipe <= wr_pipe[3:0]; l_slot <= wr_slot[`GS_SLOT_W-1:0];
+              l_we <= 1'b1; shadow_dirty <= 1'b1;
               cl_ch <= cl_ch + 1'b1;
               if (cl_ch == TOTAL - 1) st <= (blk_nch == 0) ? S_FIN : S_REC;
             end
@@ -304,8 +310,7 @@ module gs_loader (input clk, input rst,
           S_WR: begin
             if (!tgt_eq) enter_skip;
             else if (load_enable) begin
-              l_we <= 1'b1; shadow_dirty <= 1'b1; l_bank <= shadow_bank;
-              l_pipe <= wr_pipe[3:0]; l_slot <= wr_slot[`GS_SLOT_W-1:0];
+              l_we <= 1'b1; shadow_dirty <= 1'b1;
               st <= (!left_nz) ? S_FIN : S_REC;
             end
           end

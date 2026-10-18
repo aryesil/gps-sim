@@ -57,12 +57,18 @@ module gs_seq (input clk, input rst, input enable,
   assign target_idx = tgt_r;
   assign load_enable = le_r;
 
+  // local registered copy of cfg_valid (the loader register sits far from the
+  // sequencer; cfg_valid only rises on a CFG commit and the block start waits for
+  // shadow_loaded anyway, so one more clock is not visible)
+  (* dont_touch = "true" *) reg cfg_vq;
+  always @(posedge clk) cfg_vq <= rst ? 1'b0 : cfg_valid;
+
   wire ready_blk = shadow_loaded & shadow_clean;
   reg  at_edge;       // == (scnt == 0), registered
   // sl1 = source + 1 in two registered steps (low half + its carry, then the upper half):
   // the settle time of sl1 after cfg_start changes is 2 clocks (a block is loaded
   // long after the CFG that sets cfg_start, see gs_loader)
-  wire [63:0] sl_src = (!started && cfg_valid) ? cfg_start : start_l;
+  wire [63:0] sl_src = (!started && cfg_vq) ? cfg_start : start_l;
   reg  [31:0] sl_lo1, sl_hi0;
   reg         sl_cy;
   always @(posedge clk) begin
@@ -78,7 +84,7 @@ module gs_seq (input clk, input rst, input enable,
       s_first <= 1'b0; s_last <= 1'b0; s_mute <= 1'b0;
     end else begin
       if (quiet != 0) begin quiet <= quiet - 1'b1; le_r <= (quiet == 5'd1); end
-      if (!started && cfg_valid) begin nch_l <= cfg_nch; start_l <= cfg_start; tgt_r <= cfg_start; end
+      if (!started && cfg_vq) begin nch_l <= cfg_nch; start_l <= cfg_start; tgt_r <= cfg_start; end
       if (cont) begin
         s_slot <= s_slot + 1'b1; s_first <= 1'b0;
         s_last <= (slot_n2 == T); cont <= (slot_n2 != T);
@@ -86,7 +92,7 @@ module gs_seq (input clk, input rst, input enable,
         s_valid <= 1'b0; s_first <= 1'b0; s_last <= 1'b0; s_slot <= 0;
         if (enable && out_space) begin
           if (!started) begin
-            if (cfg_valid && ready_blk) begin
+            if (cfg_vq && ready_blk) begin
               started <= 1'b1; bank_r <= ~bank_r; play_r <= start_l; tgt_r <= sl1; quiet <= SWAP_QUIET; le_r <= 1'b0;
               s_mute <= 1'b0;
               s_valid <= 1'b1; s_slot <= 0; s_first <= 1'b1; cont <= 1'b1; scnt <= scnt + 1'b1; at_edge <= (scnt == {`GS_BLOCK_LOG2{1'b1}});

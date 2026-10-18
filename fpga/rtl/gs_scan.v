@@ -12,7 +12,8 @@
 //
 // Latency (clock t = first clock in which sc_pipe/sc_slot/sc_bank hold the
 // address A; the pipe's combinational sc_info for A is valid in that same t):
-//   t   : sc_info_all[sc_pipe*GS_SCI_W +: GS_SCI_W] muxed and registered
+//   t   : sc_info_all[sc_pipe*GS_SCI_W +: GS_SCI_W] muxed and registered (the pipe's
+//         sc_info is registered inside the pipe, sc_info_q; the timing is unchanged)
 //   t+1 : decision (comb), base-table BRAM read issued
 //   t+2 : rom address = base + widx registered
 //   t+3 : code ROM BRAM read issued
@@ -124,11 +125,12 @@ module gs_scan (
     // distributed-RAM read + 12:1 mux did not fit in one clock); the squash
     // window is one clock longer to match (dirty_q2).
     reg s0v;
-    reg [P_SCI_BITS-1:0] info_all_q;
+    // sc_info_all is already registered inside the pipes (sc_info_q), one clock
+    // after the address (sc_slot_p/sc_bank_p), which replaces the former info_all_q.
+    wire [P_SCI_BITS-1:0] info_all_q = sc_info_all;
     reg [3:0] a0_pipe; reg [SW-1:0] a0_slot; reg a0_bank;
     always @(posedge clk) begin
         s0v <= rst ? 1'b0 : 1'b1;
-        info_all_q <= sc_info_all;
         a0_pipe <= sc_pipe; a0_slot <= sc_slot; a0_bank <= sc_bank;
     end
     reg s1v;
@@ -158,9 +160,16 @@ module gs_scan (
     wire f_nxt        = s1v & i_valid & ~f_cur & (~i_nxtl | (i_nxtw != succ));
     wire fetch        = (f_cur | f_nxt) & ~kill;
 
-    // base table read (registered): result valid in stage t+2
-    reg [15:0] base_q;
-    always @(posedge clk) base_q <= base[{i_kind, i_prn}];
+    // base table read (registered, issued from info_mux): base_q valid with info_r, base_r in stage t+2
+    // The base table is read one clock earlier, with the address muxed from the
+    // pipe info (same clock as info_r is loaded), and the BRAM output is moved
+    // into a fabric register: the base + widx adder then starts from a flop, not
+    // from the BRAM clk-to-q.  base_r is aligned with s2_widx (stage t+2).
+    reg [15:0] base_q, base_r;
+    always @(posedge clk) begin
+        base_q <= base[{info_mux[2:1], info_mux[8:3]}];
+        base_r <= base_q;
+    end
 
     // ---- stage t+2 ----
     reg s2v, s2_which; reg [6:0] s2_widx;
@@ -177,7 +186,7 @@ module gs_scan (
     (* dont_touch = "true" *) reg [15:0] rom_addr;   // keep the flop (no retiming into the ROM BRAM address)
     always @(posedge clk) begin
         s3v <= rst ? 1'b0 : (s2v & ~kill);
-        rom_addr <= base_q + {9'd0, s2_widx};
+        rom_addr <= base_r + {9'd0, s2_widx};
         s3_which <= s2_which; s3_widx <= s2_widx;
         s3_pipe <= s2_pipe; s3_slot <= s2_slot; s3_bank <= s2_bank;
     end
