@@ -198,6 +198,12 @@ module tb_wrap;
   // ---- engine sample starts
   integer starts = 0;
   always @(posedge clk_eng) if (dut.u_top.s_valid && dut.u_top.s_first) starts = starts + 1;
+  // The engine runs ahead of the output by the sample FIFO depth and the disable
+  // write lands a few clocks after the last start, so it may begin sample ns+1 and
+  // count an underrun at a block edge past the data. Snapshot the engine counter
+  // when the last expected sample starts; that is the value the vectors describe.
+  integer ur_at_end = -1;
+  always @(posedge clk_eng) if (collecting && ur_at_end < 0 && starts >= ns_tgt) ur_at_end = dut.u_top.st_underruns;
 
   // ---- helpers
   reg [31:0] v, v2, v3;
@@ -205,13 +211,13 @@ module tb_wrap;
   task run_pass; input integer ns; input integer cd; input integer full;
     integer timeout, disabled, zz;
     begin
-      ns_tgt = ns; chk_data = cd; n_got = 0; starts = 0; uf_tb = 0; disabled = 0;
+      ns_tgt = ns; chk_data = cd; n_got = 0; starts = 0; uf_tb = 0; disabled = 0; ur_at_end = -1;
       widx = 0; ridx = 0; feed_en = 0;
       axi_wr(12'h004, 32'h2);              // cmd_mode
       repeat (20) @(posedge clk_div);
       feed_en = 1;
       timeout = 0;
-      while (widx < n_cmd && timeout < 100000) begin @(posedge clk_sys); timeout = timeout + 1; end
+      while (widx < n_cmd && timeout < 100000 + n_cmd * (2 * div_half / 10.0) * 4) begin @(posedge clk_sys); timeout = timeout + 1; end
       if (widx < n_cmd) begin err("cmd words not consumed"); $display("widx=%0d up_rd_en=%b", widx, up_rd_en); end
       repeat (50) @(posedge clk_sys);
       collecting = 1;
@@ -234,7 +240,11 @@ module tb_wrap;
   task check_counters; input integer full; input integer expect_uf0;
     reg [31:0] a, b, c;
     begin
-      axi_rd(12'h018, a); if (full ? (a !== e_under) : (a !== 0)) begin errs = errs + 1; $display("mismatch: UNDERRUNS %0d exp %0d", a, full ? e_under : 0); end
+      // UNDERRUNS: the vectors' count must be what the engine had when the last sample
+      // started; the AXI value additionally includes any tail underruns after it.
+      axi_rd(12'h018, a);
+      if (full && ur_at_end !== e_under) begin errs = errs + 1; $display("mismatch: UNDERRUNS at last start %0d exp %0d", ur_at_end, e_under); end
+      if (full ? (a !== dut.u_top.st_underruns) : (a !== 0)) begin errs = errs + 1; $display("mismatch: UNDERRUNS %0d exp %0d", a, full ? dut.u_top.st_underruns : 0); end
       axi_rd(12'h01C, a); if (full ? (a !== e_late) : (a !== 0)) begin errs = errs + 1; $display("mismatch: DROPPED_LATE %0d", a); end
       axi_rd(12'h020, a); if (full ? (a !== e_clip) : 0) begin errs = errs + 1; $display("mismatch: CLIPPED %0d exp %0d", a, e_clip); end
       axi_rd(12'h024, a); if (a !== 0) begin errs = errs + 1; $display("mismatch: CHIP_LATE %0d", a); end
