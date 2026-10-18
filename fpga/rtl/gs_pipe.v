@@ -73,6 +73,10 @@ module gs_pipe_bank (
     input  wire [31:0] sw_word,
     input  wire  [6:0] sw_widx
 );
+    // ST[31:0] (carrier phase) is stored with the +2^19 table-rounding offset
+    // already applied by the loader (phase' = phase + 2^19 mod 2^32), so the
+    // table index is phase'[31:20] without an adder in front of the BRAM.
+    wire [140:0] lw_st_adj = lw_st[140:0];
     reg [11:0]  parh [0:7];
     reg [160:0] parb [0:7];
     reg [140:0] st   [0:7];
@@ -94,7 +98,7 @@ module gs_pipe_bank (
             parb[lw_slot] <= lw_par[`GS_PAR_W-1:12];
         end
         if (pw_en)      st[pw_slot] <= pw_st;
-        else if (lw_en) st[lw_slot] <= lw_st[140:0];
+        else if (lw_en) st[lw_slot] <= lw_st_adj;
 
         if (px_en)                       curw[pw_slot] <= px_word;
         else if (sw_en && !sw_which)     curw[sw_slot] <= sw_word;
@@ -154,19 +158,35 @@ module gs_pipe #(parameter PIDX = 0) (
     input  wire  [6:0] sc_wwidx,
     // outputs
     output reg         o_valid,
-    output reg  signed [37:0] o_i,
-    output reg  signed [37:0] o_q,
+    output wire signed [37:0] o_i,
+    output wire signed [37:0] o_q,
     output reg         o_chip_late
 );
     localparam LAT_PIPE = 6;        // documentation only
 
     // ------------------------------------------------------------ banks
-    wire lwe = l_we && (l_pipe == PIDX);
-    wire swe = sc_we && (sc_wpipe == PIDX);
+    // Loader and scanner write buses are registered once at the pipe boundary
+    // (local copies: the 12-pipe broadcast does not fit a clock otherwise).
+    // Effect: loader / scanner writes land one clock later than documented.
+    reg                    lwe, swe;
+    reg                    lq_bank, sq_bank, sq_which;
+    reg              [2:0] lq_slot, sq_slot;
+    reg [`GS_PAR_W-1:0]    lq_par;
+    reg [`GS_ST_W-1:0]     lq_st;
+    reg             [31:0] sq_word;
+    reg              [6:0] sq_widx;
+    always @(posedge clk) begin
+        lwe <= rst ? 1'b0 : (l_we && (l_pipe == PIDX));
+        swe <= rst ? 1'b0 : (sc_we && (sc_wpipe == PIDX));
+        lq_bank <= l_bank; lq_slot <= l_slot; lq_par <= l_par; lq_st <= l_st;
+        sq_bank <= sc_wbank; sq_slot <= sc_wslot; sq_which <= sc_wwhich;
+        sq_word <= sc_wword; sq_widx <= sc_wwidx;
+    end
 
     // stage-3 write controls (declared early, driven below)
-    reg         r3_v, r3_bank;
-    reg   [2:0] r3_slot;
+    reg         r3_v;
+    (* max_fanout = 16 *) reg         r3_bank;     // replicated by the tool (read/write addresses of 2 banks)
+    (* max_fanout = 16 *) reg   [2:0] r3_slot;
     wire        w_en;
     wire        w_cross;
     wire [140:0] w_st;
@@ -190,12 +210,12 @@ module gs_pipe #(parameter PIDX = 0) (
                 .a_curw(a_curw[b]), .a_curx(a_curx[b]),
                 .rb(sc_slot), .b_sci(b_sci[b]),
                 .rc(r3_slot), .c_nxtw(c_nxtw[b]), .c_nxtx(c_nxtx[b]), .c_nxtl(c_nxtl[b]),
-                .lw_en(lwe && (l_bank == b)), .lw_slot(l_slot), .lw_par(l_par), .lw_st(l_st),
+                .lw_en(lwe && (lq_bank == b)), .lw_slot(lq_slot), .lw_par(lq_par), .lw_st(lq_st),
                 .pw_en(w_en && (r3_bank == b)), .pw_slot(r3_slot), .pw_st(w_st),
                 .px_en(w_en && (r3_bank == b) && w_cross),
                 .px_word(c_nxtw[b]), .px_widx(c_nxtx[b]), .px_loaded(c_nxtl[b]),
-                .sw_en(swe && (sc_wbank == b)), .sw_slot(sc_wslot), .sw_which(sc_wwhich),
-                .sw_word(sc_wword), .sw_widx(sc_wwidx));
+                .sw_en(swe && (sq_bank == b)), .sw_slot(sq_slot), .sw_which(sq_which),
+                .sw_word(sq_word), .sw_widx(sq_widx));
         end
     endgenerate
 
@@ -240,10 +260,11 @@ module gs_pipe #(parameter PIDX = 0) (
     wire  [4:0] s_per   = r1_st[140:136];
 
     // carrier index -> table (output valid 3 clocks later = stage 4)
-    wire [31:0] ph_r = s_ph + 32'h0008_0000;
-    wire [11:0] idx  = ph_r[31:20];
-    wire signed [15:0] t_cos, t_sin;
-    gs_sincos u_sc (.clk(clk), .in_idx(idx), .out_cos(t_cos), .out_sin(t_sin));
+    wire [11:0] idx  = s_ph[31:20];     // s_ph already includes the +2^19 offset
+    wire signed [15:0] t_cm, t_sm;            // |cos|, |sin| (table values >= 0)
+    wire               pre_nc, pre_ns;        // quadrant signs, one clock before t_cm/t_sm
+    gs_sincos u_sc (.clk(clk), .in_idx(idx), .out_cos(), .out_sin(),
+                    .out_cm(t_cm), .out_sm(t_sm), .pre_nc(pre_nc), .pre_ns(pre_ns));
 
     // 12*cp bit 40 depends on cp[40:0] only
     wire [40:0] cp41 = s_cp[40:0];
@@ -311,7 +332,8 @@ module gs_pipe #(parameter PIDX = 0) (
     reg  [31:0] r3_ph;
     reg  [52:0] r3_cps, r3_sps;
     reg  [53:0] r3_dc, r3_ds;
-    reg   [6:0] r3_owidx;
+    reg   [6:0] r3_owidx, r3_idxn, r3_idxw;
+    reg         r3_xn, r3_xw;
     reg   [4:0] r3_per;
     reg signed [18:0] r3_a;
     always @(posedge clk) begin
@@ -329,6 +351,10 @@ module gs_pipe #(parameter PIDX = 0) (
         r3_dc    <= {1'b0, r2_cps} - {2'b00, lim2};
         r3_ds    <= {1'b0, r2_sps} - {2'b00, lim2};
         r3_owidx <= r2_owidx;
+        r3_idxn  <= r2_cps[51:45];                              // new word index, no wrap
+        r3_idxw  <= (r2_cps[51:40] - lim2[51:40]) >> 5;         // new word index, wrap
+        r3_xn    <= (r2_cps[51:45] != r2_owidx);                // word crossing, no wrap
+        r3_xw    <= (((r2_cps[51:40] - lim2[51:40]) >> 5) != r2_owidx);  // wrap
         r3_per   <= r2_per;
         r3_a     <= a2;
     end
@@ -340,8 +366,8 @@ module gs_pipe #(parameter PIDX = 0) (
     wire  [4:0] per_new = swrap ? (r3_per + 5'd1) : r3_per;
     assign w_st    = {per_new, sp_new, cp_new, r3_ph};
     assign w_en    = r3_v && r3_pv;
-    wire [6:0] nw_idx = cp_new[51:45];
-    assign w_cross = (nw_idx != r3_owidx);
+    wire [6:0] nw_idx = cwrap ? r3_idxw : r3_idxn;           // == cp_new[51:45]
+    assign w_cross = cwrap ? r3_xw : r3_xn;       // == (nw_idx != r3_owidx)
     wire [6:0] n_x = r3_bank ? c_nxtx[1] : c_nxtx[0];
     wire       n_l = r3_bank ? c_nxtl[1] : c_nxtl[0];
     wire late = w_en && !r3_mute &&
@@ -349,28 +375,30 @@ module gs_pipe #(parameter PIDX = 0) (
 
     // ---------------------------------------------------------- stage 4/5
     reg         r4_v, r4_first, r4_last;
-    reg signed [18:0] r4_a;
+    reg signed [18:0] r4_ac, r4_as;           // amplitude with the cos / sin quadrant sign
     always @(posedge clk) begin
         if (rst) r4_v <= 1'b0; else r4_v <= r3_v;
         r4_first <= r3_first;
         r4_last  <= r3_last;
-        r4_a     <= r3_a;
+        r4_ac    <= pre_nc ? -r3_a : r3_a;
+        r4_as    <= pre_ns ? -r3_a : r3_a;
     end
 
     (* use_dsp = "yes" *) reg signed [34:0] m_i;
     (* use_dsp = "yes" *) reg signed [34:0] m_q;
     reg         r5_v, r5_first, r5_last;
     always @(posedge clk) begin
-        m_i <= r4_a * t_cos;
-        m_q <= r4_a * t_sin;
+        m_i <= r4_ac * t_cm;
+        m_q <= r4_as * t_sm;
         if (rst) r5_v <= 1'b0; else r5_v <= r4_v;
         r5_first <= r4_first;
         r5_last  <= r4_last;
     end
 
+    // accumulator: maps onto the DSP48E1 P register (OPMODE clears on s_first).
+    // o_i/o_q are the accumulator itself: in the clock after the last slot's add
+    // (the o_valid clock) it holds the complete sample sum.
     reg signed [37:0] acc_i, acc_q;
-    wire signed [37:0] sum_i = (r5_first ? 38'sd0 : acc_i) + m_i;
-    wire signed [37:0] sum_q = (r5_first ? 38'sd0 : acc_q) + m_q;
     always @(posedge clk) begin
         if (rst) begin
             o_valid <= 1'b0;
@@ -380,12 +408,10 @@ module gs_pipe #(parameter PIDX = 0) (
             o_chip_late <= late;
         end
         if (r5_v) begin
-            acc_i <= sum_i;
-            acc_q <= sum_q;
-        end
-        if (r5_v && r5_last) begin
-            o_i <= sum_i;
-            o_q <= sum_q;
+            acc_i <= (r5_first ? 38'sd0 : acc_i) + m_i;
+            acc_q <= (r5_first ? 38'sd0 : acc_q) + m_q;
         end
     end
+    assign o_i = acc_i;
+    assign o_q = acc_q;
 endmodule

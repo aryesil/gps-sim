@@ -154,7 +154,7 @@ module tb_pipe;
         input [`GS_ST_W-1:0] st;
         begin
             @(posedge clk); #1;
-            l_we = 1; l_pipe = 0; l_bank = b; l_slot = slot; l_par = par; l_st = st;
+            l_we = 1; l_pipe = 0; l_bank = b; l_slot = slot; l_par = par; l_st = {st[`GS_ST_W-1:32], st[31:0] + 32'h0008_0000};  // loader-side +2^19 offset
             @(posedge clk); #1;
             l_we = 0;
         end
@@ -209,7 +209,7 @@ module tb_pipe;
                 s_last = (j == T - 1); s_mute = mute;
                 if (ld && j < nch) begin
                     l_we = 1; l_pipe = 0; l_bank = ~bk; l_slot = j;
-                    l_par = parm[nxt * nch + j]; l_st = stm[nxt * nch + j];
+                    l_par = parm[nxt * nch + j]; l_st = stm[nxt * nch + j]; l_st[31:0] = l_st[31:0] + 32'h0008_0000;
                 end else begin
                     l_we = 0;
                 end

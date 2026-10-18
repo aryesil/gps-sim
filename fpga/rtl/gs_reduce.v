@@ -7,11 +7,13 @@
 //
 // Pipeline (every stage registered, a new input is accepted every clock):
 //   stage 1        input register (sign-extended to W bits)
-//   stages 2..1+NST  adder tree, at most 3 inputs per add, NST = ceil(log3(P))
+//   stages 2..1+NST  adder tree, 2 inputs per add (44-bit 3-input adds did not meet
+//                    250 MHz), NST = ceil(log2(P))
 //   stage NST+2    add rounding constant
-//   stage NST+3    arithmetic shift + saturate; out_valid/out_i/out_q/clipped_inc
-// LAT_REDUCE = NST + 3 clocks from in_valid to out_valid (P=12 -> NST=3,
-// LAT_REDUCE=6; P=1 -> NST=0, LAT_REDUCE=3; P=5 -> NST=2, LAT_REDUCE=5).
+//   stage NST+3    arithmetic shift
+//   stage NST+4    saturate; out_valid/out_i/out_q/clipped_inc
+// LAT_REDUCE = NST + 4 clocks from in_valid to out_valid (P=12 -> NST=4,
+// LAT_REDUCE=8; P=1 -> NST=0, LAT_REDUCE=4; P=5 -> NST=3, LAT_REDUCE=7).
 // Exposed as localparam LAT_REDUCE (hierarchically readable).
 //
 // clipped_inc (2 bit) = number of saturated components (0..2) of the sample
@@ -41,7 +43,7 @@ module gs_reduce (
         integer k, n;
         begin
             n = P;
-            for (k = 0; k < s; k = k + 1) n = (n + 2) / 3;
+            for (k = 0; k < s; k = k + 1) n = (n + 1) / 2;
             cnt = n;
         end
     endfunction
@@ -56,7 +58,7 @@ module gs_reduce (
     endfunction
 
     localparam NST = nstages(0);
-    localparam LAT_REDUCE = NST + 3;
+    localparam LAT_REDUCE = NST + 4;
 
     reg signed [W-1:0] ti [0:(NST+1)*MX-1];
     reg signed [W-1:0] tq [0:(NST+1)*MX-1];
@@ -76,20 +78,15 @@ module gs_reduce (
         // levels 1..NST
         for (s = 0; s < NST; s = s + 1) begin : g_lv
             for (j = 0; j < cnt(s+1); j = j + 1) begin : g_add
-                if (3*j + 2 < cnt(s)) begin : g3
+                if (2*j + 1 < cnt(s)) begin : g2
                     always @(posedge clk) begin
-                        ti[(s+1)*MX+j] <= ti[s*MX+3*j] + ti[s*MX+3*j+1] + ti[s*MX+3*j+2];
-                        tq[(s+1)*MX+j] <= tq[s*MX+3*j] + tq[s*MX+3*j+1] + tq[s*MX+3*j+2];
-                    end
-                end else if (3*j + 1 < cnt(s)) begin : g2
-                    always @(posedge clk) begin
-                        ti[(s+1)*MX+j] <= ti[s*MX+3*j] + ti[s*MX+3*j+1];
-                        tq[(s+1)*MX+j] <= tq[s*MX+3*j] + tq[s*MX+3*j+1];
+                        ti[(s+1)*MX+j] <= ti[s*MX+2*j] + ti[s*MX+2*j+1];
+                        tq[(s+1)*MX+j] <= tq[s*MX+2*j] + tq[s*MX+2*j+1];
                     end
                 end else begin : g1
                     always @(posedge clk) begin
-                        ti[(s+1)*MX+j] <= ti[s*MX+3*j];
-                        tq[(s+1)*MX+j] <= tq[s*MX+3*j];
+                        ti[(s+1)*MX+j] <= ti[s*MX+2*j];
+                        tq[(s+1)*MX+j] <= tq[s*MX+2*j];
                     end
                 end
             end
@@ -116,20 +113,27 @@ module gs_reduce (
         rv <= rst ? 1'b0 : vl[NST];
     end
 
-    // shift + saturate stage
-    wire signed [W-1:0] si = ri >>> (5'd21 + sh);
-    wire signed [W-1:0] sq = rq >>> (5'd21 + sh);
-    wire ci_hi = (si >  44'sd32767);
-    wire ci_lo = (si < -44'sd32768);
-    wire cq_hi = (sq >  44'sd32767);
-    wire cq_lo = (sq < -44'sd32768);
+    // shift stage
+    reg signed [W-1:0] si, sq;
+    reg                sv;
+    always @(posedge clk) begin
+        si <= ri >>> (5'd21 + sh);
+        sq <= rq >>> (5'd21 + sh);
+        sv <= rst ? 1'b0 : rv;
+    end
+
+    // saturate stage: |x| fits int16 iff bits [W-1:15] are all equal
+    wire ci_hi = ~si[W-1] & (|si[W-2:15]);
+    wire ci_lo =  si[W-1] & ~(&si[W-2:15]);
+    wire cq_hi = ~sq[W-1] & (|sq[W-2:15]);
+    wire cq_lo =  sq[W-1] & ~(&sq[W-2:15]);
     wire ci = ci_hi | ci_lo;
     wire cq = cq_hi | cq_lo;
 
     always @(posedge clk) begin
-        out_valid   <= rst ? 1'b0 : rv;
+        out_valid   <= rst ? 1'b0 : sv;
         out_i       <= ci_hi ? 16'sh7FFF : ci_lo ? 16'sh8000 : si[15:0];
         out_q       <= cq_hi ? 16'sh7FFF : cq_lo ? 16'sh8000 : sq[15:0];
-        clipped_inc <= (rst | ~rv) ? 2'd0 : ({1'b0, ci} + {1'b0, cq});
+        clipped_inc <= (rst | ~sv) ? 2'd0 : ({1'b0, ci} + {1'b0, cq});
     end
 endmodule

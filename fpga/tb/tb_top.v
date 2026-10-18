@@ -12,7 +12,7 @@
 // before running, exactly n_exp samples (enable is dropped after n_exp sample
 // starts so the core does not enter an extra block).
 // Pipeline depth (sample start s_first -> out_valid): (T-1)+6+LAT_REDUCE clocks,
-// 15 for P=12/T=4 (<= 5 samples in flight); the real sink's out_space means
+// 17 for P=12/T=4 (<= 6 samples in flight); the real sink's out_space means
 // >= 16 free FIFO entries, which covers it.
 `timescale 1ns/1ps
 `include "gs_defs.vh"

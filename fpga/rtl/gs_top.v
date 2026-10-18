@@ -7,7 +7,7 @@
 //
 // Latency (clocks), sample start = cycle of s_first (decision clock + 1):
 //   out_valid is high  (T-1) + LAT_PIPE(6) + LAT_REDUCE  clocks after s_first,
-//   i.e. 15 clocks for P=12 and T=4 (LAT_REDUCE = 6); (T-1) is the issue of the
+//   i.e. 17 clocks for P=12 and T=4 (LAT_REDUCE = 8); (T-1) is the issue of the
 //   last slot.  In-flight depth = ceil(that / T) + 1 samples: a sink whose
 //   out_space means ">= 16 free entries" is therefore always sufficient (the
 //   sequencer samples out_space in the decision clock only; it never needs to

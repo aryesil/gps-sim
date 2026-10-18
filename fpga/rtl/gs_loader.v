@@ -58,24 +58,47 @@ module gs_loader (input clk, input rst,
   reg [31:0] mem [0:DEPTH-1];
   reg [AW:0] wp, rp;
   reg [31:0] q;
-  reg        hv;
-  wire [AW:0] count = wp - rp;
-  assign cmd_ready  = (count < DEPTH - 1);
-  assign fifo_level = {{(15-AW){1'b0}}, count};
+  wire [AW:0] count = wp - rp;            // words in the RAM not yet read
+  // cmd_ready is registered (timing): it drops when count >= DEPTH-4 (one clock
+  // late, at most one extra word can still arrive), so the FIFO never overflows.
+  reg rdy_r;
+  assign cmd_ready  = rdy_r;
+  always @(posedge clk) rdy_r <= rst ? 1'b1 : (count < DEPTH - 4);
   wire wr_en = cmd_valid & cmd_ready;
   wire fifo_pop;
-  wire [AW:0] raddr = fifo_pop ? rp + 1'b1 : rp;
 
+  // RAM read address is the plain read pointer (no dependence on the parser);
+  // words read are collected in a 4-entry skid s0..s3 (s0 = head).  A read is
+  // issued only while skid + in-flight <= 2 (registered counts only).
+  reg  [31:0] s0, s1, s2, s3;
+  reg  [2:0]  sk_n;
+  reg         infl, hv;
+  wire        issue = (wp != rp) & ({1'b0, sk_n} + infl <= 4'd2);
+  assign fifo_level = {{(15-AW){1'b0}}, count} + sk_n + infl;
   always @(posedge clk) begin
     if (wr_en) mem[wp[AW-1:0]] <= cmd_data;
-    q <= mem[raddr[AW-1:0]];
+    q <= mem[rp[AW-1:0]];
   end
+  reg [31:0] t0, t1, t2, t3;
+  reg  [2:0] tn;
   always @(posedge clk) begin
-    if (rst) begin wp <= 0; rp <= 0; hv <= 1'b0; end
+    if (rst) begin wp <= 0; rp <= 0; sk_n <= 0; infl <= 1'b0; hv <= 1'b0; end
     else begin
       if (wr_en) wp <= wp + 1'b1;
-      rp <= raddr;
-      hv <= (wp != raddr);
+      if (issue) rp <= rp + 1'b1;
+      infl <= issue;
+      t0 = s0; t1 = s1; t2 = s2; t3 = s3; tn = sk_n;
+      if (fifo_pop) begin t0 = t1; t1 = t2; t2 = t3; tn = tn - 1'b1; end
+      if (infl) begin
+        case (tn)
+          3'd0: t0 = q;
+          3'd1: t1 = q;
+          3'd2: t2 = q;
+          default: t3 = q;
+        endcase
+        tn = tn + 1'b1;
+      end
+      s0 <= t0; s1 <= t1; s2 <= t2; s3 <= t3; sk_n <= tn; hv <= (tn != 0);
     end
   end
 
@@ -83,30 +106,39 @@ module gs_loader (input clk, input rst,
   reg [31:0] rq0, rq1, rq2;
   reg [1:0]  rq_n;
   wire        wv = (rq_n != 0) | hv;
-  wire [31:0] w  = (rq_n != 0) ? rq0 : q;
-  reg         take, fail;
-  reg  [1:0]  fail_n;
+  wire [31:0] w  = (rq_n != 0) ? rq0 : s0;
+  reg         take;
   assign fifo_pop = take & (rq_n == 0);
 
   // ----------------------------------------------------------------- parser
   localparam S_HDR = 0, S_CFG = 1, S_B = 2, S_WAIT = 3, S_CLR = 4, S_REC = 5,
-             S_WR = 6, S_FIN = 7, S_SKIP = 8;
+             S_WR = 6, S_FIN = 7, S_SKIP = 8, S_SET = 9, S_HD2 = 10, S_HD3 = 11;
   reg [3:0]  st;
   reg [2:0]  cnt;
   reg [15:0] hlen;
-  reg [31:0] h1, h2, h3;
+  reg [31:0] h0, h1, h2, h3;
   reg [63:0] blk_idx;
   reg [6:0]  blk_nch;
   reg [9:0]  left;
+  reg        left_nz;                        // == (left != 0), registered
   reg [3:0]  wi;
   reg [6:0]  cl_ch;
   reg [319:0] rec;
   reg        ld_done;
   reg [2:0]  ldly;
   reg [63:0] tgt_q;
-  wire       tgt_chg = (target_idx != tgt_q);
-  wire       tgt_eq  = (target_idx == blk_idx);
-  wire       tgt_gt  = (blk_idx > target_idx);   // block is in the future
+  // registered compare flags (64-bit compares are too slow for one clock next
+  // to the state machine); valid one clock after blk_idx/target_idx change,
+  // hence the S_SET settle state after blk_idx is loaded.
+  reg        tgt_chg, tgt_eq, tgt_gt;           // gt: block is in the future
+  always @(posedge clk) begin
+    tgt_chg <= (target_idx != tgt_q);
+    tgt_eq  <= (target_idx == blk_idx);
+    tgt_gt  <= (blk_idx > target_idx);
+  end
+  // deferred header checks (registered arithmetic)
+  reg [10:0] chk_len;
+  reg        chk_big, chk_bad, hd_cfg, hd_blk;
 
   // record fields
   wire [5:0]  r_ch   = rec[`GS_F_CH_HI:`GS_F_CH_LO];
@@ -129,7 +161,7 @@ module gs_loader (input clk, input rst,
 
   wire [`GS_PAR_W-1:0] par_w = {r_c2, r_c1, r_c0, r_sbits, r_cinc, r_cainc,
                                 r_prn, r_kind, r_cboc, r_boc, r_val};
-  wire [`GS_ST_W-1:0]  st_w  = {r_cph[51:45], r_sidx, r_sph, r_cph, r_caph};
+  wire [`GS_ST_W-1:0]  st_w  = {r_cph[51:45], r_sidx, r_sph, r_cph, (r_caph + 32'h0008_0000)};
 
   reg [`GS_PAR_W-1:0] par_r;
   reg [`GS_ST_W-1:0]  st_r;
@@ -145,16 +177,13 @@ module gs_loader (input clk, input rst,
   end endtask
 
   always @* begin
-    take = 1'b0; fail = 1'b0; fail_n = 2'd0;
+    take = 1'b0;
     case (st)
       S_HDR: if (wv) take = 1'b1;
-      S_CFG: if (wv) begin take = 1'b1; if (cnt == 1 && w > 64) begin fail = 1'b1; fail_n = 2'd1; end end
-      S_B:   if (wv) begin
-               take = 1'b1;
-               if (cnt == 3 && !(w <= 64 && hlen == 4 + 10 * w)) begin fail = 1'b1; fail_n = 2'd3; end
-             end
+      S_CFG: if (wv && cnt != 6) take = 1'b1;     // cnt 6: check cycle
+      S_B:   if (wv && cnt <= 3) take = 1'b1;     // cnt 4, 5: check cycles
       S_REC: if (wv && tgt_eq) take = 1'b1;
-      S_SKIP: if (wv && left != 0) take = 1'b1;
+      S_SKIP: if (wv && left_nz) take = 1'b1;
       default: ;
     endcase
   end
@@ -166,32 +195,40 @@ module gs_loader (input clk, input rst,
       st <= S_HDR; cnt <= 0; rq_n <= 0; ld_done <= 1'b0; ldly <= 0;
       shadow_loaded <= 1'b0; cfg_valid <= 1'b0; cfg_nch <= 0; cfg_fs <= 0;
       cfg_shift <= 0; cfg_start <= 0; dropped_late <= 0; bad_words <= 0;
-      left <= 0; wi <= 0; cl_ch <= 0; blk_idx <= 0; blk_nch <= 0; hlen <= 0;
+      left <= 0; left_nz <= 1'b0; wi <= 0; cl_ch <= 0; blk_idx <= 0; blk_nch <= 0; hlen <= 0;
       tgt_q <= 0;
     end else begin
       // replay buffer shift (overridden by a failure below)
       if (take && rq_n != 0) begin
         rq0 <= rq1; rq1 <= rq2; rq_n <= rq_n - 1'b1;
       end
-      if (take && fail) begin
-        bad_words <= bad_words + 1'b1;
-        st <= S_HDR; cnt <= 0;
-        rq_n <= fail_n;
-        if (fail_n == 2'd1) rq0 <= w;
-        else begin rq0 <= h1; rq1 <= h2; rq2 <= w; end
-      end else begin
+      begin
         case (st)
-          S_HDR: if (take) begin
-            hlen <= w[15:0]; cnt <= 1;
-            if (w[31:24] != `GS_CMD_MAGIC) bad_words <= bad_words + 1'b1;
-            else if (w[23:16] == `GS_TYPE_CFG && w[15:0] == `GS_CFG_WORDS) st <= S_CFG;
-            else if (w[23:16] == `GS_TYPE_BLOCK && w[15:0] >= `GS_BLOCK_HDR_WORDS) st <= S_B;
-            else bad_words <= bad_words + 1'b1;
+          S_HDR: if (take) begin           // decode in the next clock (from the register)
+            h0 <= w; hlen <= w[15:0]; cnt <= 1; st <= S_HD2;
           end
-          S_CFG: if (take) begin
-            cnt <= cnt + 1'b1;
+          S_HD2: begin                     // header decode, registered flags
+            hd_cfg <= (h0[31:24] == `GS_CMD_MAGIC && h0[23:16] == `GS_TYPE_CFG && h0[15:0] == `GS_CFG_WORDS);
+            hd_blk <= (h0[31:24] == `GS_CMD_MAGIC && h0[23:16] == `GS_TYPE_BLOCK &&
+                       h0[15:0] >= `GS_BLOCK_HDR_WORDS);
+            st <= S_HD3;
+          end
+          S_HD3: begin
+            if (hd_cfg) st <= S_CFG;
+            else if (hd_blk) st <= S_B;
+            else begin bad_words <= bad_words + 1'b1; st <= S_HDR; cnt <= 0; end
+          end
+          S_CFG: if (take || cnt == 6) begin
+            if (cnt != 1 && cnt != 6) cnt <= cnt + 1'b1;
             case (cnt)
-              1: h1 <= w;       // nch
+              1: begin h1 <= w; cnt <= 6; end   // nch; checked in cycle cnt 6
+              6: begin
+                if (h1 > 32'd64) begin          // bad nch: restart at header+1
+                  bad_words <= bad_words + 1'b1;
+                  st <= S_HDR; cnt <= 0;
+                  rq0 <= h1; rq1 <= rq0; rq2 <= rq1; rq_n <= rq_n + 1'b1;
+                end else cnt <= 2;
+              end
               2: h2 <= w;       // fs
               3: h3 <= w;       // shift
               4: cfg_start[31:0] <= w;
@@ -201,17 +238,30 @@ module gs_loader (input clk, input rst,
               end
             endcase
           end
-          S_B: if (take) begin
+          S_B: if (take || cnt >= 4) begin
             cnt <= cnt + 1'b1;
             case (cnt)
               1: h1 <= w;
               2: h2 <= w;
-              default: begin
-                blk_idx <= {h2, h1}; blk_nch <= w[6:0]; left <= 10 * w[6:0];
-                wi <= 0; cl_ch <= w[6:0]; st <= S_WAIT; cnt <= 0;
+              3: h3 <= w;
+              4: begin
+                chk_len <= 11'd4 + {h3[6:0], 3'b000} + {h3[6:0], 1'b0};   // 4 + 10*nch
+                chk_big <= (|h3[31:7]) | (h3[6:0] > 7'd64);
+              end
+              5: chk_bad <= chk_big || (hlen[10:0] != chk_len) || (|hlen[15:11]);
+              default: begin       // 6
+                if (chk_bad) begin
+                  bad_words <= bad_words + 1'b1;     // restart at header+1
+                  st <= S_HDR; cnt <= 0;
+                  rq0 <= h1; rq1 <= h2; rq2 <= h3; rq_n <= 2'd3;
+                end else begin
+                  blk_idx <= {h2, h1}; blk_nch <= h3[6:0]; left <= chk_len[9:0] - 10'd4; left_nz <= (chk_len != 11'd4);
+                  wi <= 0; cl_ch <= h3[6:0]; st <= S_SET; cnt <= 0;
+                end
               end
             endcase
           end
+          S_SET: st <= S_WAIT;
           S_WAIT: begin
             if (tgt_eq && (!ld_done || tgt_chg)) st <= S_CLR;
             else if (!tgt_gt) enter_skip;     // idx < target, or duplicate
@@ -231,7 +281,7 @@ module gs_loader (input clk, input rst,
             if (!tgt_eq) enter_skip;
             else if (take) begin
               rec <= {w, rec[319:32]};
-              left <= left - 1'b1;
+              left <= left - 1'b1; left_nz <= (left != 10'd1);
               if (wi == 9) begin wi <= 0; st <= S_WR; end
               else wi <= wi + 1'b1;
             end
@@ -242,7 +292,7 @@ module gs_loader (input clk, input rst,
               l_we <= 1'b1; shadow_dirty <= 1'b1; l_bank <= shadow_bank;
               l_pipe <= wr_pipe[3:0]; l_slot <= wr_slot[`GS_SLOT_W-1:0];
               par_r <= par_w; st_r <= st_w;
-              st <= (left == 0) ? S_FIN : S_REC;
+              st <= (!left_nz) ? S_FIN : S_REC;
             end
           end
           S_FIN: begin
@@ -250,8 +300,8 @@ module gs_loader (input clk, input rst,
             else enter_skip;
           end
           S_SKIP: begin
-            if (left == 0) begin st <= S_HDR; cnt <= 0; end
-            else if (take) left <= left - 1'b1;
+            if (!left_nz) begin st <= S_HDR; cnt <= 0; end
+            else if (take) begin left <= left - 1'b1; left_nz <= (left != 10'd1); end
           end
           default: st <= S_HDR;
         endcase

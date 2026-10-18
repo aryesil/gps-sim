@@ -25,7 +25,9 @@
 //   [11:6] prn  [43:12] carr_inc  [86:44] code_inc (43 bit)
 //   [118:87] sign_bits  [136:119] coef0  [154:137] coef1  [172:155] coef2
 // ST (dynamic initial state), GS_ST_W = 148:
-//   [31:0] carr_phase  [83:32] cp (code phase, 52 bit)  [135:84] sp_frac
+//   [31:0] carr_phase + 2^19 mod 2^32 (the loader adds the table-rounding
+//          offset to the wire carr_phase0, so idx = phase'[31:20])
+//   [83:32] cp (code phase, 52 bit)  [135:84] sp_frac
 //   [140:136] per (= sign_idx0, since sign_phase0 < code_len<<40)
 //   [147:141] cur_widx (= code_phase0 >> 45)
 // A loader write (l_we) writes PAR+ST of the shadow entry, clears cur_loaded

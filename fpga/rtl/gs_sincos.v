@@ -23,7 +23,15 @@ module gs_sincos (
     input  wire               clk,
     input  wire        [11:0] in_idx,
     output reg  signed [15:0] out_cos,
-    output reg  signed [15:0] out_sin
+    output reg  signed [15:0] out_sin,
+    // gs_pipe interface: magnitudes (table values are >= 0) and the quadrant
+    // signs, so the DSP inputs need no negation: cos = (nc ? -cm : cm).
+    // pre_nc/pre_ns are the signs one clock before out_cm/out_sm (aligned with
+    // the c0/s0 stage); out_cos == pre_nc ? -out_cm : out_cm one clock later.
+    output reg  signed [15:0] out_cm,
+    output reg  signed [15:0] out_sm,
+    output wire               pre_nc,
+    output wire               pre_ns
 );
     (* ram_style = "block" *) reg [15:0] tab [0:1023];
     initial $readmemh(`GS_SINCOS_MEM, tab);
@@ -49,6 +57,13 @@ module gs_sincos (
         c0 <= da;
         s0 <= z1 ? 16'sd0 : db;
         q2 <= q1;
+    end
+
+    assign pre_nc = (q2 == 2'd1) | (q2 == 2'd2);
+    assign pre_ns = q2[1];
+    always @(posedge clk) begin
+        out_cm <= q2[0] ? s0 : c0;
+        out_sm <= q2[0] ? c0 : s0;
     end
 
     // stage 3: quadrant rotation, registered output

@@ -84,6 +84,8 @@ def write_rom_mem(d=MEM_DIR):
     d = pathlib.Path(d)
     d.mkdir(parents=True, exist_ok=True)
     _wr(d / "gs_rom.mem", [f"{int(w):08x}" for w in roms.all_rom_words()])
+    # tail of the ROM (words 16384..): gs_scan maps it as a separate small BRAM
+    _wr(d / "gs_rom_hi.mem", [f"{int(w):08x}" for w in roms.all_rom_words()][16384:])
     base = np.zeros(256, np.uint32)
     for (kind, prn), (b, _) in roms.rom_layout().items():
         base[(kind << 6) | prn] = b

@@ -141,7 +141,7 @@ module tb_loader;
     if (l_we) begin
       got = 0;
       got[331:328] = l_pipe; got[324 +: `GS_SLOT_W] = l_slot;
-      got[148 +: `GS_PAR_W] = l_par; got[0 +: `GS_ST_W] = l_st;
+      got[148 +: `GS_PAR_W] = l_par; got[0 +: `GS_ST_W] = l_st; if (l_par[0]) got[31:0] = l_st[31:0] - 32'h0008_0000;  // undo the +2^19 offset (valid records only)
       if (nw >= nexp) err("extra write");
       else if (got !== expm[nw]) begin
         err("record");

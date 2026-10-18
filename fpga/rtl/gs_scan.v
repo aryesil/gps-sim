@@ -66,13 +66,20 @@ module gs_scan (
 );
     localparam SW    = `GS_SCAN_SW;
     localparam NPOS  = `GS_P * `GS_SLOTS;     // entries per bank
+    localparam P_SCI_BITS = `GS_P * `GS_SCI_W;
     localparam ROM_N = 17856;
 
     // ---- memories (inferred BRAM, registered read) ----
-    (* rom_style = "block" *) reg [31:0] rom  [0:ROM_N-1];
+    // The code ROM is split at 16384 words: a single 17856-deep array is mapped by
+    // the tool as 32 x RAMB36 (32K x 1 aspect); 16384 x 32 maps as 16 x (16K x 2)
+    // and the 1472-word remainder as 2 x (1K x 36): 18 RAMB36 in total.
+    localparam ROM_LO = 16384;
+    (* rom_style = "block" *) reg [31:0] rom_lo [0:ROM_LO-1];
+    (* rom_style = "block" *) reg [31:0] rom_hi [0:ROM_N-ROM_LO-1];
     (* rom_style = "block" *) reg [15:0] base [0:255];
     initial begin
-        $readmemh({`GS_MEMDIR, "gs_rom.mem"},  rom);
+        $readmemh({`GS_MEMDIR, "gs_rom.mem"},    rom_lo, 0, ROM_LO-1);   // first 16384 lines
+        $readmemh({`GS_MEMDIR, "gs_rom_hi.mem"}, rom_hi);                // words 16384.. (1472 lines)
         $readmemh({`GS_MEMDIR, "gs_base.mem"}, base);
     end
 
@@ -92,23 +99,34 @@ module gs_scan (
     end
 
     // ---- squash control ----
-    reg dirty_q, sb_q;
+    reg dirty_q, dirty_q2, dirty_q3, sb_q, sb_q2, sb_q3;
     always @(posedge clk) begin
-        if (rst) begin dirty_q <= 0; sb_q <= shadow_bank; end
-        else begin dirty_q <= shadow_dirty; sb_q <= shadow_bank; end
+        if (rst) begin dirty_q <= 0; dirty_q2 <= 0; dirty_q3 <= 0; sb_q <= shadow_bank; sb_q2 <= shadow_bank; sb_q3 <= shadow_bank; end
+        else begin dirty_q <= shadow_dirty; dirty_q2 <= dirty_q; dirty_q3 <= dirty_q2; sb_q <= shadow_bank; sb_q2 <= sb_q; sb_q3 <= sb_q2; end
     end
-    wire kill = shadow_dirty | dirty_q | (shadow_bank != sb_q);
+    wire kill = shadow_dirty | dirty_q | dirty_q2 | dirty_q3 | (shadow_bank != sb_q) | (shadow_bank != sb_q2) | (shadow_bank != sb_q3);
 
     // ---- stage t+1: registered info ----
+    // stage t+1 (new): the pipes' async sc_info is registered here first (the
+    // distributed-RAM read + 12:1 mux did not fit in one clock); the squash
+    // window is one clock longer to match (dirty_q2).
+    reg s0v;
+    reg [P_SCI_BITS-1:0] info_all_q;
+    reg [3:0] a0_pipe; reg [SW-1:0] a0_slot; reg a0_bank;
+    always @(posedge clk) begin
+        s0v <= rst ? 1'b0 : 1'b1;
+        info_all_q <= sc_info_all;
+        a0_pipe <= sc_pipe; a0_slot <= sc_slot; a0_bank <= sc_bank;
+    end
     reg s1v;
-    reg [`GS_SCI_W-1:0] info_r;
+    (* dont_touch = "true" *) reg [`GS_SCI_W-1:0] info_r;   // keep the flop: it must not be retimed into the base BRAM address
     reg [3:0] a1_pipe; reg [SW-1:0] a1_slot; reg a1_bank;
-    wire [`GS_SCI_W-1:0] info_mux = sc_info_all[sc_pipe*`GS_SCI_W +: `GS_SCI_W];
+    wire [`GS_SCI_W-1:0] info_mux = info_all_q[a0_pipe*`GS_SCI_W +: `GS_SCI_W];
     always @(posedge clk) begin
         if (rst) s1v <= 0;
-        else s1v <= 1'b1;
+        else s1v <= s0v;
         info_r  <= info_mux;
-        a1_pipe <= sc_pipe; a1_slot <= sc_slot; a1_bank <= sc_bank;
+        a1_pipe <= a0_pipe; a1_slot <= a0_slot; a1_bank <= a0_bank;
     end
 
     wire        i_valid = info_r[0];
@@ -143,7 +161,7 @@ module gs_scan (
     // ---- stage t+3: rom address ----
     reg s3v, s3_which; reg [6:0] s3_widx;
     reg [3:0] s3_pipe; reg [SW-1:0] s3_slot; reg s3_bank;
-    reg [15:0] rom_addr;
+    (* dont_touch = "true" *) reg [15:0] rom_addr;   // keep the flop (no retiming into the ROM BRAM address)
     always @(posedge clk) begin
         s3v <= rst ? 1'b0 : (s2v & ~kill);
         rom_addr <= base_q + {9'd0, s2_widx};
@@ -154,10 +172,16 @@ module gs_scan (
     // ---- stage t+4: rom read (only when a fetch is valid) ----
     reg s4v, s4_which; reg [6:0] s4_widx;
     reg [3:0] s4_pipe; reg [SW-1:0] s4_slot; reg s4_bank;
-    reg [31:0] rom_q;
+    reg [31:0] q_lo, q_hi;
+    reg        q_sel;
+    wire [31:0] rom_q = q_sel ? q_hi : q_lo;
     always @(posedge clk) begin
         s4v <= rst ? 1'b0 : (s3v & ~kill);
-        if (s3v) rom_q <= rom[rom_addr];
+        if (s3v) begin
+            q_lo  <= rom_lo[rom_addr[13:0]];
+            q_hi  <= rom_hi[rom_addr[10:0]];
+            q_sel <= rom_addr[14];
+        end
         s4_which <= s3_which; s4_widx <= s3_widx;
         s4_pipe <= s3_pipe; s4_slot <= s3_slot; s4_bank <= s3_bank;
     end
@@ -171,8 +195,11 @@ module gs_scan (
 
     // ---- shadow_clean ----
     reg [15:0] cnt;
+    reg we_d; reg wb_d;         // write register inside the pipes (one clock after sc_we)
+    always @(posedge clk) begin we_d <= rst ? 1'b0 : sc_we; wb_d <= sc_wbank; end
     wire inflight = (s2v & (s2_bank == shadow_bank)) | (s3v & (s3_bank == shadow_bank)) |
-                    (s4v & (s4_bank == shadow_bank)) | (sc_we & (sc_wbank == shadow_bank));
+                    (s4v & (s4_bank == shadow_bank)) | (sc_we & (sc_wbank == shadow_bank)) |
+                    (we_d & (wb_d == shadow_bank));
     wire count_en = s1v & is_sh;
     wire [15:0] cnt_n = (kill | (fetch & is_sh)) ? 16'd0 :
                         (count_en && cnt < NPOS) ? cnt + 16'd1 : cnt;

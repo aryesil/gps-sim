@@ -16,7 +16,7 @@ VIVADO_BIN=${VIVADO_BIN:-/d/Programs/Xiliinx/Vivado/2023.2/bin}
 if [ -f "$VIVADO_BIN/xvlog.bat" ]; then ext=.bat; else ext=; fi
 win() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else echo "$1"; fi; }
 
-work="$root/fpga/sim/work/$tb"
+work="${GS_WORK:-$root/fpga/sim/work/$tb}"
 rm -rf "$work"; mkdir -p "$work"
 memdir=$(win "${GS_MEMDIR_ABS:-$root/fpga/mem}")/
 argf="$work/xvlog.args"
