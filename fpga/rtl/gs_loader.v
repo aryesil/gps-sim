@@ -104,13 +104,18 @@ module gs_loader (input clk, input rst,
   end
 
   // -------------------------------------------------------- source / replay
-  reg [31:0] rq0, rq1, rq2;
+  // replay buffer: 4-entry circular buffer, rqp = head index (like the skid), so a
+  // take only moves rqp / rq_n (4 flops) and never the CE of the 96 data flops
+  reg [31:0] rqm0, rqm1, rqm2, rqm3;
+  reg [1:0]  rqp;
   reg [1:0]  rq_n;
   // registered copies of (rq_n != 0): one for the control (take / wv), one for the
   // word select (32-bit mux); dont_touch so the two are not merged
   (* dont_touch = "true" *) reg rq_nzt, rq_nzw;
   wire        wv = rq_nzt | hv;
-  wire [31:0] w  = rq_nzw ? rq0 : s0;
+  wire [31:0] rqh = (rqp == 2'd0) ? rqm0 : (rqp == 2'd1) ? rqm1 : (rqp == 2'd2) ? rqm2 : rqm3;
+  wire [31:0] w  = rq_nzw ? rqh : s0;
+  wire [1:0]  rqp_m1 = rqp - 2'd1;
   reg         take;
   assign fifo_pop = take & ~rq_nzt;
 
@@ -207,7 +212,7 @@ module gs_loader (input clk, input rst,
     l_bank <= shadow_bank; l_pipe <= wr_pipe[3:0]; l_slot <= wr_slot[`GS_SLOT_W-1:0];
     tgt_q <= target_idx;
     if (rst) begin
-      st <= S_HDR; cnt <= 0; rq_n <= 0; rq_nzt <= 1'b0; rq_nzw <= 1'b0; ld_done <= 1'b0; ldly <= 0;
+      st <= S_HDR; cnt <= 0; rq_n <= 0; rqp <= 0; rq_nzt <= 1'b0; rq_nzw <= 1'b0; ld_done <= 1'b0; ldly <= 0;
       shadow_loaded <= 1'b0; cfg_valid <= 1'b0; cfg_nch <= 0; cfg_fs <= 0;
       cfg_shift <= 0; cfg_start <= 0; dropped_late <= 0; bad_words <= 0;
       left <= 0; left_nz <= 1'b0; wi <= 0; cl_ch <= 0; blk_idx <= 0; blk_nch <= 0; hlen <= 0;
@@ -215,7 +220,7 @@ module gs_loader (input clk, input rst,
     end else begin
       // replay buffer shift (overridden by a failure below)
       if (take && rq_nzt) begin
-        rq0 <= rq1; rq1 <= rq2; rq_n <= rq_n - 1'b1;
+        rqp <= rqp + 1'b1; rq_n <= rq_n - 1'b1;
         rq_nzt <= (rq_n != 2'd1); rq_nzw <= (rq_n != 2'd1);
       end
       begin
@@ -278,11 +283,17 @@ module gs_loader (input clk, input rst,
           end
           S_RPC: begin                     // replay after a bad CFG: h1 goes in front of the buffer
             st <= S_HDR; cnt <= 0;
-            rq0 <= h1; rq1 <= rq0; rq2 <= rq1; rq_n <= rq_n + 1'b1; rq_nzt <= 1'b1; rq_nzw <= 1'b1;
+            rqp <= rqp_m1; rq_n <= rq_n + 1'b1; rq_nzt <= 1'b1; rq_nzw <= 1'b1;
+            case (rqp_m1)
+              2'd0: rqm0 <= h1;
+              2'd1: rqm1 <= h1;
+              2'd2: rqm2 <= h1;
+              default: rqm3 <= h1;
+            endcase
           end
           S_RPB: begin                     // replay after a bad BLOCK header: h1, h2, h3
             st <= S_HDR; cnt <= 0;
-            rq0 <= h1; rq1 <= h2; rq2 <= h3; rq_n <= 2'd3; rq_nzt <= 1'b1; rq_nzw <= 1'b1;
+            rqm0 <= h1; rqm1 <= h2; rqm2 <= h3; rqp <= 2'd0; rq_n <= 2'd3; rq_nzt <= 1'b1; rq_nzw <= 1'b1;
           end
           S_SET: st <= S_WAIT;
           S_WAIT: begin
