@@ -127,6 +127,27 @@ def _generate_segment_air(seg_req, iq_filename, air_name, level_dbfs, tx_scale, 
     return chunk, iq_filename
 
 
+def _gnss_segment(seg_req, first_block, fs, level_dbfs, shift):
+    """One FPGA command segment (module-level so a worker process can run it):
+    plan the band, then pack its command buffers. Returns
+    ``(buffers, info)``; buffers are picklable ``DmaBuffer`` objects."""
+    from backend.fpga.stream import CommandStream
+    from backend.synth import engine
+    bands = engine.plan(seg_req).bands
+    if len(bands) != 1:
+        raise RuntimeError(
+            "live transmit supports exactly one RF output per channel, "
+            f"but this selection planned {len(bands)} bands -- pick a "
+            "single band for Start")
+    band = bands[0]
+    if abs(band.fs - fs) > 1e-6:
+        raise RuntimeError(f"planned band rate {band.fs} differs from the TX rate {fs}")
+    cs = CommandStream(band, first_block=first_block, level_dbfs=level_dbfs,
+                       cfg=(first_block == 0), cfg_nch="max", shift=shift)
+    info = {"nch": cs.nch, "nch_max": cs.channel_plan.nch_max, "dropped": len(cs.dropped)}
+    return list(cs), info
+
+
 @dataclass
 class LiveState:
     llh: list[float]
@@ -261,6 +282,71 @@ class LiveSession:
                 k += 1
         finally:
             self.running = False
+
+    def gnss_buffers(self, fs: float, segment_blocks: int, *, level_dbfs,
+                     shift: int = 0, workers: int | None = None):
+        """Generator of FPGA command ``DmaBuffer`` s for the live session,
+        produced by worker PROCESSES (plan + command packing is pure Python
+        and, in this process, starved the TX threads of the GIL: at 20 Msps with
+        45 channels the feed ran at 80% of real time and the engine underran
+        continuously). The first segment is ``segment_blocks`` long so TX can
+        start quickly; later ones span about one second (the plan has a fixed
+        cost per segment). Segments are generated up to ``workers`` ahead and
+        released in order; jog / time shifts apply to the next submitted one."""
+        import collections
+        import concurrent.futures
+        import multiprocessing
+        from backend.ephem import ephemeris
+        block = 65536
+        steady = max(int(segment_blocks), int(round(fs / block)))
+        workers = max(1, int(workers if workers is not None else config.LIVE_GEN_WORKERS))
+        self.running = True
+        pool = concurrent.futures.ProcessPoolExecutor(
+            max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
+            initializer=_seed_worker_cache, initargs=(dict(ephemeris._PARSE_CACHE),))
+        inflight: collections.deque = collections.deque()
+        first_block = 0
+
+        def submit():
+            nonlocal first_block
+            n = int(segment_blocks) if first_block == 0 else steady
+            with self._lock:
+                snap = copy.deepcopy(self.state)
+            req = self._gnss_request(first_block, n, fs, snap)
+            inflight.append(pool.submit(_gnss_segment, req, first_block, fs,
+                                        level_dbfs, shift))
+            first_block += n
+
+        try:
+            while self.running:
+                while len(inflight) < workers + 1 and self.running:
+                    submit()
+                if not inflight:
+                    break
+                fut = inflight.popleft()
+                bufs, info = fut.result()
+                if self.first_segment_latency_s is None:
+                    self.first_segment_latency_s = time.monotonic() - self._created_mono
+                    self.gnss_info = info
+                yield from bufs
+        finally:
+            self.running = False
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    def _gnss_request(self, first_block: int, n_blocks: int, fs: float, snap: LiveState):
+        """Scenario request for ``n_blocks`` command blocks starting at block
+        ``first_block`` (same time base and ephemeris pinning as
+        ``_segment_request``)."""
+        base = self.base_req
+        block = 65536
+        t = first_block * block / float(fs) + snap.time_offset_s
+        eph_block = math.floor(t / _EPH_REFRESH_S) * _EPH_REFRESH_S
+        return dataclasses.replace(
+            base, lat=snap.llh[0], lon=snap.llh[1], alt=snap.llh[2],
+            start=base.start + dt.timedelta(seconds=t),
+            duration_s=n_blocks * block / float(fs), route=None, engine="native",
+            eph_epoch=base.start + dt.timedelta(seconds=eph_block),
+            in_memory=True, skip_meta=True)
 
     def air_segments(self, fmt, *, level_dbfs: float, tx_scale: float = 1.0):
         """Like segments(), but every chunk is an air.AirChunk: scaled to the

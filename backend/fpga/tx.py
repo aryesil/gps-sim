@@ -223,6 +223,20 @@ def default_device(uri: str) -> dev.GnssDevice:
 def _live_buffers(params, session, cancel, *, segment_blocks: int, shift: int = 0):
     """Command buffers for a live session: one engine plan per segment, block
     indices continuing across segments (CFG only in the first)."""
+    if hasattr(session, "gnss_buffers"):
+        # worker processes plan and pack the segments (GIL-free for the TX threads)
+        n_logged = False
+        for buf in session.gnss_buffers(params.sample_rate, segment_blocks,
+                                        level_dbfs=params.level_dbfs, shift=shift):
+            if cancel.is_set():
+                return
+            if not n_logged and getattr(session, "gnss_info", None):
+                i = session.gnss_info
+                _log.info("GNSS plan: %d channels (limit %d at %.3f Msps), dropped %d",
+                          i["nch"], i["nch_max"], params.sample_rate / 1e6, i["dropped"])
+                n_logged = True
+            yield buf
+        return
     for first_block, band in session.gnss_bands(params.sample_rate, segment_blocks):
         if cancel.is_set():
             return
