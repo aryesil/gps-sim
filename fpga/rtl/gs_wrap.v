@@ -16,7 +16,7 @@
 //                              b4 cmd FIFO empty (engine view), b5 sample FIFO
 //                              empty (divclk view), b6 cmd FIFO full seen,
 //                              [31:16] queued command words = async cmd FIFO
-//                              level + gs_top internal FIFO level
+//                              level + skid register + gs_top internal FIFO level
 //   0x10/0x14 PLAY_IDX LO/HI   RO  64-bit block index (blocks of 65536 samples). Not coherent: read
 //                              HI, LO, HI and retry if HI differs.
 //   0x18 UNDERRUNS         RO  (engine counters, relative to last clear)
@@ -266,9 +266,18 @@ module gs_wrap (
     wire [15:0] st_cmd_level;
     reg         out_space_r = 1'b0;
 
+    // command skid register between the cmd FIFO (FWFT, BRAM output latch) and
+    // gs_top: cuts the BRAM -> BRAM path u_cmdf.mem -> u_loader.mem (timing at
+    // 250 MHz).  cq_v/cq_d hold one word; a new word is taken from the FIFO
+    // whenever the register is empty or gs_top accepts the held word, so the
+    // stream runs at one word per clock.  Adds one clk_eng of latency only.
+    reg         cq_v = 1'b0;
+    reg  [31:0] cq_d = 32'd0;
+    wire        cq_load = ~cq_v | top_cmd_ready;
+
     gs_top u_top (
         .clk(clk_eng), .rst(reng_q), .enable(enable_e),
-        .cmd_valid(~cf_rempty & ~reng_q), .cmd_data(cf_rdata), .cmd_ready(top_cmd_ready),
+        .cmd_valid(cq_v), .cmd_data(cq_d), .cmd_ready(top_cmd_ready),
         .out_space(out_space_r),
         .out_valid(top_out_valid), .out_i(top_out_i), .out_q(top_out_q),
         .st_play_idx(st_play_idx), .st_underruns(st_underruns),
@@ -276,7 +285,12 @@ module gs_wrap (
         .st_chip_late(st_chip_late), .st_bad_words(st_bad_words),
         .st_running(st_running), .st_cmd_level(st_cmd_level));
 
-    assign cf_ren  = top_cmd_ready & ~cf_rempty & ~reng_q;
+    assign cf_ren  = cq_load & ~cf_rempty & ~reng_q;
+    always @(posedge clk_eng) begin
+        if (reng_q) cq_v <= 1'b0;
+        else if (cq_load) cq_v <= ~cf_rempty;
+        if (cq_load) cq_d <= cf_rdata;
+    end
     assign sf_push = top_out_valid & ~reng_q;
     assign sf_wdata = {top_out_i, top_out_q};
 
@@ -289,7 +303,7 @@ module gs_wrap (
     // status snapshots to clk_sys
     // ------------------------------------------------------------------
     reg [15:0] cmdq_sum = 16'd0;
-    always @(posedge clk_eng) cmdq_sum <= {3'b000, cf_rlevel} + st_cmd_level;
+    always @(posedge clk_eng) cmdq_sum <= {3'b000, cf_rlevel} + st_cmd_level + {15'd0, cq_v};
 
     wire [31:0]  eng_misc_in = {cmdq_sum, 14'd0, cf_rempty, st_running};
     wire [255:0] eng_q;

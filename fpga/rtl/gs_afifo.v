@@ -68,10 +68,15 @@ module gs_afifo #(
 
     // ---- write side
     reg  [AW:0] rbin_w = {(AW+1){1'b0}};   // synchronised read pointer, binary
+    // wbin1/wgray1 = wbin+1 and its gray code, kept in registers so that the
+    // flag / level logic never has the increment (w_do -> adder) in front of
+    // its compare: both candidates are computed from registers and w_do only
+    // selects (timing at 250 MHz).  Values are identical to the plain form
+    // wfull <= (gray(wbin + w_do) == ...), w_level <= wbin + w_do - rbin_w.
+    reg  [AW:0] wbin1 = {{AW{1'b0}}, 1'b1}, wgray1 = {{AW{1'b0}}, 1'b1};
 
     wire        w_do    = wen & ~wfull;
-    wire [AW:0] wbin_n  = wbin + {{AW{1'b0}}, w_do};
-    wire [AW:0] wgray_n = (wbin_n >> 1) ^ wbin_n;
+    wire [AW:0] wbin2   = wbin1 + {{AW{1'b0}}, 1'b1};
 
     function [AW:0] g2b;
         input [AW:0] g;
@@ -82,7 +87,13 @@ module gs_afifo #(
         end
     endfunction
 
-    wire [AW:0] wlevel_n = wbin_n - rbin_w;
+    wire [AW:0] rfull_g = {~rg_s2[AW:AW-1], rg_s2[AW-2:0]};
+    wire        wfull0  = (wgray  == rfull_g);    // no write this clock
+    wire        wfull1  = (wgray1 == rfull_g);    // one write this clock
+    wire [AW:0] wlev0   = wbin  - rbin_w;
+    wire [AW:0] wlev1   = wbin1 - rbin_w;
+    wire        waf0    = (wlev0 >= (DEPTH - AF_MARGIN));
+    wire        waf1    = (wlev1 >= (DEPTH - AF_MARGIN));
 
     always @(posedge wclk) begin
         rg_s1 <= rgray;
@@ -92,15 +103,20 @@ module gs_afifo #(
     always @(posedge wclk) begin
         if (!wrst_n) begin
             wbin <= {(AW+1){1'b0}}; wgray <= {(AW+1){1'b0}};
+            wbin1 <= {{AW{1'b0}}, 1'b1}; wgray1 <= {{AW{1'b0}}, 1'b1};
             wfull <= 1'b0; w_almost_full <= 1'b0; w_level <= {(AW+1){1'b0}};
             rbin_w <= {(AW+1){1'b0}};
         end else begin
-            wbin  <= wbin_n;
-            wgray <= wgray_n;
-            wfull <= (wgray_n == {~rg_s2[AW:AW-1], rg_s2[AW-2:0]});
+            if (w_do) begin
+                wbin   <= wbin1;
+                wgray  <= wgray1;
+                wbin1  <= wbin2;
+                wgray1 <= (wbin2 >> 1) ^ wbin2;
+            end
+            wfull         <= w_do ? wfull1 : wfull0;
+            w_level       <= w_do ? wlev1  : wlev0;
+            w_almost_full <= w_do ? waf1   : waf0;
             rbin_w <= g2b(rg_s2);
-            w_level <= wlevel_n;
-            w_almost_full <= (wlevel_n >= (DEPTH - AF_MARGIN));
         end
     end
 
@@ -108,11 +124,18 @@ module gs_afifo #(
 
     // ---- read side
     reg  [AW:0] wbin_r = {(AW+1){1'b0}};   // synchronised write pointer, binary
+    // rbin1/rgray1 = rbin+1 and its gray code (same restructuring as the write
+    // side: r_do only selects between precomputed candidates).
+    reg  [AW:0] rbin1 = {{AW{1'b0}}, 1'b1}, rgray1 = {{AW{1'b0}}, 1'b1};
 
     wire        r_do    = ren & ~rempty;
-    wire [AW:0] rbin_n  = rbin + {{AW{1'b0}}, r_do};
-    wire [AW:0] rgray_n = (rbin_n >> 1) ^ rbin_n;
-    wire [AW:0] rlevel_n = wbin_r - rbin_n;
+    wire [AW:0] rbin2   = rbin1 + {{AW{1'b0}}, 1'b1};
+    wire        rempty0 = (rgray  == wg_s2);
+    wire        rempty1 = (rgray1 == wg_s2);
+    wire [AW:0] rlev0   = wbin_r - rbin;
+    wire [AW:0] rlev1   = wbin_r - rbin1;
+    wire        rae0    = (rlev0 <= AE_THR);
+    wire        rae1    = (rlev1 <= AE_THR);
 
     always @(posedge rclk) begin
         wg_s1 <= wgray;
@@ -122,22 +145,27 @@ module gs_afifo #(
     always @(posedge rclk) begin
         if (!rrst_n) begin
             rbin <= {(AW+1){1'b0}}; rgray <= {(AW+1){1'b0}};
+            rbin1 <= {{AW{1'b0}}, 1'b1}; rgray1 <= {{AW{1'b0}}, 1'b1};
             rempty <= 1'b1; r_almost_empty <= 1'b1; r_level <= {(AW+1){1'b0}};
             wbin_r <= {(AW+1){1'b0}};
         end else begin
-            rbin  <= rbin_n;
-            rgray <= rgray_n;
-            rempty <= (rgray_n == wg_s2);
+            if (r_do) begin
+                rbin   <= rbin1;
+                rgray  <= rgray1;
+                rbin1  <= rbin2;
+                rgray1 <= (rbin2 >> 1) ^ rbin2;
+            end
+            rempty         <= r_do ? rempty1 : rempty0;
+            r_level        <= r_do ? rlev1   : rlev0;
+            r_almost_empty <= r_do ? rae1    : rae0;
             wbin_r <= g2b(wg_s2);
-            r_level <= rlevel_n;
-            r_almost_empty <= (rlevel_n <= AE_THR);
         end
     end
 
     // FWFT read: address of the *next* word is used when advancing, so rdata
     // always equals mem[rbin] one edge after rbin changes; re-read every
     // cycle so a freshly written word is picked up before rempty drops.
-    wire [AW-1:0] raddr = rbin_n[AW-1:0];
+    wire [AW-1:0] raddr = r_do ? rbin1[AW-1:0] : rbin[AW-1:0];
     initial rdata = {W{1'b0}};
     always @(posedge rclk) rdata <= mem[raddr];
 endmodule

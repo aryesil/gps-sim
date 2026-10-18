@@ -295,8 +295,10 @@ def main():
     n36 = lambda g: sum(1 for c in groups[g] if c["ref"] == "RAMB36E1")
     chk(len(groups["rom_lo"]) == 16 and n36("rom_lo") == 16,
         "rom_lo: %d cells (%d RAMB36), expect 16 RAMB36 (16K x 2 each)" % (len(groups["rom_lo"]), n36("rom_lo")))
-    chk(len(groups["rom_hi"]) == 3 and n36("rom_hi") == 3,
-        "rom_hi: %d cells (%d RAMB36), expect 3 RAMB36 (code ROM total 19 RAMB36)" % (len(groups["rom_hi"]), n36("rom_hi")))
+    # 2464 x 32: Vivado 2023.2 packs this as 4 x (4K x 9) RAMB36 (no output mux);
+    # 3 x (1K x 36) is the other valid packing.  Contents are checked below.
+    chk(len(groups["rom_hi"]) in (3, 4) and n36("rom_hi") == len(groups["rom_hi"]),
+        "rom_hi: %d cells (%d RAMB36), expect 3 (1K x 36) or 4 (4K x 9) RAMB36" % (len(groups["rom_hi"]), n36("rom_hi")))
     chk(len(groups["base"]) == 1, "base  : %d cells (%s), expect 1" % (len(groups["base"]), ",".join(c["ref"] for c in groups["base"])))
     sc_ports = []
     for c in groups["sincos"]:
