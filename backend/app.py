@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import math
 import pathlib
 import queue
@@ -1686,6 +1687,17 @@ def live_start(body: dict, request: Request):
             def on_cn0(metric_db):
                 q.append({"cn0_db": metric_db})
             track_prn = body.get("track_prn")
+            thread_err: list = []
+
+            def run_guarded(fn, **kw):
+                # An exception in the TX thread (engine not found, device open
+                # failed, TX disabled) used to vanish with a stderr traceback
+                # and the stream just ended: report it to the client instead.
+                try:
+                    fn(**kw)
+                except Exception as ex:  # noqa: BLE001
+                    logging.getLogger(__name__).exception("live TX thread failed")
+                    thread_err.append(f"{type(ex).__name__}: {ex}")
             # 8-/4-bit Tezuka streams are scaled and packed in the generator's
             # worker process (backend.rf.air): at tens of Msps that work in
             # this process starves the TX pump of the GIL.
@@ -1698,7 +1710,8 @@ def live_start(body: dict, request: Request):
                 # words (backend.fpga.tx); no IQ taps, no host-side chunks.
                 from backend.fpga import tx as gnss_tx
                 th = threading.Thread(
-                    target=gnss_tx.stream,
+                    target=run_guarded,
+                    args=(gnss_tx.stream,),
                     kwargs=dict(params=params, session=session,
                                dry_run=body.get("dry_run", False),
                                progress_cb=cb, cancel=_tx_slots[slot]["stop"]))
@@ -1711,7 +1724,8 @@ def live_start(body: dict, request: Request):
                     source, params.sample_rate, on_row,
                     track_prn=int(track_prn) if track_prn else None, on_cn0=on_cn0)
                 th = threading.Thread(
-                    target=transmit.stream,
+                    target=run_guarded,
+                    args=(transmit.stream,),
                     kwargs=dict(params=params, dry_run=body.get("dry_run", False),
                                progress_cb=cb, cancel=_tx_slots[slot]["stop"],
                                chunk_source=chunk_source))
@@ -1769,6 +1783,9 @@ def live_start(body: dict, request: Request):
             while q:                      # events queued after the loop broke
                 yield emit({**q.pop(0), "slot": slot})
             audit.log_event("live_finished", slot=slot)
+            if thread_err:
+                audit.log_event("live_error", slot=slot, error=thread_err[0])
+                yield emit({"error": thread_err[0], "slot": slot})
             # carries the RF plan too: a run stopped before its first progress
             # event (auto-stop, early cancel) must still report it
             yield emit({"finished": True, **(rf_report or {}), "slot": slot})
