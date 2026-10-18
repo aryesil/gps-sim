@@ -84,10 +84,11 @@ window.addChannel = function () {
         <label>Device URI <input id="${id}-uri" value="ip:192.168.3.1"></label>
         <label>SDR kind <select id="${id}-kind">
           <option value="pluto">Pluto / IIO clone</option>
+          <option value="tezuka_gnss" selected>Tezuka FPGA synth (on-board GNSS engine)</option>
           <option value="tezuka">Tezuka (auto 16/8-bit)</option>
           <option value="pluto_cs8">Tezuka TX cs8 (8-bit only)</option>
           <option value="bladerf">bladeRF</option>
-        </select><span class="info" title="Which driver stack talks to the URI above: PlutoSDR/AD936x IIO clones (libiio), a Nuand bladeRF (libbladeRF), or a Tezuka LibreSDR image with the TX cs8 FPGA mode (8-bit complex samples, TX1 only). Tezuka (auto) picks 16-bit up to 10 Msps and 8-bit above, from the sample rate; 8-bit drives TX1 only. Both TX1/TX2 slots must agree on this -- they're two ports of the same physical card.">i</span></label>
+        </select><span class="info" title="Which driver stack talks to the URI above: PlutoSDR/AD936x IIO clones (libiio), a Nuand bladeRF (libbladeRF), or a Tezuka LibreSDR image with the TX cs8 FPGA mode (8-bit complex samples, TX1 only). Tezuka (auto) picks 16-bit up to 10 Msps and 8-bit above, from the sample rate; 8-bit drives TX1 only. Tezuka FPGA synth sends compact command words and the board's gs_wrap engine (PL) generates the IQ samples itself (GPS/Galileo/BeiDou, up to 61.44 Msps, TDD above 10 Msps; needs the gnss firmware image). Both TX1/TX2 slots must agree on this -- they're two ports of the same physical card.">i</span></label>
         <div class="device-row">
           <button id="${id}-dev-connect" class="btn-secondary">Connect</button>
           <span id="${id}-dev-status" class="dev-status dev-off">not connected</span>
