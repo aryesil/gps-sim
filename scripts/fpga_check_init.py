@@ -264,8 +264,8 @@ def main():
     def chk(cond, text):
         rep.append((cond, ("ok   " if cond else "FAIL ") + text))
     rep.append((True, "== source images (%s) ==" % memdir))
-    chk(len(rom) == 17856, "gs_rom.mem has 17856 words (%d)" % len(rom))
-    chk(len(rom_hi) == 1472, "gs_rom_hi.mem has 1472 words (%d)" % len(rom_hi))
+    chk(len(rom) == 18848, "gs_rom.mem has 18848 words (%d)" % len(rom))
+    chk(len(rom_hi) == 2464, "gs_rom_hi.mem has 2464 words (%d)" % len(rom_hi))
     chk(rom_hi == rom[16384:], "gs_rom_hi.mem == gs_rom.mem[16384:]")
     chk(len(base) == 256, "gs_base.mem has 256 words (%d)" % len(base))
     chk(len(sc) == 1024, "gs_sincos2.mem has 1024 words (%d)" % len(sc))
@@ -295,8 +295,8 @@ def main():
     n36 = lambda g: sum(1 for c in groups[g] if c["ref"] == "RAMB36E1")
     chk(len(groups["rom_lo"]) == 16 and n36("rom_lo") == 16,
         "rom_lo: %d cells (%d RAMB36), expect 16 RAMB36 (16K x 2 each)" % (len(groups["rom_lo"]), n36("rom_lo")))
-    chk(len(groups["rom_hi"]) == 2 and n36("rom_hi") == 2,
-        "rom_hi: %d cells (%d RAMB36), expect 2 RAMB36 (code ROM total 18 RAMB36)" % (len(groups["rom_hi"]), n36("rom_hi")))
+    chk(len(groups["rom_hi"]) == 3 and n36("rom_hi") == 3,
+        "rom_hi: %d cells (%d RAMB36), expect 3 RAMB36 (code ROM total 19 RAMB36)" % (len(groups["rom_hi"]), n36("rom_hi")))
     chk(len(groups["base"]) == 1, "base  : %d cells (%s), expect 1" % (len(groups["base"]), ",".join(c["ref"] for c in groups["base"])))
     sc_ports = []
     for c in groups["sincos"]:
@@ -335,7 +335,7 @@ def main():
                     out.append((c["name"], p, pi))
         return out
     check_instance("code ROM lo", rom_lo, 32, regex_bit(r"q_lo_reg\[(\d+)\]$"), ports_of(groups["rom_lo"], 16384), rep)
-    check_instance("code ROM hi", rom_hi, 32, regex_bit(r"q_hi_reg\[(\d+)\]$"), ports_of(groups["rom_hi"], 1472), rep)
+    check_instance("code ROM hi", rom_hi, 32, regex_bit(r"q_hi_reg\[(\d+)\]$"), ports_of(groups["rom_hi"], 2464), rep)
     check_instance("base table", base, 16, regex_bit(r"base_q_reg(?:__\d+)?\[(\d+)\]$"), ports_of(groups["base"], 256), rep)
     for pid in range(12):
         pl = [(cn, p, pi) for cn, p, pi, i in sc_ports if i == pid]

@@ -32,7 +32,7 @@ module tb_scan;
         .shadow_bank(shadow_bank), .shadow_dirty(shadow_dirty), .shadow_clean(shadow_clean));
 
     // golden data (independent read of the same files)
-    reg [31:0] grom [0:17855];
+    reg [31:0] grom [0:18847];
     reg [15:0] gbase [0:255];
 
     // entry model, index e = (bank*P + pipe)*S + slot
@@ -79,7 +79,7 @@ module tb_scan;
         succf = ({1'b0, w} + 8'd1 >= wpc(k)) ? 7'd0 : (w + 7'd1);
     endfunction
     function [5:0] maxprn; input [1:0] k;
-        maxprn = (k == 0) ? 32 : (k == 3) ? 63 : 50;
+        maxprn = (k == 0) ? 63 : (k == 3) ? 63 : 50;
     endfunction
     function [31:0] romword; input [1:0] k; input [5:0] n; input [6:0] w;
         romword = grom[gbase[{k, n}] + w];

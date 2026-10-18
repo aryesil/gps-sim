@@ -45,7 +45,7 @@ from backend.fpga.select import ChannelPlan, plan_channels  # noqa: F401
 
 CBOC_A = 0.95346258924559231     # kCbocA, mixer.cpp
 CBOC_B = 0.30151134457776363     # kCbocB, mixer.cpp
-_SYS_GPS, _SYS_BEIDOU, _SYS_GALILEO = 0, 3, 5   # engine._SYS_INT
+_SYS_GPS, _SYS_SBAS, _SYS_BEIDOU, _SYS_GALILEO = 0, 2, 3, 5   # engine._SYS_INT
 _TWO_PI = 2.0 * math.pi
 _U32 = 0xFFFFFFFF
 _FRAC = 1 << W.CODE_FRAC_BITS
@@ -67,10 +67,10 @@ def _chip_rate(sv) -> float:
 
 def _check_supported(sv, ch: int) -> None:
     tag = f"channel {ch} (sys {sv.sys}, prn {sv.prn})"
-    if sv.sys not in (_SYS_GPS, _SYS_GALILEO, _SYS_BEIDOU):
+    if sv.sys not in (_SYS_GPS, _SYS_SBAS, _SYS_GALILEO, _SYS_BEIDOU):
         raise NotImplementedError(
             f"{tag}: system {sv.sys} not supported by the FPGA command "
-            "generator (GPS 0, BeiDou 3, Galileo 5 only)")
+            "generator (GPS 0, SBAS 2, BeiDou 3, Galileo 5 only)")
     if sv.tx_time_valid == 0:
         raise NotImplementedError(
             f"{tag}: tx_time_valid == 0 (receiver-time nav) is not supported")
@@ -79,7 +79,7 @@ def _check_supported(sv, ch: int) -> None:
 
 
 def _kind_of(sv) -> int:
-    if sv.sys == _SYS_GPS:
+    if sv.sys in (_SYS_GPS, _SYS_SBAS):
         return cmdfmt.KIND_CA
     if sv.sys == _SYS_BEIDOU:
         return cmdfmt.KIND_B1I
@@ -96,6 +96,9 @@ class _Static:
         self.sv = sv
         self.ch = ch
         self.kind = _kind_of(sv)
+        # PRN field of the command record = C/A ROM index (SBAS 120..150 -> 33..63)
+        self.rom_prn = (roms.ca_index(int(sv.sys), int(sv.prn))
+                        if self.kind == cmdfmt.KIND_CA else int(sv.prn))
         self.L = _code_len(sv)
         self.rate_nom = _chip_rate(sv)
         self.sec = (np.ctypeslib.as_array(sv.sec_code, (sv.sec_len,))
@@ -290,7 +293,7 @@ def generate_blocks(band, first_block: int = 0, n_blocks: int | None = None,
         if st.L != cmdfmt.CODE_LEN[st.kind]:
             raise ValueError(f"channel {st.ch}: code_len {st.L} does not match "
                              f"kind {st.kind}")
-        rom = roms.code_chips(st.kind, int(st.sv.prn))
+        rom = roms.code_chips(st.kind, st.rom_prn)
         if not np.array_equal(np.ctypeslib.as_array(st.sv.code, (st.L,)), rom):
             raise ValueError(f"channel {st.ch}: primary code differs from the "
                              f"ROM code for kind {st.kind} prn {st.sv.prn}")
@@ -319,7 +322,7 @@ def generate_blocks(band, first_block: int = 0, n_blocks: int | None = None,
                 sp, bits = _sign_for(st, cp0, rate, fs, bs)
                 code_inc = _rnd(rate / fs * _FRAC)
                 recs.append(cmdfmt.ChannelBlock(
-                    ch=st.ch, prn=int(sv.prn), kind=st.kind, code_len=st.L,
+                    ch=st.ch, prn=st.rom_prn, kind=st.kind, code_len=st.L,
                     valid=True, carr_inc=cinc, carr_phase0=cph,
                     code_inc=code_inc, code_phase0=cp_fx, sign_phase0=sp,
                     sign_idx0=0, sign_bits=bits,

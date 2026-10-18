@@ -8,7 +8,8 @@ IS-GPS-200 notation: the ICD tabulates C/A chips as register bits, where
 logic 1 corresponds to chip -1 in the native generator. So GPS PRN 1 starts
 1100100000 in ICD bits, which is ROM bits 0011011111.
 
-PRN ranges: GPS C/A 1..32, Galileo E1B and E1C 1..50 (the native generator
+PRN ranges: GPS C/A 1..32, SBAS L1 (same C/A code family, PRN 120..150) at
+ROM index 33..63 of the C/A kind (see ``ca_index``), Galileo E1B and E1C 1..50 (the native generator
 accepts up to 50; the engine plan does use PRNs above 36), BeiDou B1I 1..63.
 """
 from __future__ import annotations
@@ -27,7 +28,7 @@ KIND_B1I = 3
 
 # kind -> (native synth_code system id, code length in chips, prn_max)
 _KINDS = {
-    KIND_CA: (0, 1023, 32),
+    KIND_CA: (0, 1023, 63),
     KIND_E1B: (5, 4092, 50),
     KIND_E1C: (6, 4092, 50),
     KIND_B1I: (3, 2046, 63),
@@ -36,6 +37,21 @@ _KINDS = {
 QUARTER = 1024
 FULL = 4096
 AMPLITUDE = 32767
+
+
+SBAS_PRN_FIRST = 120           # SBAS L1 PRN 120..150 -> C/A ROM index 33..63
+SBAS_IDX_FIRST = 33
+SBAS_PRN_LAST = SBAS_PRN_FIRST + 63 - SBAS_IDX_FIRST
+
+
+def ca_index(sys_code: int, prn: int) -> int:
+    """C/A ROM index (the PRN field of a command record) of an engine SV:
+    GPS (sys 0) PRN 1..32 as is, SBAS (sys 2) PRN 120..150 mapped to 33..63."""
+    if sys_code == 0 and 1 <= prn <= 32:
+        return prn
+    if sys_code == 2 and SBAS_PRN_FIRST <= prn <= SBAS_PRN_LAST:
+        return prn - SBAS_PRN_FIRST + SBAS_IDX_FIRST
+    raise ValueError(f"no C/A ROM code for sys {sys_code} prn {prn}")
 
 
 def code_len(kind: int) -> int:
@@ -51,6 +67,8 @@ def code_chips(kind: int, prn: int) -> np.ndarray:
     sysc, n, pmax = _KINDS[kind]
     if not 1 <= prn <= pmax:
         raise ValueError(f"PRN {prn} out of range 1..{pmax} for kind {kind}")
+    if kind == KIND_CA and prn >= SBAS_IDX_FIRST:
+        sysc, prn = 2, prn - SBAS_IDX_FIRST + SBAS_PRN_FIRST       # SBAS L1
     prim, _ = _lib.code(sysc, prn, n, 0)
     return prim
 

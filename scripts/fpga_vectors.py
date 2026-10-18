@@ -7,7 +7,7 @@ Usage (repo root):
     PYTHONPATH=. python scripts/fpga_vectors.py case all
 
 File formats (all text, one entry per line, lowercase hex, $readmemh ready)
-  fpga/mem/gs_rom.mem          17856 lines, 32-bit code ROM word, rom_layout()
+  fpga/mem/gs_rom.mem          18848 lines, 32-bit code ROM word, rom_layout()
                                order (kind, then PRN), chip i = bit i%32 of
                                word i//32, bit 1 = chip +1.
   fpga/mem/gs_base.mem         256 lines, 16-bit base word address, index

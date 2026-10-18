@@ -72,19 +72,19 @@ module gs_scan (
     localparam SW    = `GS_SCAN_SW;
     localparam NPOS  = `GS_P * `GS_SLOTS;     // entries per bank
     localparam P_SCI_BITS = `GS_P * `GS_SCI_W;
-    localparam ROM_N = 17856;
+    localparam ROM_N = 18848;
 
     // ---- memories (inferred BRAM, registered read) ----
-    // The code ROM is split at 16384 words: a single 17856-deep array is mapped by
+    // The code ROM is split at 16384 words: a single 18848-deep array is mapped by
     // the tool as 32 x RAMB36 (32K x 1 aspect); 16384 x 32 maps as 16 x (16K x 2)
-    // and the 1472-word remainder as 2 x (1K x 36): 18 RAMB36 in total.
+    // and the 2464-word remainder as 3 x (1K x 36): 19 RAMB36 in total.
     localparam ROM_LO = 16384;
     (* rom_style = "block" *) reg [31:0] rom_lo [0:ROM_LO-1];
     (* rom_style = "block" *) reg [31:0] rom_hi [0:ROM_N-ROM_LO-1];
     (* rom_style = "block" *) reg [15:0] base [0:255];
     initial begin
         $readmemh({`GS_MEMDIR, "gs_rom.mem"},    rom_lo, 0, ROM_LO-1);   // first 16384 lines
-        $readmemh({`GS_MEMDIR, "gs_rom_hi.mem"}, rom_hi);                // words 16384.. (1472 lines)
+        $readmemh({`GS_MEMDIR, "gs_rom_hi.mem"}, rom_hi);                // words 16384.. (2464 lines)
         $readmemh({`GS_MEMDIR, "gs_base.mem"}, base);
     end
 
@@ -201,7 +201,7 @@ module gs_scan (
         s4v <= rst ? 1'b0 : (s3v & ~kill);
         if (s3v) begin
             q_lo  <= rom_lo[rom_addr[13:0]];
-            q_hi  <= rom_hi[rom_addr[10:0]];
+            q_hi  <= rom_hi[rom_addr[11:0]];
             q_sel <= rom_addr[14];
         end
         s4_which <= s3_which; s4_widx <= s3_widx;
