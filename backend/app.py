@@ -1689,21 +1689,33 @@ def live_start(body: dict, request: Request):
             # 8-/4-bit Tezuka streams are scaled and packed in the generator's
             # worker process (backend.rf.air): at tens of Msps that work in
             # this process starves the TX pump of the GIL.
+            gnss = params.kind == "tezuka_gnss"
             air_fmt = (air.air_format_for(params.kind, params.sample_rate)
                        if params.level_dbfs is not None and not params.baseband_offset_hz
-                       else None)
-            source = (session.air_segments(air_fmt, level_dbfs=params.level_dbfs,
-                                           tx_scale=params.tx_scale)
-                      if air_fmt is not None else session.segments())
-            chunk_source = _tee_spectrogram(
-                source, params.sample_rate, on_row,
-                track_prn=int(track_prn) if track_prn else None, on_cn0=on_cn0)
-            th = threading.Thread(
-                target=transmit.stream,
-                kwargs=dict(params=params, dry_run=body.get("dry_run", False),
-                           progress_cb=cb, cancel=_tx_slots[slot]["stop"],
-                           chunk_source=chunk_source))
-            th.start()
+                       and not gnss else None)
+            if gnss:
+                # FPGA engine: the board synthesises, the host sends command
+                # words (backend.fpga.tx); no IQ taps, no host-side chunks.
+                from backend.fpga import tx as gnss_tx
+                th = threading.Thread(
+                    target=gnss_tx.stream,
+                    kwargs=dict(params=params, session=session,
+                               dry_run=body.get("dry_run", False),
+                               progress_cb=cb, cancel=_tx_slots[slot]["stop"]))
+                th.start()
+            else:
+                source = (session.air_segments(air_fmt, level_dbfs=params.level_dbfs,
+                                               tx_scale=params.tx_scale)
+                          if air_fmt is not None else session.segments())
+                chunk_source = _tee_spectrogram(
+                    source, params.sample_rate, on_row,
+                    track_prn=int(track_prn) if track_prn else None, on_cn0=on_cn0)
+                th = threading.Thread(
+                    target=transmit.stream,
+                    kwargs=dict(params=params, dry_run=body.get("dry_run", False),
+                               progress_cb=cb, cancel=_tx_slots[slot]["stop"],
+                               chunk_source=chunk_source))
+                th.start()
 
             def emit(payload: dict) -> str:
                 if recorder is not None:

@@ -159,6 +159,12 @@ TX_CS8_MAX_RATE_HZ = _float("TX_CS8_MAX_RATE_HZ", 27.5e6)
 TX_CS4_ENABLED = _flag("TX_CS4_ENABLED", False)
 TX_CS4_MAX_RATE_HZ = _float("TX_CS4_MAX_RATE_HZ", 40.0e6)
 
+# FPGA GNSS engine ("tezuka_gnss" kind): AXI-Lite window of gs_wrap on the
+# board (physical address for devmem) and how the host reaches the board.
+GNSS_BASE_ADDR = int(_str("GNSS_BASE_ADDR", "0x43C00000"), 0)
+GNSS_SSH_USER = _str("GNSS_SSH_USER", "root")
+GNSS_CTL = _str("GNSS_CTL", "")          # board helper name ("gnssctl"); empty = devmem only
+
 LIVE_START_LEAD_AUTO = _flag("LIVE_START_LEAD_AUTO", False)
 # Worker processes that generate and pack live segments in parallel (8-/4-bit
 # TX streams). One segment is about 0.5-1.5 CPU-seconds per second of signal at

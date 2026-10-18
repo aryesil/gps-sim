@@ -189,8 +189,8 @@ class LiveSession:
     # SDR (measured: 12 s of signal pushed in 21.5 s of wall time).
     use_process = True
 
-    def _segment_request(self, k: int, snap: LiveState):
-        seg = self.segment_duration_s
+    def _segment_request(self, k: int, snap: LiveState, seg: float | None = None):
+        seg = self.segment_duration_s if seg is None else seg
         base = self.base_req
         t = k * seg + snap.time_offset_s
         # Ephemeris is pinned per _EPH_REFRESH_S block of the session:
@@ -226,6 +226,41 @@ class LiveSession:
             return inspector.raw_to_iq(data) if is_raw else data
         iq, self._iq_filename = _generate_segment(seg_req, self._iq_filename)
         return iq
+
+    def gnss_bands(self, fs: float, segment_blocks: int):
+        """Generator of ``(first_block, BandPlan)`` for the FPGA engine ('gnss'
+        format): consecutive plans of ``segment_blocks`` whole 65536-sample
+        blocks (no trailing partial block), block indices continuing across
+        plans. Only the plan is computed here; the engine synthesises. Runs
+        until ``self.running`` is cleared (stop()) -- jog/time shifts apply to
+        the next plan, like segments(). Raises if the request needs more than
+        one RF band."""
+        from backend.synth import engine
+        self.running = True
+        block = 65536
+        seg_s = segment_blocks * block / float(fs)
+        k = 0
+        try:
+            while self.running:
+                with self._lock:
+                    snap = copy.deepcopy(self.state)
+                req = self._segment_request(k, snap, seg_s)
+                bands = engine.plan(req).bands
+                if len(bands) != 1:
+                    raise RuntimeError(
+                        "live transmit supports exactly one RF output per channel, "
+                        f"but this selection planned {len(bands)} bands -- pick a "
+                        "single band for Start")
+                band = bands[0]
+                if abs(band.fs - fs) > 1e-6:
+                    raise RuntimeError(f"planned band rate {band.fs} differs from "
+                                       f"the TX rate {fs}")
+                if k == 0 and self.first_segment_latency_s is None:
+                    self.first_segment_latency_s = time.monotonic() - self._created_mono
+                yield k * segment_blocks, band
+                k += 1
+        finally:
+            self.running = False
 
     def air_segments(self, fmt, *, level_dbfs: float, tx_scale: float = 1.0):
         """Like segments(), but every chunk is an air.AirChunk: scaled to the
