@@ -192,7 +192,7 @@ def stream_t0_sow(sysc, signal, tow0_sow: float, prn=None) -> float:
         return (t // 12.0) * 12.0                        # NavIC subframes
     if sysc == "E":
         r = int(round(t))
-        return float(r - r % 2)                          # I/NAV 2 s pages
+        return float(r - ((r - 1) % 2))                  # I/NAV odd-second pages
     if sysc == "C":
         p = int(prn if prn is not None else 99)
         grid = 3 if (p <= 5 or p >= 59) else 6

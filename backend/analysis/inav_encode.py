@@ -242,6 +242,11 @@ def word_type_0(eph, tow, week):
 
 
 _CYCLE = [1, 2, 3, 4, 5, 0]
+E1B_PAGE_PHASE_S = 1
+
+
+def page_index(tow: int) -> int:
+    return ((int(tow) - E1B_PAGE_PHASE_S) % 30) // 2
 
 
 def word_bits(wtype: int, eph: dict, tow: int, week: int) -> list[int]:
@@ -264,11 +269,14 @@ def word_bits(wtype: int, eph: dict, tow: int, week: int) -> list[int]:
 # --------------------------------------------------------------------------
 # page assembly
 # --------------------------------------------------------------------------
-def build_page(wtype: int, eph: dict, tow: int, week: int) -> list[int]:
-    """One 500-symbol nominal page (even part then odd part)."""
+def _page_parts(wtype: int, eph: dict, tow: int, week: int,
+                osnma40: list[int] | None) -> tuple[list[int], list[int]]:
+    """Pre-FEC even and odd page parts, 120 bits each."""
     word = word_bits(wtype, eph, tow, week)          # 128 bits incl. type
     data_k = word[:112]                              # even part data field
     data_j = word[112:128]                           # odd part data field (16)
+    r1 = [0] * 40 if osnma40 is None else list(osnma40)
+    assert len(r1) == 40
 
     # I/NAV page part = 114 content bits + 6 tail zeros -> 120 -> FEC -> 240.
     #   even: even/odd(1) + page type(1) + data k 1..112 (112)          = 114
@@ -277,15 +285,27 @@ def build_page(wtype: int, eph: dict, tow: int, week: int) -> list[int]:
     #                                                                   = 114
     # CRC-24Q covers the 196 bits preceding it, in transmission order.
     crc_in = ([0, 0] + data_k
-              + [1, 0] + data_j + [0] * 40 + [0] * 22 + [0, 0])
+              + [1, 0] + data_j + r1 + [0] * 22 + [0, 0])
     assert len(crc_in) == 196
     crc = _crc24q(crc_in)
 
     even_data = [0, 0] + data_k + [0] * 6                       # 120 bits
-    odd_data = ([1, 0] + data_j + [0] * 40 + [0] * 22 + [0, 0]
+    odd_data = ([1, 0] + data_j + r1 + [0] * 22 + [0, 0]
                 + crc + [0] * 8 + [0] * 6)                      # 120 bits
     assert len(even_data) == 120 and len(odd_data) == 120
+    return even_data, odd_data
 
+
+def page_bits240(wtype: int, eph: dict, tow: int, week: int,
+                 osnma40: list[int] | None = None) -> list[int]:
+    even_data, odd_data = _page_parts(wtype, eph, tow, week, osnma40)
+    return even_data[:120] + odd_data[:120]
+
+
+def build_page(wtype: int, eph: dict, tow: int, week: int,
+               osnma40: list[int] | None = None) -> list[int]:
+    """One 500-symbol nominal page (even part then odd part)."""
+    even_data, odd_data = _page_parts(wtype, eph, tow, week, osnma40)
     even = SYNC_PATTERN + interleave_30x8(conv_encode(even_data))
     odd = SYNC_PATTERN + interleave_30x8(conv_encode(odd_data))
     assert len(even) == _HALF_SYMS and len(odd) == _HALF_SYMS
@@ -349,19 +369,22 @@ def nav_stream(eph: dict, week: int, tow0_sow: float, duration_s: float,
                eph_by_prn=None) -> np.ndarray:
     """Deterministic I/NAV symbol stream, ``int8`` in ``{-1, +1}`` at 250
     sym/s. Length covers ``duration_s`` rounded up to a whole 2 s page plus a
-    30 s guard, aligned so a page boundary sits on the 2 s GST grid.
+    30 s guard, aligned so a page boundary sits on the odd-second GST grid
+    (OS SIS ICD 2.0 Table 38).
     """
     npages = int(math.ceil((math.ceil(duration_s) + 30) / 2.0))
-    tow0 = int(round(tow0_sow))
-    tow0 -= tow0 % 2
+    r = int(round(tow0_sow))
+    tow0 = r - ((r - E1B_PAGE_PHASE_S) % 2)
     syms: list[int] = []
     for p in range(npages):
-        tow = (tow0 + 2 * p) % 604800
+        ab = tow0 + 2 * p
+        wk = week + ab // 604800
+        tow = ab % 604800
         # Word type follows GST, not the stream start: a stream started
         # later (live mode restarts it every segment) must continue the
         # same sequence instead of re-sending the first word type.
-        wtype = _CYCLE[(tow // 2) % len(_CYCLE)]
-        syms.extend(build_page(wtype, eph, tow, week))
+        wtype = _CYCLE[page_index(tow) % len(_CYCLE)]
+        syms.extend(build_page(wtype, eph, tow, wk))
     a = np.asarray(syms, dtype=np.int8)
     # BPSK eşlemesi: bit 0 -> +1, bit 1 -> -1 (tüm GNSS standartları ve E1-C pilot evresiyle uyumlu)
     return np.where(a > 0, np.int8(-1), np.int8(1)).astype(np.int8)

@@ -93,6 +93,8 @@ def _try_bits(even_bits: list[int], odd_bits: list[int]) -> dict[str, Any] | Non
         "type": wtype,
         "crc_ok": crc_ok,
         "word_bits": word_bits,
+        "osnma": reserved_1,
+        "page_bits": even_bits[:120] + odd_bits[:120],
         "fields": decode_word_fields(wtype, word_bits) if crc_ok else {},
     }
 
