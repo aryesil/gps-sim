@@ -54,7 +54,7 @@ Signal generation runs from broadcast ephemeris by default; in **precise mode** 
   - **Strict Time Continuity** — GPS transmit time advances strictly forward ($t = k \times 1.0\text{ s}$ for $k=0, 1, 2, \dots$); time never rewinds or replays.
   - **Live Controls & Scripting** — jog receiver coordinates and shift GPS time on-the-fly while transmitting; scheduled timeline scripting (`jog` and `time_shift` at $t + N\text{ s}$).
   - **Real-Time Diagnostics** — live spectrogram waterfall and C/N0 trend streamed via Server-Sent Events (SSE). Record SSE streams to disk and replay without SDR hardware.
-  - **Live GPS Time Sync** — `Live: now` mode leads local UTC by pipeline latency (`LIVE_START_LEAD_S`) so signals on-air match real-time GPS for smartphone and A-GPS testing.
+  - **Live GPS Time Sync** — `Live: now` schedules the start: it warms up the generator, picks the start time from the measured first-segment generation time and holds the transmitter until that instant, so the GPS time on air matches real-time GPS (the host clock must be NTP-synced) for smartphone and A-GPS testing.
 - **Precise Ephemeris** — parse IGS SP3-c/d products with multi-GNSS Lagrange/Neville orbit and clock interpolation:
   - *Analysis:* compare precise ground truth against realigned broadcast orbits (`/api/precise/compare`).
   - *Generation:* MGEX SP3-driven generation on the native engine, or least-squares Keplerian fit (4 h arc, sub-metre residuals) into broadcast records. Auto-downloads free IGS/MGEX rapid products for scenario epochs.
@@ -261,8 +261,11 @@ Configured via environment variables (see `backend/config.py`):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ALLOW_TX` | `0` | Master switch for RF transmission. Set `1` to enable transmit endpoints. |
-| `LIVE_START_LEAD_S` | `2.5` | `Live: now` lead (s): how far ahead of the wall clock segment 0 is stamped. |
-| `LIVE_START_LEAD_AUTO` | `0` | Opt-in. When `1`, each session measures its first-segment latency (stored in `DATA_DIR/live_lead.json`) and the next `Live: now` for the same device/rate/systems/band uses median + TX buffer + `LIVE_START_LEAD_MARGIN_S` (default `0.3`). Every session reports `lead_report` (`lag_s` > 0 = on-air GPS time behind real time) in the SSE stream either way. |
+| `LIVE_START_SCHEDULED` | `1` | `Live: now` "schedule then play": warm the worker pool, plan the start time T_play = now + first-segment generation estimate x `LIVE_SCHED_GEN_MARGIN` (`1.3`) + `LIVE_SCHED_GUARD_S` (`0.5`) + play latency, generate segment 0 for T_play (re-planned up to `LIVE_SCHED_MAX_ATTEMPTS` (`4`) times if it is late) and hold the start command until T_play - play latency. The first estimate is `LIVE_SCHED_GEN_EST_S` (`3.0`), later ones the measured time (`DATA_DIR/live_lead.json`). `lead_report.lag_s` is the measured residual (target ~0). `0` = the fixed lead below. |
+| `GNSS_PLAY_LATENCY_S` | `0.03` | FPGA path: start command (pre-connected ssh `devmem` CTRL enable) to first DAC sample. Calibrate with a receiver: if its GPS time is behind host UTC + leap seconds by d while `lag_s` ~ 0, add d. |
+| `LIVE_PC_PLAY_LATENCY_S` | `0.08` | PC-IQ path: first chunk released to the TX pump to first DAC sample (calibrate the same way). |
+| `LIVE_START_LEAD_S` | `2.5` | `Live: now` lead (s) with `LIVE_START_SCHEDULED=0`: how far ahead of the wall clock segment 0 is stamped. |
+| `LIVE_START_LEAD_AUTO` | `0` | Fixed-lead mode only (`LIVE_START_SCHEDULED=0`). Opt-in. When `1`, each session measures its first-segment latency (stored in `DATA_DIR/live_lead.json`) and the next `Live: now` for the same device/rate/systems/band uses median + TX buffer + `LIVE_START_LEAD_MARGIN_S` (default `0.3`). Every session reports `lead_report` (`lag_s` > 0 = on-air GPS time behind real time) in the SSE stream either way. |
 | `DEVICE_URI` | `ip:192.168.3.1` | Default SDR URI (`pyadi-iio` URI for PlutoSDR, bladeRF identifier for bladeRF). |
 | `TX_CS16_MAX_RATE_HZ` | `10000000` | `tezuka` kind: highest sample rate sent as 16-bit complex. |
 | `TX_CS8_MAX_RATE_HZ` | `27500000` | `tezuka` kind: highest sample rate sent as 8-bit complex; higher rates are rejected. |

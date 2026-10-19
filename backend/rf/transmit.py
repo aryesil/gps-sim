@@ -187,8 +187,18 @@ def _iter_chunks(path: str, fmt: str, chunk_samples: int):
             yield out
 
 
+_GATE_PREP_S = 0.25   # signal prepared before a start gate opens (> dual_tx _PREFILL_S)
+
+
 def stream(params: TxParams, dry_run: bool = False, progress_cb=None,
-           cancel=None, chunk_source=None) -> dict:
+           cancel=None, chunk_source=None, start_gate=None) -> dict:
+    """Push ``chunk_source`` (or the IQ file) to the SDR.
+
+    ``start_gate`` (Start Now scheduling): a callable run once, right before
+    the first sample is handed to the sink, after the first ~0.25 s have been
+    level-measured, scaled and clipped, so that what follows the gate is only
+    queueing. It blocks until the planned start and returns None to cancel the
+    run (anything else = go)."""
     if not config.ALLOW_TX:
         raise TransmitDisabled("set ALLOW_TX=1 and confirm the isolated setup")
     if params.sample_format not in ("int8", "int12", "int16"):
@@ -247,6 +257,33 @@ def stream(params: TxParams, dry_run: bool = False, progress_cb=None,
     max_load = 0.0
     min_lead = float('inf')
     air_gain = None
+    # Start gate: parts prepared before it opens, pushed right after it.
+    gate_pending = start_gate is not None
+    gate_samples = int(_GATE_PREP_S * params.sample_rate)
+    pending: list = []          # (push_fn, data)
+    pending_n = 0
+    gate_cancelled = False
+
+    def _push(fn, data, n, last_of_chunk):
+        """Push now, or hold until the gate opens; False = gate cancelled."""
+        nonlocal gate_pending, pending_n, gate_cancelled
+        if not gate_pending:
+            fn(data)
+            return True
+        pending.append((fn, data))
+        pending_n += n
+        if pending_n < gate_samples and not last_of_chunk:
+            return True
+        gate_pending = False
+        if start_gate() is None:
+            gate_cancelled = True
+            pending.clear()
+            return False
+        for f, d in pending:
+            f(d)
+        pending.clear()
+        return True
+
     try:
         it = iter(chunks)
         while True:
@@ -267,8 +304,12 @@ def stream(params: TxParams, dry_run: bool = False, progress_cb=None,
                 clipped += chunk.clipped
                 chunk_len = chunk.n_samples
                 step = _PUSH_SLICE * chunk.bytes_per_sample
+                bps = chunk.bytes_per_sample
                 for lo in range(0, chunk.data.size, step):
-                    sink.push_air(chunk.data[lo:lo + step], chunk.bytes_per_sample)
+                    piece = chunk.data[lo:lo + step]
+                    if not _push(lambda d, b=bps: sink.push_air(d, b), piece,
+                                 piece.size // bps, lo + step >= chunk.data.size):
+                        break
                     if cancel is not None and cancel.is_set():
                         break
             else:
@@ -296,9 +337,13 @@ def stream(params: TxParams, dry_run: bool = False, progress_cb=None,
                     part, n_clip = _clip_iq(part, dac_fs)
                     clipped += n_clip
                     comp += time.monotonic() - t_a
-                    sink.push(part)
+                    if not _push(sink.push, part, len(part),
+                                 lo + _PUSH_SLICE >= chunk_len):
+                        break
                     if cancel is not None and cancel.is_set():
                         break
+            if gate_cancelled:
+                break
             total += chunk_len
             feed_s += comp
             if cancel is not None and cancel.is_set():

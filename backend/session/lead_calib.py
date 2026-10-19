@@ -16,6 +16,15 @@ sürekliliği (kod/taşıyıcı fazı) bozacağından oturum içi düzeltme YAPI
 kalibrasyon yalnızca bir sonraki Start'ın öncü süresini etkiler. Tüm dosya
 G/Ç'si en iyi çabayla yapılır: bozuk/yazılamayan dosya varsayılan öncü
 süreye düşer, Start'ı asla engellemez.
+
+Varsayılan Start Now artık sabit öncü süre kullanmaz (LIVE_START_SCHEDULED,
+backend/session/play_schedule.py): zaman damgası yavaş başlangıç işleri
+bittikten sonra seçilir ve TX başlatma komutu o ana kadar bekletilir; rapordaki
+``lag_s`` ölçülen artık gecikmedir (hedef ~0). Buradaki sabit öncü süre yolu
+LIVE_START_SCHEDULED=0 ile hâlâ kullanılabilir. ``gen_estimate_s`` /
+``record_gen`` zamanlanmış yolun ilk-segment üretim süresi geçmişidir: yalnız
+başlangıç gecikmesini etkiler (tahmin kısa kalırsa yeniden planlanır), havadaki
+zamanın doğruluğunu etkilemez.
 """
 from __future__ import annotations
 
@@ -102,3 +111,23 @@ def lead_for(key: str, tx_buffer_s: float) -> float:
         return float(config.LIVE_START_LEAD_S)
     return suggest_lead_s(samples_for(key), tx_buffer_s,
                           margin_s=config.LIVE_START_LEAD_MARGIN_S)
+
+
+_GEN_PREFIX = "gen:"
+
+
+def gen_estimate_s(key: str, default_s: float | None = None) -> float:
+    """First-segment generation time to plan a scheduled Start Now with: the
+    slowest of the last measurements for ``key`` (warm pool, so they are
+    stable), else ``LIVE_SCHED_GEN_EST_S``."""
+    if default_s is None:
+        default_s = config.LIVE_SCHED_GEN_EST_S
+    vals = [v for v in samples_for(_GEN_PREFIX + key) if v == v and v >= 0.0]
+    if not vals:
+        return float(default_s)
+    return float(min(max(vals), _MAX_LEAD_S))
+
+
+def record_gen(key: str, gen_s: float) -> None:
+    """Store a measured first-segment generation time (best effort)."""
+    record(_GEN_PREFIX + key, gen_s)

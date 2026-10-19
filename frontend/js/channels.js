@@ -1280,7 +1280,12 @@ function wireChannelActions(id) {
         if (msg.timeline_step) logLine(`Channel ${id} timeline: ${JSON.stringify(msg.timeline_step)}`, 'info');
         if (msg.lead_report) {
           const lr = msg.lead_report;
-          logLine(`Channel ${id} Start Now: first segment ready in ${lr.ready_s}s (lead ${lr.lead_s}s, on-air GPS time ${lr.lag_s > 0 ? 'lags' : 'leads'} real time by ${Math.abs(lr.lag_s)}s)`, Math.abs(lr.lag_s) > 0.5 ? 'warn' : 'info');
+          if (lr.scheduled) {
+            const ms = (Math.abs(lr.lag_s) * 1000).toFixed(1);
+            logLine(`Channel ${id} Start Now: on air at ${lr.t_play_utc} UTC (warm-up ${lr.warmup_s}s, first segment ${lr.gen_s}s, ${lr.attempts} plan(s)); start ${lr.lag_s > 0 ? 'late' : 'early'} by ${ms} ms`, Math.abs(lr.lag_s) > 0.1 ? 'warn' : 'info');
+          } else {
+            logLine(`Channel ${id} Start Now: first segment ready in ${lr.ready_s}s (lead ${lr.lead_s}s, on-air GPS time ${lr.lag_s > 0 ? 'lags' : 'leads'} real time by ${Math.abs(lr.lag_s)}s)`, Math.abs(lr.lag_s) > 0.5 ? 'warn' : 'info');
+          }
         }
         if (msg.finished) {
           badge.textContent = 'STOPPED'; badge.classList.remove('badge-live'); disableLiveTabs(id);

@@ -8,6 +8,11 @@ disables the engine and mutes.
 
 ``stream`` is the live-session entry point with the same shape as
 ``backend.rf.transmit.stream`` (progress events, cancel event, result dict).
+
+Start Now (``session.schedule``, see backend/session/play_schedule.py): the
+engine plays block 0 as soon as it is enabled (sample FIFO prefill = 512
+samples), so the enable write is the start-of-play command. It is armed in
+advance (``device.arm_enable``) and fired at ``T_play - GNSS_PLAY_LATENCY_S``.
 """
 from __future__ import annotations
 
@@ -75,7 +80,15 @@ class GnssTx:
         self._started = False
 
     # ---- lifecycle -------------------------------------------------------
-    def start(self, buffers: Iterable[DmaBuffer]) -> None:
+    def start(self, buffers: Iterable[DmaBuffer], schedule=None) -> None:
+        """Reset, command mode, prefill, enable, start the feeder/poller.
+
+        ``schedule`` (a ``play_schedule.PlaySchedule``, Start Now): the enable
+        write is armed before the prefill (the prefill pulls the first segment,
+        whose generation the session times against ``schedule``) and fired by
+        ``schedule.wait_and_fire`` at ``T_play - play_latency``, so the first
+        block -- scenario time ``T_play`` -- leaves the DAC at ``T_play``.
+        Cancelling during the hold returns without enabling."""
         d = self.device
         d.check_id()
         d.disable()
@@ -83,34 +96,59 @@ class GnssTx:
         d.set_cmd_mode(True)
         d.clear_counters()
         self._it = iter(buffers)
-        # prefill: the CFG buffer and the first blocks, before the engine runs.
-        # The feeder thread already pumps; the engine is enabled once the
-        # prefill target is queued, or the DMA stops accepting data (ring full),
-        # or the data ends -- enabling with an almost empty ring starves the
-        # engine for the first pushes (start-up underruns).
-        self._feeder = threading.Thread(target=self._feed_loop, daemon=True)
-        self._feeder.start()
-        t_wait = self._clock()
-        while not self.cancel.is_set() and self._feeder.is_alive():
-            with self._lock:
-                fed = self.fed_blocks
-            if fed >= self.prefill_blocks:
-                break
-            now = self._clock()
-            ws = self._write_since
-            if fed > 0 and ws is not None and now - ws >= PREFILL_STALL_S:
-                break                          # DMA ring full: it holds all it can
-            if now - t_wait >= PREFILL_MAX_S:
-                _log.warning("GNSS prefill timed out at %d/%d blocks", fed, self.prefill_blocks)
-                break
-            time.sleep(0.002)
-        if self.error is not None and self.fed_blocks < self.prefill_blocks:   # feeder failed during the prefill
-            raise self.error
-        d.enable()
+        armed = d.arm_enable() if schedule is not None else None
+        self._started = True             # from here on stop() must clean up
+        try:
+            # prefill: the CFG buffer and the first blocks, before the engine runs.
+            # The feeder thread already pumps; the engine is enabled once the
+            # prefill target is queued, or the DMA stops accepting data (ring
+            # full), or the data ends -- enabling with an almost empty ring
+            # starves the engine for the first pushes (start-up underruns).
+            self._feeder = threading.Thread(target=self._feed_loop, daemon=True)
+            self._feeder.start()
+            t_wait = self._clock()
+            while not self.cancel.is_set() and self._feeder.is_alive():
+                with self._lock:
+                    fed = self.fed_blocks
+                if fed >= self.prefill_blocks:
+                    break
+                now = self._clock()
+                ws = self._write_since
+                if fed > 0 and ws is not None and now - ws >= PREFILL_STALL_S:
+                    break                      # DMA ring full: it holds all it can
+                if now - t_wait >= PREFILL_MAX_S:
+                    _log.warning("GNSS prefill timed out at %d/%d blocks", fed, self.prefill_blocks)
+                    break
+                time.sleep(0.002)
+            if self.error is not None and self.fed_blocks < self.prefill_blocks:
+                raise self.error                # the feeder failed during the prefill
+            if armed is None:
+                d.enable()
+            else:
+                if self.cancel.is_set() or schedule.wait_and_fire(
+                        armed.fire, cancel=self.cancel, publish=False) is None:
+                    armed.close()
+                    return
+        except BaseException:
+            if armed is not None:
+                armed.close()
+            raise
         self.t_enable = self._clock()
-        self._started = True
         self._poller = threading.Thread(target=self._poll_loop, daemon=True)
         self._poller.start()
+        if armed is not None:
+            info = {}
+            try:
+                info = dict(armed.confirm())
+            finally:
+                armed.close()
+                # a fallback write inside confirm() started the engine later
+                fire_fix = info.pop("fire_mono", None)
+                schedule.extra.update(info)
+                if info.get("enable_fallback"):
+                    _log.warning("armed GNSS enable failed; used a direct enable "
+                                 "(Start Now time on air lags): %s", info)
+                schedule.publish(fire_fix)
 
     def _feed_one(self) -> bool:
         buf = next(self._it, None)
@@ -326,7 +364,9 @@ def stream(params, session, dry_run: bool = False, progress_cb=None, cancel=None
                 progress_cb=progress_cb, cancel=cancel)
     t0 = time.monotonic()
     try:
-        tx.start(_live_buffers(params, session, cancel, segment_blocks=segment_blocks))
+        # Start Now: the session plans T_play; the enable is held until then
+        tx.start(_live_buffers(params, session, cancel, segment_blocks=segment_blocks),
+                 schedule=getattr(session, "schedule", None))
         while not cancel.is_set() and tx.feeding:
             cancel.wait(0.2)
         if tx.error is not None:
