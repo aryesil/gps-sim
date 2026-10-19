@@ -12,6 +12,7 @@ disables the engine and mutes.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from typing import Callable, Iterable
@@ -24,9 +25,12 @@ from backend.rf.transmit import TransmitDisabled, TransmitError
 
 _log = logging.getLogger(__name__)
 
-PREFILL_BLOCKS = 8        # command blocks written before the engine is enabled
+PREFILL_BLOCKS = 8        # explicit prefill target (blocks); default: GNSS_PREFILL_S of signal
+PREFILL_STALL_S = 0.5     # enable anyway when the DMA accepts no more data for this long
+SLOW_PUSH_S = 0.012       # DMA pushes slower than this are recorded (slow_pushes)
+PREFILL_MAX_S = 30.0      # longest wait for the generator to deliver the prefill
 MIN_LEAD_BLOCKS = 3       # warn when the host is fewer blocks ahead of play
-POLL_S = 1.0
+POLL_S = float(config.GNSS_POLL_S)
 SEGMENT_BLOCKS = 128      # live plan segment: 128 blocks = 8.4 Msamples
 
 
@@ -39,14 +43,18 @@ class GnssTx:
 
     def __init__(self, device: dev.GnssDevice, write: Callable, fs: float, *,
                  mute: Callable | None = None, progress_cb: Callable | None = None,
-                 prefill_blocks: int = PREFILL_BLOCKS,
+                 prefill_blocks: int | None = None,
                  min_lead_blocks: int = MIN_LEAD_BLOCKS, poll_s: float = POLL_S,
                  clock: Callable[[], float] = time.monotonic,
                  cancel: threading.Event | None = None):
         self.device, self._write, self._mute = device, write, mute
         self.fs = float(fs)
         self.progress_cb = progress_cb
-        self.prefill_blocks = prefill_blocks
+        if prefill_blocks is None:       # about GNSS_PREFILL_S seconds of signal
+            prefill_blocks = max(PREFILL_BLOCKS, math.ceil(config.GNSS_PREFILL_S * self.fs / W.BLOCK))
+        self.prefill_blocks = int(prefill_blocks)
+        self.slow_pushes: list = []
+        self._write_since: float | None = None      # set while the feeder is inside a DMA write
         self.min_lead_blocks = min_lead_blocks
         self.poll_s = poll_s
         self._clock = clock
@@ -75,16 +83,33 @@ class GnssTx:
         d.set_cmd_mode(True)
         d.clear_counters()
         self._it = iter(buffers)
-        # prefill: the CFG buffer and the first blocks, before the engine runs
-        while self.fed_blocks < self.prefill_blocks and not self.cancel.is_set():
-            if not self._feed_one():
+        # prefill: the CFG buffer and the first blocks, before the engine runs.
+        # The feeder thread already pumps; the engine is enabled once the
+        # prefill target is queued, or the DMA stops accepting data (ring full),
+        # or the data ends -- enabling with an almost empty ring starves the
+        # engine for the first pushes (start-up underruns).
+        self._feeder = threading.Thread(target=self._feed_loop, daemon=True)
+        self._feeder.start()
+        t_wait = self._clock()
+        while not self.cancel.is_set() and self._feeder.is_alive():
+            with self._lock:
+                fed = self.fed_blocks
+            if fed >= self.prefill_blocks:
                 break
+            now = self._clock()
+            ws = self._write_since
+            if fed > 0 and ws is not None and now - ws >= PREFILL_STALL_S:
+                break                          # DMA ring full: it holds all it can
+            if now - t_wait >= PREFILL_MAX_S:
+                _log.warning("GNSS prefill timed out at %d/%d blocks", fed, self.prefill_blocks)
+                break
+            time.sleep(0.002)
+        if self.error is not None and self.fed_blocks < self.prefill_blocks:   # feeder failed during the prefill
+            raise self.error
         d.enable()
         self.t_enable = self._clock()
         self._started = True
-        self._feeder = threading.Thread(target=self._feed_loop, daemon=True)
         self._poller = threading.Thread(target=self._poll_loop, daemon=True)
-        self._feeder.start()
         self._poller.start()
 
     def _feed_one(self) -> bool:
@@ -93,7 +118,15 @@ class GnssTx:
             return False
         if buf.cyclic:
             raise TransmitError("cyclic buffers cannot carry a command stream")
-        self._write(buf.words)
+        self._write_since = t_w = self._clock()
+        try:
+            self._write(buf.words)
+        finally:
+            self._write_since = None
+        dur = self._clock() - t_w
+        if dur >= SLOW_PUSH_S and len(self.slow_pushes) < 24:
+            # (s since enable, blocks fed before this push, push duration s)
+            self.slow_pushes.append((round(t_w - (self.t_enable or t_w), 3), self.fed_blocks, round(dur, 3)))
         with self._lock:
             self.fed_buffers += 1
             if buf.n_blocks:
@@ -177,6 +210,7 @@ class GnssTx:
                 "play_block": round(st.play_block, 3),
                 "fed_blocks": fed, "lead_blocks": round(lead, 2),
                 "play_lag_s": None if lag is None else round(lag, 4),
+                "slow_pushes": list(self.slow_pushes),
             },
         }
 

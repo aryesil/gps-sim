@@ -164,6 +164,8 @@ TX_CS4_MAX_RATE_HZ = _float("TX_CS4_MAX_RATE_HZ", 40.0e6)
 GNSS_BASE_ADDR = int(_str("GNSS_BASE_ADDR", "0x43C10000"), 0)
 GNSS_SSH_USER = _str("GNSS_SSH_USER", "root")
 GNSS_CTL = _str("GNSS_CTL", "")          # board helper name ("gnssctl"); empty = devmem only
+GNSS_POLL_S = _float("GNSS_POLL_S", 1.0)           # engine status poll period
+GNSS_PREFILL_S = _float("GNSS_PREFILL_S", 0.5)       # seconds of signal queued before the engine is enabled
 
 LIVE_START_LEAD_AUTO = _flag("LIVE_START_LEAD_AUTO", False)
 # Worker processes that generate and pack live segments in parallel (8-/4-bit
