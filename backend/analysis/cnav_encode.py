@@ -16,6 +16,7 @@ import numpy as np
 
 from backend.analysis import _cnav_layout as L
 from backend.analysis._crc import crc24q
+from backend.analysis.utc_params import gps_utc_params
 
 _PREAMBLE = [1, 0, 0, 0, 1, 0, 1, 1]        # 0x8B
 # IS-GPS-200 Bölüm 30.3.2 / IS-GPS-705 Bölüm 20.3.2: G1=0o171, G2=0o133 (G2 terslenir).
@@ -125,17 +126,18 @@ def _resolve_30(eph: dict, hdr: dict) -> dict:
 
 
 def _resolve_33(eph: dict, hdr: dict) -> dict:
-    u = hdr.get("utc", {}) or {}
+    week = int(eph.get("gps_week", 0))
+    u = gps_utc_params(hdr, week, eph.get("toe", 0.0))
     return {
-        "utc_a0": u.get("a0", 0.0),
-        "utc_a1": u.get("a1", 0.0),
+        "utc_a0": u["A0"],
+        "utc_a1": u["A1"],
         "utc_a2": 0.0,
-        "dt_ls": u.get("dt_ls", 18),
-        "t_ot": u.get("t_ot", 0),
-        "wn_ot": u.get("wn_ot", eph.get("gps_week", 0)),
-        "wn_lsf": u.get("wn_lsf", eph.get("gps_week", 0)),
-        "dn": u.get("dn", 0),
-        "dt_lsf": u.get("dt_lsf", 18),
+        "dt_ls": u["dtLS"],
+        "t_ot": u["tot"],
+        "wn_ot": week,
+        "wn_lsf": u["WNlsf_full"],
+        "dn": u["DN"],
+        "dt_lsf": u["dtLSF"],
     }
 
 

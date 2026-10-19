@@ -560,8 +560,8 @@ def _hdr_floats(s: str) -> list[float]:
 
 def rinex_header_iono_utc(path: str | pathlib.Path) -> dict:
     """Best-effort Klobuchar (GPSA/GPSB or RINEX-2 ION ALPHA/BETA) and UTC
-    (GPUT / DELTA-UTC) parameters from a nav-file header. Returns ``{}`` when
-    the header carries none. Used to fill LNAV subframe 4 page 18."""
+    (GPUT / DELTA-UTC) parameters plus the ``LEAP SECONDS`` count (``leap_s``)
+    from a nav-file header. Returns ``{}`` when the header carries none. Used to fill LNAV subframe 4 page 18."""
     out: dict = {}
     try:
         with open(path) as fh:
@@ -579,6 +579,10 @@ def rinex_header_iono_utc(path: str | pathlib.Path) -> dict:
                     nums = _hdr_floats(head[4:] if tag4 == "GPSB" else head)
                     if len(nums) >= 4:
                         out["iono_beta"] = nums[:4]
+                elif label.startswith("LEAP SECONDS"):
+                    nums = _hdr_floats(head)
+                    if nums:
+                        out["leap_s"] = int(nums[0])
                 elif label.startswith("DELTA-UTC") or tag4 == "GPUT":
                     nums = _hdr_floats(head[4:] if tag4 == "GPUT" else head)
                     if len(nums) >= 2:

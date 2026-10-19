@@ -12,6 +12,8 @@ import math as _math
 
 import numpy as _np
 
+from backend.analysis.utc_params import gps_utc_params
+
 # IS-GPS-200 Table 20-XIV parity equations. 1-indexed source data bits.
 _EQ = {
     25: (1, 2, 3, 5, 6, 10, 11, 12, 13, 14, 17, 18, 20, 23),
@@ -69,8 +71,11 @@ def HOW_solve_bits(tow_count: int, subframe_id: int,
                    D29_prev: int, D30_prev: int) -> list[int]:
     """24 source bits for a HOW word with bits 23-24 chosen so the word's
     trailing computed parity (D29, D30) are both zero (IS-GPS-200 20.3.2)."""
+    # bit 18 alert flag = 0; bit 19 anti-spoof flag = 1 (A-S mode ON, as every
+    # operational GPS satellite has broadcast since the mid-1990s; a 0 here
+    # says the satellite is not encrypting P(Y), which no real SV does).
     base = (bits_of(tow_count & 0x1FFFF, 17)
-            + [0, 0] + bits_of(subframe_id & 0x7, 3))  # 22 bits
+            + [0, 1] + bits_of(subframe_id & 0x7, 3))  # 22 bits
     for t23 in (0, 1):
         for t24 in (0, 1):
             src = base + [t23, t24]
@@ -217,22 +222,56 @@ def subframe3(eph: dict, tow_count: int) -> list[int]:
 # reduced-precision element set for the PRN they map to, or zeroed fields
 # when no source exists.
 
-def _almanac_words(alm: dict | None, sv_id: int) -> list[list[int]]:
+_MU = 3.986005e14       # IS-GPS-200 Earth gravitational constant [m^3/s^2]
+_WEEK_S = 604800.0
+
+
+def _alm_toa_s(eph_by_prn: dict | None) -> float:
+    """One almanac reference time for every page and SF5 page 25: the median
+    ephemeris toe of the GPS records, on the 4096 s grid (IS-GPS-200 20.3.3.5.2.2)."""
+    toes = sorted(float(r.get("toe", 0.0)) for r in
+                  (_gps_alm(eph_by_prn, p) for p in range(1, 33)) if r)
+    if not toes:
+        return 0.0
+    return (round(toes[len(toes) // 2] / 4096.0) * 4096.0) % _WEEK_S
+
+
+def _alm_at_toa(a: dict, toa_s: float) -> tuple[float, float]:
+    """Mean anomaly [rad] and clock bias af0 [s] propagated from the
+    ephemeris epoch to the almanac reference time."""
+    dt = (toa_s - float(a.get("toe", toa_s)) + _WEEK_S / 2) % _WEEK_S - _WEEK_S / 2
+    sqrt_a = float(a.get("sqrtA", 0.0))
+    n = _math.sqrt(_MU) / sqrt_a ** 3 + float(a.get("delta_n", 0.0)) if sqrt_a else 0.0
+    m0 = float(a.get("m0", 0.0)) + n * dt
+    m0 = (m0 + _math.pi) % (2 * _math.pi) - _math.pi
+    dtc = (toa_s - float(a.get("toc", a.get("toe", toa_s))) + _WEEK_S / 2) % _WEEK_S - _WEEK_S / 2
+    return m0, float(a.get("af0", 0.0)) + float(a.get("af1", 0.0)) * dtc
+
+
+def _almanac_words(alm: dict | None, sv_id: int,
+                   toa_s: float | None = None) -> list[list[int]]:
+    """Almanac page words. ``toa_s`` is the common reference time; the record
+    (an ephemeris) is propagated to it as a real almanac upload would be."""
     a = alm or {}
 
     def g(k, d=0.0):
         return a.get(k, d)
 
+    if a and toa_s is None:
+        toa_s = float(g("toa", g("toe")))
+    m0_rad, af0_s = _alm_at_toa(a, toa_s) if a else (0.0, 0.0)
     e = twos(g("e"), 2 ** -21, 16)
-    toa = int(round(g("toa") / 4096)) & 0xFF
+    toa = int(round((toa_s or 0.0) / 4096)) & 0xFF
     di = twos(g("i0", 0.0) / _math.pi - 0.30, 2 ** -19, 16) if a else 0
     odot = twos(g("omega_dot") / _math.pi, 2 ** -38, 16) if a else 0
-    health = int(g("health", 0)) & 0xFF
+    # No record for the PRN: the SV is not in service (all-ones health), as a
+    # real almanac marks an unusable satellite, not "healthy with no orbit".
+    health = int(g("health", 0)) & 0xFF if a else 0xFF
     sqrta = int(round(g("sqrtA") / 2 ** -11)) & 0xFFFFFF
     om0 = twos(g("omega0") / _math.pi, 2 ** -23, 24) if a else 0
     w = twos(g("omega") / _math.pi, 2 ** -23, 24) if a else 0
-    m0 = twos(g("m0") / _math.pi, 2 ** -23, 24) if a else 0
-    af0 = twos(g("af0"), 2 ** -20, 11)
+    m0 = twos(m0_rad / _math.pi, 2 ** -23, 24) if a else 0
+    af0 = twos(af0_s, 2 ** -20, 11)
     af1 = twos(g("af1"), 2 ** -38, 11)
     w3 = [0, 1] + bits_of(sv_id & 0x3F, 6) + bits_of(e, 16)
     w4 = bits_of(toa, 8) + bits_of(di, 16)
@@ -241,15 +280,17 @@ def _almanac_words(alm: dict | None, sv_id: int) -> list[list[int]]:
     w7 = bits_of(om0, 24)
     w8 = bits_of(w, 24)
     w9 = bits_of(m0, 24)
-    w10 = bits_of(af0, 11) + bits_of(af1, 11) + [0, 0]
+    # word 10: af0 8 MSBs, af1 (11), af0 3 LSBs, 2 parity-solve bits
+    w10 = bits_of(af0 >> 3, 8) + bits_of(af1, 11) + bits_of(af0 & 7, 3) + [0, 0]
     return [w3, w4, w5, w6, w7, w8, w9, w10]
 
 
-def _iono_utc_words(header: dict | None) -> list[list[int]]:
+def _iono_utc_words(header: dict | None, week: int = 0,
+                    tow_count: int = 0) -> list[list[int]]:
     h = header or {}
     al = list(h.get("iono_alpha", [0, 0, 0, 0])) + [0, 0, 0, 0]
     be = list(h.get("iono_beta", [0, 0, 0, 0])) + [0, 0, 0, 0]
-    u = h.get("utc", {}) or {}
+    u = gps_utc_params(h, week, tow_count * 6)
     w3 = ([0, 1] + bits_of(56, 6) + bits_of(twos(al[0], 2 ** -30, 8), 8)
           + bits_of(twos(al[1], 2 ** -27, 8), 8))
     w4 = (bits_of(twos(al[2], 2 ** -24, 8), 8) + bits_of(twos(al[3], 2 ** -24, 8), 8)
@@ -271,21 +312,83 @@ def _iono_utc_words(header: dict | None) -> list[list[int]]:
 # SF4 almanac pages 2-5, 7-10 -> PRN 25..32 (IS-GPS-200 Table 20-V).
 _SF4_ALM = {2: 25, 3: 26, 4: 27, 5: 28, 7: 29, 8: 30, 9: 31, 10: 32}
 
+# SVID carried by each SF4 page (IS-GPS-200 Table 20-V); the pages not built
+# elsewhere (reserved, NMCT, special message) are sent as reserved pages.
+_SF4_SVID = {1: 57, 6: 57, 11: 57, 16: 57, 21: 57, 12: 62, 13: 52, 14: 53,
+             15: 54, 17: 55, 19: 58, 20: 59, 22: 60, 23: 61, 24: 62}
 
-def subframe4(page: int, eph_by_prn: dict, header, tow_count: int) -> list[int]:
+
+def _reserved_sf4_words(page: int) -> list[list[int]]:
+    """Reserved SF4 page: data ID 01, the page's SVID, then the alternating
+    1/0 fill a satellite sends in reserved bits (IS-GPS-200 20.3.3.5.1.1)."""
+    fill = [1, 0] * 12
+    w3 = [0, 1] + bits_of(_SF4_SVID.get(page, 57), 6) + fill[:16]
+    return [w3] + [list(fill) for _ in range(7)]
+
+
+def _gps_alm(eph_by_prn: dict | None, prn: int) -> dict | None:
+    """GPS record for ``prn``. The simulator keys by ``(sys, prn)``; the bare
+    ``prn`` key is shared with Galileo/BeiDou/GLONASS (same numbers), so it is
+    used only when the map carries no system-qualified keys at all."""
+    ebp = eph_by_prn or {}
+    rec = ebp.get(("G", prn))
+    if rec is None and not any(isinstance(k, tuple) for k in ebp):
+        rec = ebp.get(prn)
+    return rec
+
+
+_SV_CONFIG = 0b1100     # A-S flag set + config code 100 (GPS III)
+
+
+def _sf4_page25_words(eph_by_prn: dict | None) -> list[list[int]]:
+    """SF4 page 25 (SVID 63): A-S flag + SV configuration of SV1..32 (4 bits
+    each) and health of SV25..32 (6 bits each), IS-GPS-200 Fig. 20-1."""
+    cfg = [bit for _ in range(32) for bit in bits_of(_SV_CONFIG, 4)]
+    health = []
+    for p in range(25, 33):
+        rec = _gps_alm(eph_by_prn, p)
+        health += bits_of(0 if rec is not None and not int(rec.get("health", 0)) else 0x3F, 6)
+    w3 = [0, 1] + bits_of(63, 6) + cfg[0:16]
+    w4, w5, w6, w7 = (cfg[16 + 24 * i:40 + 24 * i] for i in range(4))
+    w8 = cfg[112:128] + [0, 0] + health[0:6]
+    w9 = health[6:30]
+    w10 = health[30:48] + bits_of(0, 6)
+    return [w3, w4, w5, w6, w7, w8, w9, w10]
+
+
+def subframe4(page: int, eph_by_prn: dict, header, tow_count: int,
+              week: int = 0) -> list[int]:
+    if page == 25:
+        return subframe(_sf4_page25_words(eph_by_prn), tow_count, 4)
     if page == 18:
-        return subframe(_iono_utc_words(header), tow_count, 4)
+        return subframe(_iono_utc_words(header, week, tow_count), tow_count, 4)
     prn = _SF4_ALM.get(page)
     if prn is not None:
-        return subframe(_almanac_words((eph_by_prn or {}).get(prn), prn),
-                        tow_count, 4)
-    return subframe([bits_of(0, 24) for _ in range(8)], tow_count, 4)
+        return subframe(_almanac_words(_gps_alm(eph_by_prn, prn), prn,
+                                       _alm_toa_s(eph_by_prn)), tow_count, 4)
+    return subframe(_reserved_sf4_words(page), tow_count, 4)
 
 
-def subframe5(page: int, eph_by_prn: dict, tow_count: int) -> list[int]:
+def _sf5_page25_words(eph_by_prn: dict | None, week: int) -> list[list[int]]:
+    """SF5 page 25 (SVID 51): almanac reference time, WNa, health of SV1..24."""
+    toa = int(round(_alm_toa_s(eph_by_prn) / 4096)) & 0xFF
+    health = []
+    for p in range(1, 25):
+        rec = _gps_alm(eph_by_prn, p)
+        health += bits_of(0 if rec is not None and not int(rec.get("health", 0)) else 0x3F, 6)
+    w3 = [0, 1] + bits_of(51, 6) + bits_of(toa, 8) + bits_of(int(week) & 0xFF, 8)
+    words = [w3] + [health[i * 24:(i + 1) * 24] for i in range(6)]
+    words.append(bits_of(0, 24))
+    return words
+
+
+def subframe5(page: int, eph_by_prn: dict, tow_count: int, week: int = 0) -> list[int]:
+    if page == 25:
+        return subframe(_sf5_page25_words(eph_by_prn, week), tow_count, 5)
     prn = page if 1 <= page <= 24 else None
-    alm = (eph_by_prn or {}).get(prn) if prn else None
-    return subframe(_almanac_words(alm, prn or 0), tow_count, 5)
+    alm = _gps_alm(eph_by_prn, prn) if prn else None
+    return subframe(_almanac_words(alm, prn or 0, _alm_toa_s(eph_by_prn)),
+                    tow_count, 5)
 
 
 # --- Frame + run-length stream --------------------------------------
@@ -294,15 +397,18 @@ NAV_BIT_HZ = 50
 
 
 def frame_bits(eph: dict, header, week: int, tow_count: int,
-               sf45_page: int, eph_by_prn: dict | None = None) -> list[int]:
+               sf45_page: int, eph_by_prn: dict | None = None,
+               sf4_page: int | None = None) -> list[int]:
     """1500 bits: SF1, SF2, SF3, SF4[page], SF5[page]. Each subframe's
-    TOW-count increments by one."""
+    TOW-count increments by one. ``sf4_page`` overrides the SF4 page only."""
     ebp = eph_by_prn or {}
+    if sf4_page is None:
+        sf4_page = sf45_page
     return (subframe1(eph, week, tow_count)
             + subframe2(eph, tow_count + 1)
             + subframe3(eph, tow_count + 2)
-            + subframe4(sf45_page, ebp, header, tow_count + 3)
-            + subframe5(sf45_page, ebp, tow_count + 4))
+            + subframe4(sf4_page, ebp, header, tow_count + 3, week)
+            + subframe5(sf45_page, ebp, tow_count + 4, week))
 
 
 def nav_stream(eph: dict, header, week: int, tow0_sow: float,
@@ -327,8 +433,9 @@ def nav_stream(eph: dict, header, week: int, tow0_sow: float,
     n_frames = (skip + need) // 1500 + 2
     bits: list[int] = []
     for k in range(n_frames):
-        bits += frame_bits(eph, header, week, (f0 + k) * 5,
-                           ((f0 + k) % 25) + 1, eph_by_prn)
+        frame = f0 + k
+        bits += frame_bits(eph, header, week, frame * 5,
+                           (frame % 25) + 1, eph_by_prn)
     bits = bits[skip:skip + need]
     arr = _np.array([1 if b == 0 else -1 for b in bits], dtype=_np.int8)
     return arr

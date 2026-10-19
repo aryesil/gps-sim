@@ -1157,6 +1157,18 @@ def _run_impl(req, progress_cb=None, plan_only=False):
                     if sys_x:
                         eph_by_prn[(sys_x, p_x)] = rec_x
 
+        # LNAV carries a 25-page almanac of ALL 32 GPS SVs, not just the
+        # visible ones. Without records for the invisible PRNs the pages went
+        # out zero-filled (sqrtA = 0, health = 0: "healthy, orbit at the
+        # Earth's centre"), which no real satellite sends.
+        try:
+            for k_x, rec_x in (eph or {}).items():
+                s_x, p_x = (k_x if isinstance(k_x, tuple) else ("G", k_x))
+                if s_x == "G" and isinstance(rec_x, dict):
+                    eph_by_prn.setdefault(("G", int(p_x)), rec_x)
+        except (NameError, TypeError, ValueError):
+            pass
+
         for e in entries:
             sysc = e["sys"]
             # precise_multi: `_state` is a callable state_fn (SP-B trajectory
