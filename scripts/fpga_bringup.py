@@ -179,6 +179,17 @@ class RealRadio:
         self.rx_n = 1 << 17
 
     def open(self):
+        self._was_tdd = False
+        if self.rx_on:
+            # loopback needs FDD; a board that boots in TDD is switched for the
+            # test (before the TX setup, the switch re-initialises the chip) and
+            # put back afterwards
+            from backend.rf.backends import ad9361
+            probe = ad9361.probe_open(self.uri)
+            self._was_tdd = ad9361._chip_is_tdd(probe)
+            if self._was_tdd:
+                ad9361._set_duplex_mode(probe, fdd=True)
+            del probe
         self.h = self.be.open_tx(self.uri, config.L1_HZ, self.fs)
         self.be.set_gain(self.h, 0, MUTE_DB)             # minimum, never raised
         if self.rx_on:
@@ -211,8 +222,10 @@ class RealRadio:
         try:
             from backend.rf.backends import ad9361
             ad9361._set_ensm_mode(h, "alert")
+            if getattr(self, "_was_tdd", False):
+                ad9361._set_duplex_mode(h, fdd=False)     # boot default again
         except Exception as ex:                           # noqa: BLE001
-            print(f"  ensm alert failed: {ex}")
+            print(f"  ensm alert / duplex restore failed: {ex}")
 
 
 def board_info(runner) -> dict:
