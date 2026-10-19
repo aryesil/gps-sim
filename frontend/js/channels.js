@@ -216,6 +216,15 @@ window.addChannel = function () {
             <label><input type="checkbox" id="${id}-sys-S"> SBAS</label>
             <label><input type="checkbox" id="${id}-sys-I"> NavIC</label>
           </fieldset>
+          <fieldset class="osnma-set"><legend>Galileo OSNMA</legend>
+            <label><input type="checkbox" id="${id}-osnma" disabled> Galileo OSNMA</label>
+            <label>NMA status <select id="${id}-osnma-nmas">
+              <option value="2" selected>2 operational</option>
+              <option value="1">1 test</option>
+              <option value="3">3 don't use</option>
+            </select></label>
+            <a href="/api/osnma/keys" target="_blank" rel="noopener">keys</a>
+          </fieldset>
           <fieldset class="band-set"><legend>RF bands (native)</legend>
             <label><input type="checkbox" id="${id}-band-L1" title="GPS/QZSS/SBAS L1 C/A, Galileo E1, BeiDou B1I. GLONASS G1 is a separate band: leave all boxes empty to get every selected system on its own native band."> L1 <span class="hint">1575.42 MHz</span></label>
             <label><input type="checkbox" id="${id}-band-L2" title="GPS L2C, GLONASS L2OF"> L2 <span class="hint">1227.60 MHz</span></label>
@@ -636,6 +645,14 @@ function wireChannelActions(id) {
       _updateChannelTitle(); _refreshLoHz(); _refreshAutoFs();
     });
   });
+  const _osnmaBox = document.getElementById(`${id}-osnma`);
+  const _syncOsnma = () => {
+    const e = document.getElementById(`${id}-sys-E`).checked;
+    _osnmaBox.disabled = !e;
+    if (!e) _osnmaBox.checked = false;
+  };
+  document.getElementById(`${id}-sys-E`).addEventListener('change', _syncOsnma);
+  _syncOsnma();
   ['L1', 'L2', 'L5'].forEach(b => {
     document.getElementById(`${id}-band-${b}`).addEventListener('change', () => {
       _updateChannelTitle(); _refreshLoHz(); _refreshAutoFs();
@@ -1029,6 +1046,12 @@ function wireChannelActions(id) {
     return Object.keys(out).length ? out : null;
   }
 
+  // OSNMA is opt-in: unchecked -> null -> request bodies stay byte-identical.
+  function _osnmaBody() {
+    if (!document.getElementById(`${id}-osnma`).checked) return null;
+    return { nmas: Number(document.getElementById(`${id}-osnma-nmas`).value) };
+  }
+
   // Fold the opt-in "RF Frontend" panel (AD936x LO-offset planning + TX
   // quadrature calibration) into the request body. Default lo_offset_mode
   // is DISABLED -> returns null -> the /api/generate, /api/live/start and
@@ -1123,6 +1146,8 @@ function wireChannelActions(id) {
     const _eng = _engineBody();
     Object.assign(body, _eng || {});
     Object.assign(body, _rfFrontendBody() || {});
+    const _osn = _osnmaBody();
+    if (_osn) body.osnma = _osn;
     fetch('/api/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -1319,6 +1344,8 @@ function wireChannelActions(id) {
     const _eng = _engineBody();
     Object.assign(body, _eng || {});
     Object.assign(body, _rfFrontendBody() || {});
+    const _osn = _osnmaBody();
+    if (_osn) body.osnma = _osn;
     const prnInput = document.getElementById(`${id}-lnav-prn`);
     if (prnInput && prnInput.value) body.track_prn = Number(prnInput.value);
     const maxDurInput = document.getElementById(`${id}-max-duration`);

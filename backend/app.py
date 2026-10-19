@@ -130,6 +130,20 @@ def _osnma_body(body: dict) -> dict | None:
     return dict(o)
 
 
+@app.get("/api/osnma/keys")
+def osnma_keys(request: Request):
+    """Public OSNMA material only (Merkle root, public key, receiver configs);
+    the private key and TESLA master secret never leave the keyset file."""
+    auth.require_operator(request)
+    from backend.analysis.osnma import keys as osnma_keys_mod
+    base = config.DATA_DIR / "osnma"
+    ks = osnma_keys_mod.load_or_create(base / "keyset.json")
+    files = osnma_keys_mod.export_all(ks, base / "export")
+    return {"pkid": ks.pkid, "merkle_root": ks.merkle_root.hex().upper(),
+            "fingerprint": ks.fingerprint,
+            "files": {k: str(v.resolve()) for k, v in files.items()}}
+
+
 def _validate_native_request(body: dict) -> tuple[str, list[str], list[str] | None]:
     """Shared engine/systems/bands validation for /api/generate and
     /api/live/start: unknown engine, gps-sdr-sim asked for non-GPS systems
