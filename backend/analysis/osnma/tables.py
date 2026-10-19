@@ -4,7 +4,8 @@ from __future__ import annotations
 from enum import IntEnum
 
 KS_BITS = (96, 104, 112, 120, 128, 160, 192, 224, 256)
-TS_BITS = (10, 12, 14, 16, 18, 20, 24, 28, 32, 40)
+# ICD 1.1 Table 11: TS codes 0-4 are Reserved (the 10..18 bit tags are Test Phase ICD 1.0 only).
+TS_BITS = (None, None, None, None, None, 20, 24, 28, 32, 40)
 NB_DK_BLOCKS = {1: 7, 2: 8, 3: 9, 4: 10, 5: 11, 6: 12, 7: 13, 8: 14}
 NB_DP_BLOCKS = {7: 13, 8: 14, 9: 15, 10: 16}
 
@@ -29,7 +30,7 @@ class CPKS(IntEnum):
 
 class HF(IntEnum):
     SHA256 = 0
-    SHA3_224 = 1
+    # 1 is Reserved in ICD 1.1 Table 8 (SHA3-224 appears only in OSNMAlib)
     SHA3_256 = 2
 
 
@@ -41,16 +42,28 @@ class MF(IntEnum):
 class NPKT(IntEnum):
     RESERVED = 0
     ECDSA_P256 = 1
-    ECDSA_P521 = 2
+    # 2 is Reserved
+    ECDSA_P521 = 3
     OAM = 4
 
 
-# first tuple applies when gst_sf % 60 == 0, second otherwise
+# ICD 1.1 Annex C Table 16. First tuple applies when gst_sf % 60 == 0 (MACK in the first
+# 30 s of a GST minute), second otherwise. "FLX" = flexible slot (Tag-Info per ICD 6.6).
+_S = lambda t: tuple(t.replace(",", " ").split())
 MACLT: dict[int, tuple[tuple[str, ...], tuple[str, ...]]] = {
-    33: (("00S", "00E", "04S", "00E", "12S", "00E"),
-         ("00S", "00E", "00E", "12S", "00E", "12E")),
-    34: (("00S", "00E", "12S", "00E", "04S", "00E"),
-         ("00S", "00E", "00E", "12S", "00E", "12E")),
+    27: (_S("00S 00E 00E 00E 12S 00E"), _S("00S 00E 00E 04S 12S 00E")),
+    28: (_S("00S 00E 00E 00E 00S 00E 00E 12S 00E 00E"),
+         _S("00S 00E 00E 00S 00E 00E 04S 12S 00E 00E")),
+    31: (_S("00S 00E 00E 12S 00E"), _S("00S 00E 00E 12S 04S")),
+    33: (_S("00S 00E 04S 00E 12S 00E"), _S("00S 00E 00E 12S 00E 12E")),
+    34: (_S("00S FLX 04S FLX 12S 00E"), _S("00S FLX 00E 12S 00E 12E")),
+    35: (_S("00S FLX 04S FLX 12S FLX"), _S("00S FLX FLX 12S FLX FLX")),
+    36: (_S("00S FLX 04S FLX 12S"), _S("00S FLX 00E 12S 12E")),
+    37: (_S("00S 00E 04S 00E 12S"), _S("00S 00E 00E 12S 12E")),
+    38: (_S("00S FLX 04S FLX 12S"), _S("00S FLX FLX 12S FLX")),
+    39: (_S("00S FLX 04S FLX"), _S("00S FLX 00E 12S")),
+    40: (_S("00S 00E 04S 12S"), _S("00S 00E 00E 12E")),
+    41: (_S("00S FLX 04S FLX"), _S("00S FLX FLX 12S")),
 }
 
 ADKD0_MASK = {1: (6, 126), 2: (6, 126), 3: (6, 128), 4: (6, 126), 5: (6, 73)}
