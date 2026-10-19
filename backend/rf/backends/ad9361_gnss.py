@@ -74,11 +74,18 @@ def _enter_gnss(sdr) -> None:
             ids.add(cid)
     if ids != {"voltage0", "voltage1"}:
         raise TransmitError("the DDS core exposes no voltage0/voltage1 output pair")
+    # A push blocks while the ring is full (the engine is disabled during the
+    # Start Now hold, a few seconds): do not let the 5 s default time it out.
+    try:
+        sdr._txdac.ctx.set_timeout(_PUSH_TIMEOUT_MS)
+    except Exception:
+        pass
     sdr.tx_cyclic_buffer = False
     sdr._gs_gnss_buf = None
     sdr._gs_gnss_len = 0
 
 
+_PUSH_TIMEOUT_MS = 30000
 _MIN_BUF_WORDS = 1 << 14      # 64 KiB: one kernel buffer carries CFG and block groups
 
 

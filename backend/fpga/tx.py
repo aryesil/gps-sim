@@ -78,6 +78,7 @@ class GnssTx:
         self._it = None
         self._lock = threading.Lock()
         self._started = False
+        self._go = threading.Event()         # set once the engine runs; the feeder holds at the prefill until then
 
     # ---- lifecycle -------------------------------------------------------
     def start(self, buffers: Iterable[DmaBuffer], schedule=None) -> None:
@@ -134,6 +135,7 @@ class GnssTx:
                 armed.close()
             raise
         self.t_enable = self._clock()
+        self._go.set()
         self._poller = threading.Thread(target=self._poll_loop, daemon=True)
         self._poller.start()
         if armed is not None:
@@ -176,6 +178,15 @@ class GnssTx:
     def _feed_loop(self) -> None:
         try:
             while not self.cancel.is_set():
+                # Before the engine runs, queue the prefill and no more: a push
+                # blocked on a full ring for the whole Start Now hold (seconds)
+                # would hit the libiio timeout.
+                if not self._go.is_set():
+                    with self._lock:
+                        done = self.fed_blocks >= self.prefill_blocks
+                    if done:
+                        self._go.wait(0.05)
+                        continue
                 if not self._feed_one():
                     break
         except Exception as ex:
