@@ -75,19 +75,21 @@ _BOARD_INFO = (
 
 
 # ----------------------------------------------------------------- band
-def make_band(fs: float, nsv: int, total_blocks: int) -> BandPlan:
+def make_band(fs: float, nsv: int, total_blocks: int, prns=None) -> BandPlan:
     """nsv GPS C/A channels (PRN 1..nsv), distinct Doppler / phase / code phase."""
     svs, keep = [], []
     for i in range(nsv):
-        prn = i + 1
+        prn = int(prns[i]) if prns else i + 1
         f = (1500.0 * (i + 1)) * (1 if i % 2 == 0 else -1)
         s = _lib.SvSpec()
-        code = np.ascontiguousarray(roms.code_chips(cmdfmt.KIND_CA, prn), dtype=np.int8)
+        sbas = prn >= roms.SBAS_PRN_FIRST               # SBAS L1: sys 2, C/A ROM index 33..63
+        rom_prn = prn - roms.SBAS_PRN_FIRST + roms.SBAS_IDX_FIRST if sbas else prn
+        code = np.ascontiguousarray(roms.code_chips(cmdfmt.KIND_CA, rom_prn), dtype=np.int8)
         keep.append(code)
         s.code = ctypes.cast(code.ctypes.data, ctypes.POINTER(ctypes.c_int8))
         s.code_len = 1023
         s.chip_rate_hz = 1.023e6
-        s.sys = 0
+        s.sys = 2 if sbas else 0
         s.prn = prn
         s.carrier_freq_hz = f
         s.carrier_phase0_rad = 0.37 * i
@@ -318,7 +320,7 @@ def run_case(args, mode, fs, nsv, runner, make_device):
     duration = args.duration if args.duration else (60.0 if tdd else 8.0)
     ref_blocks = args.ref_blocks
     total = 6 if fake else int(math.ceil(duration * fs / B)) + 1500   # outlasts the DMA lead and start-up
-    band = make_band(fs, nsv, total)
+    band = make_band(fs, nsv, total, getattr(args, 'prns', None))
     cs = CommandStream(band, level_dbfs=args.level, group_blocks=args.group)
     dev = make_device()
     radio = FakeRadio(dev) if fake else RealRadio(args.uri, fs, not tdd, args.rx_lo_on)
@@ -456,6 +458,7 @@ def main(argv=None) -> int:
     ap.add_argument("--tdd-counters", action="store_true")
     ap.add_argument("--fs", type=float, nargs="+", help="sample rates, Hz")
     ap.add_argument("--nsv", type=int, nargs="+", help="GPS satellites per case")
+    ap.add_argument("--prns", type=int, nargs="+", help="C/A PRNs to use (default 1..nsv); e.g. 120 126 131 for SBAS")
     ap.add_argument("--duration", type=float, help="seconds per case (8 loopback / 60 tdd)")
     ap.add_argument("--ref-blocks", type=int, default=12, help="model blocks used for alignment")
     ap.add_argument("--level", type=float, default=-15.0, help="level_dbfs of the engine output")
