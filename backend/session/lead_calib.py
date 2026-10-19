@@ -131,3 +131,23 @@ def gen_estimate_s(key: str, default_s: float | None = None) -> float:
 def record_gen(key: str, gen_s: float) -> None:
     """Store a measured first-segment generation time (best effort)."""
     record(_GEN_PREFIX + key, gen_s)
+
+
+_RTT_PREFIX = "rtt:"
+
+
+def play_latency_estimate_s(key: str, default_s: float) -> float:
+    """FPGA start-command latency learned from earlier runs: half the median
+    round trip of the armed enable (write the newline -> remote devmem ->
+    ssh exit), bounded; ``default_s`` while there is no history."""
+    vals = sorted(v for v in samples_for(_RTT_PREFIX + key) if v == v and v > 0.0)
+    if not vals:
+        return float(default_s)
+    med = vals[len(vals) // 2]
+    return float(min(max(med / 2.0, config.GNSS_PLAY_LATENCY_MIN_S),
+                     config.GNSS_PLAY_LATENCY_MAX_S))
+
+
+def record_enable_rtt(key: str, rtt_s: float) -> None:
+    """Store a measured armed-enable round trip (best effort)."""
+    record(_RTT_PREFIX + key, rtt_s)

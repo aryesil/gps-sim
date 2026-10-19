@@ -23,7 +23,7 @@ from backend.ephem import ephemeris, precise, ephemeris_source, ephemeris_fit
 from backend.analysis import receiver, lnav_display
 from backend.rf import air, transmit, device
 from backend.rf.frontend import rf_frontend
-from backend.session import live, lead_calib, play_schedule
+from backend.session import live, lead_calib, play_schedule, clock_sync
 from backend.store import trajectory, scenario_lib
 from backend.obs import audit, recording, receiver_feed, ws_hub
 from backend.models import impairments, channel_models
@@ -1619,12 +1619,21 @@ def live_start(body: dict, request: Request):
                 # session picks the real start time T_play after warming up
                 # and holds the start command until then; `start` here is only
                 # provisional (RINEX record choice, cache seed).
+                # Host clock: NTP offset (clock_sync) is added to every read, so
+                # a PC clock that is off still puts real UTC on air. The FPGA
+                # start latency is learned from earlier armed-enable round trips.
+                clk = clock_sync.current()
+                clk_corr = dt.timedelta(seconds=clk.offset_s)
                 schedule = play_schedule.PlaySchedule(
-                    play_latency_s=(config.GNSS_PLAY_LATENCY_S if kind == "tezuka_gnss"
+                    play_latency_s=(lead_calib.play_latency_estimate_s(
+                                        lead_key, config.GNSS_PLAY_LATENCY_S)
+                                    if kind == "tezuka_gnss"
                                     else config.LIVE_PC_PLAY_LATENCY_S),
                     gen_est_s=lead_calib.gen_estimate_s(lead_key),
-                    utcnow=lambda: _utcnow())
-                start = _utcnow()
+                    utcnow=lambda: _utcnow() + clk_corr)
+                schedule.extra.update(clock_offset_s=round(clk.offset_s, 4),
+                                      clock_source=clk.source)
+                start = _utcnow() + clk_corr
             else:
                 tx_buf_s = lead_calib.tx_buffer_estimate_s(rate_req)
                 lead_s = lead_calib.lead_for(lead_key, tx_buf_s)
@@ -1774,6 +1783,8 @@ def live_start(body: dict, request: Request):
                     rep = schedule.report(session.first_segment_latency_s)
                     if schedule.gen_s is not None and not body.get("dry_run", False):
                         lead_calib.record_gen(lead_key, schedule.gen_s)
+                    if rep.get("enable_rtt_s") and not rep.get("enable_fallback")                             and not body.get("dry_run", False):
+                        lead_calib.record_enable_rtt(lead_key, rep["enable_rtt_s"])
                     audit.log_event("live_lead", slot=slot, **rep)
                     yield emit({"lead_report": rep, "slot": slot})
                 if not lead_reported and schedule is None \

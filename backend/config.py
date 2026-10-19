@@ -203,6 +203,19 @@ GNSS_PLAY_LATENCY_S = _float("GNSS_PLAY_LATENCY_S", 0.03)
 #   PC-IQ path: from releasing the first chunk to transmit.stream (level
 #   measure, scale, queue, pump prefill, first libiio push) to the first DAC sample.
 LIVE_PC_PLAY_LATENCY_S = _float("LIVE_PC_PLAY_LATENCY_S", 0.08)
+# Host clock correction for Start Now: SNTP offset (true UTC - host clock) added
+# to every host-clock read of the schedule; no admin rights, the system clock is
+# not changed. Unreachable network -> offset 0 (reported as source "none").
+LIVE_CLOCK_SYNC = _flag("LIVE_CLOCK_SYNC", True)
+LIVE_NTP_SERVERS = tuple(x.strip() for x in _str(
+    "LIVE_NTP_SERVERS", "pool.ntp.org,time.google.com,time.windows.com").split(",") if x.strip())
+LIVE_NTP_TIMEOUT_S = _float("LIVE_NTP_TIMEOUT_S", 0.8)
+LIVE_NTP_MAX_AGE_S = _float("LIVE_NTP_MAX_AGE_S", 600.0)
+# The FPGA play latency is learned: half the round trip of the armed enable
+# (ssh write -> devmem -> exit) measured by earlier runs, GNSS_PLAY_LATENCY_S
+# until there is history. Bounds for the learned value:
+GNSS_PLAY_LATENCY_MIN_S = _float("GNSS_PLAY_LATENCY_MIN_S", 0.002)
+GNSS_PLAY_LATENCY_MAX_S = _float("GNSS_PLAY_LATENCY_MAX_S", 0.25)
 DEFAULT_SAMPLE_RATE = _float("DEFAULT_SAMPLE_RATE", 2.6e6)
 DEFAULT_FORMAT = _str("DEFAULT_FORMAT", "int16")
 
