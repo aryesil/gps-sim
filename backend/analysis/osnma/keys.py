@@ -110,13 +110,14 @@ def pubkey_xml(ks: Keyset, issue_date: str) -> str:
 
 
 def septentrio_commands(ks: Keyset, pem_path: Path) -> str:
+    body = "".join(l for l in p256.pem_public(ks.pub).splitlines()
+                   if l and not l.startswith("-----"))
     return (
-        "# TEMPLATE: confirm exact setGalOSNMAPublicKeys / setGalOSNMAUsage syntax against the\n"
-        "# mosaic-X5 Firmware Reference Guide 4.14 at the bench.\n"
-        f"# PKID {ks.pkid}, Merkle root {ks.merkle_root.hex().upper()}\n"
-        f"# public key PEM: {pem_path}\n"
-        f"setGalOSNMAPublicKeys, Config1, {pem_path}\n"
-        "setGalOSNMAUsage, Config1, on\n")
+        "# mosaic-X5 Firmware v4.15.0 Reference Guide: setGalOSNMAPublicKeys takes the base64\n"
+        "# PEM body without BEGIN/END lines; setGalOSNMAUsage takes the Merkle root as its 2nd argument.\n"
+        f"# PKID {ks.pkid}, public key PEM: {pem_path}\n"
+        f"setGalOSNMAPublicKeys, Key1, {body}\n"
+        f"setGalOSNMAUsage, loose, {ks.merkle_root.hex().upper()}, loose\n")
 
 
 def gnss_sdr_snippet(ks: Keyset, paths: dict[str, Path]) -> str:
