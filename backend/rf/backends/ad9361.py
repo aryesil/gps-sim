@@ -115,6 +115,18 @@ def _set_ensm_mode(handle, mode: str) -> None:
 _FDD_FLAG = "adi,frequency-division-duplex-mode-enable"
 
 
+def _chip_is_tdd(handle) -> bool:
+    """True when the driver reports TDD (the duplex flag is 0). A board whose
+    device tree has no ``adi,frequency-division-duplex-mode-enable`` boots in
+    TDD; False when unknown."""
+    ctrl = getattr(handle, "_ctrl", None)
+    da = getattr(ctrl, "debug_attrs", None) if ctrl is not None else None
+    try:
+        return da is not None and _FDD_FLAG in da and str(da[_FDD_FLAG].value).strip() == "0"
+    except Exception:
+        return False
+
+
 def _set_duplex_mode(handle, fdd: bool) -> bool:
     """Switch the chip between FDD and TDD through the driver's debugfs
     (duplex flag + ``initialize``). The ENSM only offers the ``tx`` state in
@@ -228,6 +240,9 @@ def open_tx(uri: str, lo_hz: float, sample_rate: float, *,
 
 def _configure_tx(sdr, lo_hz, sample_rate, rf_bandwidth_hz, xo_ppm):
     # First: re-initialising the chip wipes everything configured below.
+    # A board that already boots in TDD stays in TDD afterwards (no FDD
+    # switch-back, no chip re-initialisation); otherwise leave_tdd restores FDD.
+    sdr._gs_tdd_boot = _chip_is_tdd(sdr)
     sdr._gs_tdd = bool(config.TX_TDD_MODE) and _set_duplex_mode(sdr, fdd=False)
     if config.TX_TDD_MODE and not sdr._gs_tdd:
         _log.warning("TX_TDD_MODE is on but the chip could not be put in TDD; "
@@ -352,7 +367,8 @@ def leave_tdd(handle) -> None:
     of the same radio (probe_close, other tools) find it as usual."""
     if getattr(handle, "_gs_tdd", False):
         handle._gs_tdd = False
-        _set_duplex_mode(handle, fdd=True)
+        if not getattr(handle, "_gs_tdd_boot", False):
+            _set_duplex_mode(handle, fdd=True)
 
 
 def probe_open(uri: str):
