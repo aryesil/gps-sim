@@ -208,6 +208,14 @@ class LiveSession:
         # start later), so the RINEX parse seeded below -- and copied into every
         # worker at spawn, before T_play is known -- is the one segments hit.
         self._eph_base = base_req.start
+        if base_req.osnma is not None:
+            from backend.analysis.osnma import keys as osnma_keys
+            from backend.synth import engine
+            cfg, _ = engine.osnma_parts(engine.osnma_abs(base_req.osnma, 0))
+            osnma_keys.load_or_create(cfg.keyset_path or osnma_keys.DEFAULT_PATH)
+            om = dict(base_req.osnma)
+            om.setdefault("anchor_llh", [base_req.lat, base_req.lon, base_req.alt])
+            self.base_req = base_req = dataclasses.replace(base_req, osnma=om)
         self.state = LiveState(llh=[base_req.lat, base_req.lon, base_req.alt])
         self._lock = threading.Lock()
         self.running = False
@@ -260,6 +268,38 @@ class LiveSession:
     # SDR (measured: 12 s of signal pushed in 21.5 s of wall time).
     use_process = True
 
+    def _osnma_fields(self, t0: float, dur: float, phys_block: float) -> dict:
+        """Request fields that keep the broadcast nav words (and so the OSNMA
+        tags) on one ephemeris block per 30 s GST subframe: the words switch
+        at the first subframe boundary after the 15 min block change, while
+        the physical observables switch with ``eph_epoch`` as before.
+        ``t0``/``dur`` are the session-time span the nav stream must cover."""
+        base = self.base_req
+        if base.osnma is None:
+            return {}
+        from backend.synth import engine
+        gst0 = engine.gst_abs_of(base.start)
+
+        def switch(n):
+            g = gst0 + n * _EPH_REFRESH_S
+            return n * _EPH_REFRESH_S + (math.ceil(g / 30.0) * 30.0 - g)
+
+        lo = t0 - 4.0
+        m = max(0, math.floor(lo / _EPH_REFRESH_S))
+        while m > 0 and switch(m) > lo:
+            m -= 1
+        om = engine.osnma_abs(base.osnma, int(gst0))
+        om["data_start_gst"] = (float("-inf") if m == 0
+                                else float(round(gst0 + switch(m))))
+        out = {}
+        if m * _EPH_REFRESH_S != phys_block:
+            om["eph_epoch_now"] = self._eph_base + dt.timedelta(seconds=m * _EPH_REFRESH_S)
+        if switch(m + 1) <= t0 + dur:
+            out["eph_epoch_next"] = self._eph_base + dt.timedelta(seconds=(m + 1) * _EPH_REFRESH_S)
+            out["eph_switch_at"] = base.start + dt.timedelta(seconds=switch(m + 1))
+        out["osnma"] = om
+        return out
+
     def _segment_request(self, k: int, snap: LiveState, seg: float | None = None):
         seg = self.segment_duration_s if seg is None else seg
         base = self.base_req
@@ -275,7 +315,7 @@ class LiveSession:
             duration_s=seg, route=None, engine="native",
             eph_epoch=self._eph_base + dt.timedelta(seconds=block),
             in_memory=True,
-            skip_meta=True)
+            skip_meta=True, **self._osnma_fields(t, seg, block))
 
     def _make_segment(self, k: int, snap: LiveState):
         """Segment ``k`` of the session: GPS time base.start + k*seg (+ the
@@ -442,7 +482,9 @@ class LiveSession:
             duration_s=(lead + n_blocks * block + 2) / float(fs), route=None,
             engine="native",
             eph_epoch=self._eph_base + dt.timedelta(seconds=eph_block),
-            in_memory=True, skip_meta=True)
+            in_memory=True, skip_meta=True,
+            **self._osnma_fields(t + lead / fs, (n_blocks * block + 2) / float(fs),
+                                 eph_block))
 
     def air_segments(self, fmt, *, level_dbfs: float, tx_scale: float = 1.0,
                      hold: bool = True):

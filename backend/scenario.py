@@ -96,6 +96,13 @@ class ScenarioRequest:
     # per segment would relabel the orbit -- and the broadcast toe -- each
     # time a segment crosses a toe-grid boundary.
     eph_epoch: dt.datetime | None = None
+    # Galileo E1-B OSNMA (OsnmaConfig.to_dict() form plus optional anchor_llh /
+    # data_start_gst / eph_epoch_now). None = off.
+    osnma: dict | None = None
+    # Live OSNMA: the next ephemeris block and the UTC instant (snapped to a
+    # 30 s GST subframe) at which the broadcast nav words switch to it.
+    eph_epoch_next: dt.datetime | None = None
+    eph_switch_at: dt.datetime | None = None
     outdir: pathlib.Path | None = None
     skip_meta: bool = False
     in_memory: bool = False

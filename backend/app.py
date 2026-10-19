@@ -114,6 +114,22 @@ _FRONT = pathlib.Path(__file__).resolve().parent.parent / "frontend"
 # FDMA) are never in this list -- they ride their own file automatically
 # whenever GLONASS is in `systems`, independent of this selector.
 _USER_BANDS = ("L1", "L2", "L5")
+def _osnma_body(body: dict) -> dict | None:
+    """``osnma`` request field: None = off; otherwise the OsnmaConfig dict,
+    validated now so a bad config is a 422 instead of a failed run."""
+    o = body.get("osnma")
+    if o is None or o is False:
+        return None
+    if not isinstance(o, dict):
+        raise HTTPException(422, "osnma: must be an object")
+    from backend.synth import engine as _engine
+    try:
+        _engine.osnma_parts(_engine.osnma_abs(o, 0))
+    except (ValueError, TypeError) as e:
+        raise HTTPException(422, f"osnma: {e}")
+    return dict(o)
+
+
 def _validate_native_request(body: dict) -> tuple[str, list[str], list[str] | None]:
     """Shared engine/systems/bands validation for /api/generate and
     /api/live/start: unknown engine, gps-sdr-sim asked for non-GPS systems
@@ -972,6 +988,7 @@ def generate(body: dict):
         fading=body.get("fading"),
         systems=systems,
         bands=bands_req,
+        osnma=_osnma_body(body),
     )
     if req.impairments is not None:
         try:
@@ -1677,6 +1694,7 @@ def live_start(body: dict, request: Request):
         raise HTTPException(422,
             f"systems={systems!r}: no signals on bands={user_bands_desc!r}")
     internal_band = next(iter(needed))
+    osnma_req = _osnma_body(body)
     slot = _acquire_tx_slot(_requested_tx_slot(body))
     lead_s = lead_key = tx_buf_s = None
     schedule = None
@@ -1727,7 +1745,8 @@ def live_start(body: dict, request: Request):
             sample_rate=_auto_sample_rate(body, engine, systems),
             sample_format=body.get("sample_format", "int16"),
             nav_override=nav_override,
-            engine=engine, systems=systems, bands=bands_req)
+            engine=engine, systems=systems, bands=bands_req,
+            osnma=osnma_req)
         session = live.LiveSession(req, schedule=schedule)
         _tx_slots[slot]["session"] = session
         # The SDR must run at the resolved band's REAL rate/centre, not the

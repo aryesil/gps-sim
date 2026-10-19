@@ -779,6 +779,83 @@ class EnginePlan:
     bands: list
 
 
+_GST_WEEK_OFFSET = 1024
+_OSNMA_EXTRAS = ("anchor_llh", "data_start_gst", "eph_epoch_now")
+
+
+def osnma_abs(d: dict, gst0: int) -> dict:
+    """Copy of an ``osnma`` dict with fault ``from_s``/``to_s`` (seconds from
+    ``gst0``) turned into absolute ``from_gst``/``to_gst``."""
+    d = dict(d)
+    if d.get("faults"):
+        out = []
+        for f in d["faults"]:
+            if isinstance(f, dict) and ("from_s" in f or "to_s" in f):
+                f = dict(f)
+                fs, ts = f.pop("from_s", None), f.pop("to_s", None)
+                if fs is not None:
+                    f["from_gst"] = gst0 + int(fs)
+                if ts is not None:
+                    f["to_gst"] = gst0 + int(ts)
+            out.append(f)
+        d["faults"] = out
+    return d
+
+
+def osnma_parts(d: dict):
+    """Split a request ``osnma`` dict into (OsnmaConfig, extras)."""
+    from backend.analysis.osnma.generator import OsnmaConfig
+    d = dict(d)
+    extras = {k: d.pop(k) for k in _OSNMA_EXTRAS if k in d}
+    return OsnmaConfig.from_dict(d), extras
+
+
+def gst_abs_of(when_utc: dt.datetime) -> float:
+    """Absolute GST seconds (since the GST epoch) of a UTC datetime."""
+    wk, sow = ephemeris.gps_week_and_sow(
+        when_utc + dt.timedelta(seconds=config.GPS_UTC_LEAP_S))
+    return (wk - _GST_WEEK_OFFSET) * 604800 + sow
+
+
+def _load_broadcast(req, systems, at_dt) -> dict:
+    """Parse and align the broadcast RINEX to the block that starts at
+    ``at_dt`` (UTC), like the current-block load in ``_run_impl``."""
+    a_dt = at_dt + dt.timedelta(seconds=config.GPS_UTC_LEAP_S)
+    a_week, a_sow = ephemeris.gps_week_and_sow(a_dt)
+    eph = ephemeris.parse_rinex_multi(req.rinex_path, systems, require=(), at_gps=a_dt)
+    return ephemeris.align_epochs(
+        eph, a_week, a_sow, kepler_grid_s=_TOE_GRID_S,
+        keep_real_within_s=ephemeris.REAL_EPH_WINDOW_S)
+
+
+def _galileo_records(eph) -> dict:
+    return {k[1]: dict(v, prn=k[1]) for k, v in eph.items()
+            if isinstance(k, tuple) and k[0] == "E" and isinstance(v, dict)}
+
+
+def _osnma_context(req, eph, eph_next, switch_gst, *, systems, ephemeris_mode,
+                   warnings, rx):
+    if getattr(req, "osnma", None) is None or "E" not in systems:
+        return None
+    if ephemeris_mode == "precise":
+        warnings.append("OSNMA disabled: precise ephemeris nav words are not "
+                        "the broadcast records")
+        return None
+    from backend.analysis.osnma.generator import OsnmaContext
+    cfg, extras = osnma_parts(osnma_abs(req.osnma, int(gst_abs_of(req.start))))
+    now = _galileo_records(eph)
+    if not now:
+        return None
+    nxt = _galileo_records(eph_next) if eph_next else None
+    if "anchor_llh" in extras:
+        rx = geometry.llh_to_ecef(*extras["anchor_llh"])
+    return OsnmaContext(
+        config=cfg, eph_now=now, eph_next=nxt or None,
+        switch_gst=int(switch_gst) if nxt and switch_gst is not None else None,
+        data_start_gst=float(extras.get("data_start_gst", float("-inf"))),
+        anchor_ecef=tuple(float(x) for x in rx))
+
+
 def plan(req) -> EnginePlan:
     """Everything ``run`` does up to (not including) ``_lib.run_bands``."""
     return _run_impl(req, None, plan_only=True)
@@ -834,6 +911,8 @@ def _run_impl(req, progress_cb=None, plan_only=False):
     precise_multi = (isinstance(nav_override, dict)
                      and "precise_provider" in nav_override)
     ephemeris_mode = "precise" if precise_multi else "broadcast"
+    eph_osnma_next = eph_osnma_now = None
+    osnma_switch_gst = None
 
     if precise_multi:
         # Precise (SP3) ephemeris for EVERY requested constellation. The payload
@@ -1001,6 +1080,16 @@ def _run_impl(req, progress_cb=None, plan_only=False):
 
         if ephemeris_mode != "broadcast":
             a_week, a_sow = week, sow
+        if (getattr(req, "osnma", None) is not None and "E" in systems
+                and ephemeris_mode == "broadcast"):
+            if getattr(req, "eph_epoch_next", None) is not None:
+                eph_osnma_next = _load_broadcast(req, ("E",), req.eph_epoch_next)
+                sw = getattr(req, "eph_switch_at", None)
+                if sw is not None:
+                    osnma_switch_gst = -(-int(math.ceil(gst_abs_of(sw))) // 30) * 30
+            now_ep = req.osnma.get("eph_epoch_now")
+            if now_ep is not None:
+                eph_osnma_now = _load_broadcast(req, ("E",), now_ep)
         # Records whose own epoch covers the run are used as broadcast (the
         # real sky); only stale ones are relabeled onto the toe grid.
         eph = ephemeris.align_epochs(
@@ -1169,6 +1258,10 @@ def _run_impl(req, progress_cb=None, plan_only=False):
         except (NameError, TypeError, ValueError):
             pass
 
+        osnma_ctx = _osnma_context(
+            req, eph_osnma_now or eph, eph_osnma_next, osnma_switch_gst,
+            systems=systems, ephemeris_mode=ephemeris_mode, warnings=warnings,
+            rx=rx)
         for e in entries:
             sysc = e["sys"]
             # precise_multi: `_state` is a callable state_fn (SP-B trajectory
@@ -1185,7 +1278,8 @@ def _run_impl(req, progress_cb=None, plan_only=False):
                     prn=int(e.get("prn", 0)),
                     rx_lat=float(getattr(req, "lat", 0.0)),
                     rx_lon=float(getattr(req, "lon", 0.0)),
-                    gps_prns=gps_prns)
+                    gps_prns=gps_prns,
+                    osnma=osnma_ctx if sysc == "E" else None)
             except (KeyError, ValueError) as exc:
                 warnings.append(f"{sysc}{e['prn']}: nav-message encode failed "
                                 f"({exc}); data symbol left constant")
