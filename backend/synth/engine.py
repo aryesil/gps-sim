@@ -1199,7 +1199,10 @@ def _run_impl(req, progress_cb=None, plan_only=False):
             e["pseudorange_m"] += config.C * c_off
             e["carrier_doppler_hz"] -= f_car * c_rate
             e["code_doppler_hz"] -= sig.chip_rate_hz * c_rate
-        e["code_phase_chips"] = ((e["pseudorange_m"] / config.C
+        # Code epochs are aligned to transmit time (a whole second holds an
+        # integer number of every primary code period), so the code phase at
+        # receive time sow is (sow - tau)*rate mod L, not -tau*rate mod L.
+        e["code_phase_chips"] = (((e["pseudorange_m"] / config.C - (sow % 1.0))
                                   * sig.chip_rate_hz) % sig.code_len)
 
     # for_run(): a keyed model without a caller key draws a fresh one here,
@@ -1258,8 +1261,12 @@ def _run_impl(req, progress_cb=None, plan_only=False):
         except (NameError, TypeError, ValueError):
             pass
 
+        try:
+            eph_osnma_base = eph_osnma_now or eph
+        except NameError:       # precise_multi never builds a broadcast `eph`
+            eph_osnma_base = eph_osnma_now
         osnma_ctx = _osnma_context(
-            req, eph_osnma_now or eph, eph_osnma_next, osnma_switch_gst,
+            req, eph_osnma_base, eph_osnma_next, osnma_switch_gst,
             systems=systems, ephemeris_mode=ephemeris_mode, warnings=warnings,
             rx=rx)
         for e in entries:

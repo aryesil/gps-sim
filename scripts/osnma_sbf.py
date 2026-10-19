@@ -21,7 +21,7 @@ from backend.analysis.osnma import keys, verify  # noqa: E402
 _GAL_SVID0 = 71
 _GPS_WEEK_OFFSET = 1024
 _WEEK_S = 604800
-_SRC_E1BC = 15
+_SRC_E1BC = 17
 _STATUS = {0: "disabled", 1: "initializing", 2: "waiting for trusted time",
            3: "init failed: inconsistent time", 4: "init failed: KROOT signature invalid",
            5: "init failed: invalid param", 6: "authenticating"}

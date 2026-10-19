@@ -262,7 +262,9 @@ def word_type_10(eph, tow, week):
     return b
 
 
-_CYCLE = [1, 2, 3, 4, 5, 0]
+# WT6 (GST-UTC) joins the cycle so a Galileo-only receiver gets UTC; WT0 (time-valid marker) stays in
+# the second half. Ephemeris words 1-5 still repeat every 12 s.
+_CYCLE = [1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 0]
 E1B_PAGE_PHASE_S = 1
 # OS SIS ICD 2.0 Table 38 sub-frame (15 pages, 30 s): words 1-5 once per sub-frame,
 # WT6 every sub-frame, WT10 in odd sub-frames (the 9/10 pair); almanac/reduced-CED
