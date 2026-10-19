@@ -270,9 +270,11 @@ def word_bits(wtype: int, eph: dict, tow: int, week: int) -> list[int]:
 # page assembly
 # --------------------------------------------------------------------------
 def _page_parts(wtype: int, eph: dict, tow: int, week: int,
-                osnma40: list[int] | None) -> tuple[list[int], list[int]]:
+                osnma40: list[int] | None,
+                word: list[int] | None = None) -> tuple[list[int], list[int]]:
     """Pre-FEC even and odd page parts, 120 bits each."""
-    word = word_bits(wtype, eph, tow, week)          # 128 bits incl. type
+    if word is None:
+        word = word_bits(wtype, eph, tow, week)      # 128 bits incl. type
     data_k = word[:112]                              # even part data field
     data_j = word[112:128]                           # odd part data field (16)
     r1 = [0] * 40 if osnma40 is None else list(osnma40)
@@ -303,9 +305,10 @@ def page_bits240(wtype: int, eph: dict, tow: int, week: int,
 
 
 def build_page(wtype: int, eph: dict, tow: int, week: int,
-               osnma40: list[int] | None = None) -> list[int]:
+               osnma40: list[int] | None = None,
+               word: list[int] | None = None) -> list[int]:
     """One 500-symbol nominal page (even part then odd part)."""
-    even_data, odd_data = _page_parts(wtype, eph, tow, week, osnma40)
+    even_data, odd_data = _page_parts(wtype, eph, tow, week, osnma40, word)
     even = SYNC_PATTERN + interleave_30x8(conv_encode(even_data))
     odd = SYNC_PATTERN + interleave_30x8(conv_encode(odd_data))
     assert len(even) == _HALF_SYMS and len(odd) == _HALF_SYMS
@@ -366,7 +369,7 @@ def _viterbi_free_decode(coded: list[int]) -> list[int]:
 # public entry
 # --------------------------------------------------------------------------
 def nav_stream(eph: dict, week: int, tow0_sow: float, duration_s: float,
-               eph_by_prn=None) -> np.ndarray:
+               eph_by_prn=None, osnma=None, prn: int | None = None) -> np.ndarray:
     """Deterministic I/NAV symbol stream, ``int8`` in ``{-1, +1}`` at 250
     sym/s. Length covers ``duration_s`` rounded up to a whole 2 s page plus a
     30 s guard, aligned so a page boundary sits on the odd-second GST grid
@@ -375,6 +378,11 @@ def nav_stream(eph: dict, week: int, tow0_sow: float, duration_s: float,
     npages = int(math.ceil((math.ceil(duration_s) + 30) / 2.0))
     r = int(round(tow0_sow))
     tow0 = r - ((r - E1B_PAGE_PHASE_S) % 2)
+    gen = None
+    if osnma is not None:
+        from backend.analysis.osnma.generator import OsnmaGenerator
+        gen = OsnmaGenerator(osnma)
+        prn = int(prn if prn is not None else eph.get("prn", 1) or 1)
     syms: list[int] = []
     for p in range(npages):
         ab = tow0 + 2 * p
@@ -384,7 +392,14 @@ def nav_stream(eph: dict, week: int, tow0_sow: float, duration_s: float,
         # later (live mode restarts it every segment) must continue the
         # same sequence instead of re-sending the first word type.
         wtype = _CYCLE[page_index(tow) % len(_CYCLE)]
-        syms.extend(build_page(wtype, eph, tow, wk))
+        if gen is None:
+            syms.extend(build_page(wtype, eph, tow, wk))
+            continue
+        gst_abs = wk * 604800 + tow
+        e = gen.eph_for(prn, gst_abs) or eph
+        word = gen.tamper_word(prn, gst_abs, wtype, word_bits(wtype, e, tow, wk))
+        syms.extend(build_page(wtype, e, tow, wk, osnma40=gen.page_bits(prn, gst_abs),
+                               word=word))
     a = np.asarray(syms, dtype=np.int8)
     # BPSK eşlemesi: bit 0 -> +1, bit 1 -> -1 (tüm GNSS standartları ve E1-C pilot evresiyle uyumlu)
     return np.where(a > 0, np.int8(-1), np.int8(1)).astype(np.int8)

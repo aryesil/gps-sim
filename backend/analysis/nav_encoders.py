@@ -34,7 +34,7 @@ CNAV_SYM_RATE = {"L2": 50.0, "L5": 100.0}
 
 
 def nav_stream_for(sysc, signal, eph, header, week, sow, duration_s,
-                   eph_by_prn=None, prn=None, rx_lat=None, rx_lon=None, **kwargs):
+                   eph_by_prn=None, prn=None, rx_lat=None, rx_lon=None, osnma=None, **kwargs):
     """Dispatch to the per-system encoder. ``eph`` is that satellite's parsed
     broadcast record (dict); ``signal`` is its ``signals.Signal``; ``prn`` is
     the constellation PRN (used to pick BeiDou D1 vs D2).
@@ -97,7 +97,9 @@ def nav_stream_for(sysc, signal, eph, header, week, sow, duration_s,
             )
         arr = inav_encode.nav_stream(eph, week - GST_WEEK_OFFSET, sow,
                                      duration_s,
-                                     eph_by_prn=eph_by_prn)
+                                     eph_by_prn=eph_by_prn,
+                                     osnma=osnma if band == "L1" else None,
+                                     prn=prn)
         return arr, inav_encode.SYM_RATE_HZ
     if sysc == "C":
         p = prn if prn is not None else int(eph.get("prn", 99) or 99)
