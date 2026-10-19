@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from backend import geometry
+from backend.analysis import inav_encode
 from . import crypto, dsm, keys, mack, navdata, tesla
 from .tables import HF, KS_BITS, MACLT, TS_BITS, nt_for
 
@@ -125,6 +126,7 @@ class OsnmaGenerator:
         self._sf: dict[tuple, tuple[list[int], list[int]]] = {}
         self._el: dict[tuple, float] = {}
         self._adkd0_cache: dict[tuple, list[int] | None] = {}
+        self._adkd4_cache: dict[tuple, list[int] | None] = {}
 
     def _after_switch(self, gst_abs: int) -> bool:
         c = self.ctx
@@ -176,6 +178,22 @@ class OsnmaGenerator:
             self._adkd0_cache[ck] = bits
         return self._adkd0_cache[ck]
 
+    def _adkd4(self, prn: int, gst_sf: int) -> list[int] | None:
+        prev = gst_sf - _SF_S
+        ck = (prn, prev)
+        if ck not in self._adkd4_cache:
+            eph = self.eph_for(prn, prev)
+            bits = None
+            if eph is not None:
+                wk, tow = prev // _WEEK_S, prev % _WEEK_S
+                w = {t: inav_encode.word_bits(t, eph, tow + 1 + 2 * p, wk)
+                     for p, t in ((2, 6), (4, 10)) if inav_encode.osnma_wtype(tow + 1 + 2 * p) == t}
+                bits = navdata.adkd4_bits(w)
+            if len(self._adkd4_cache) > 64:
+                self._adkd4_cache.clear()
+            self._adkd4_cache[ck] = bits
+        return self._adkd4_cache[ck]
+
     def _elevation(self, prn: int, gst_sf: int) -> float:
         ck = (gst_sf, prn)
         if ck not in self._el:
@@ -200,8 +218,11 @@ class OsnmaGenerator:
         r = (gst_sf // _SF_S + prn_a) % len(cand)
         return cand[r:] + cand[:r]
 
-    def _adkd4_slot(self, prn_a: int, gst_sf: int) -> mack.TagSlot:
-        return mack.TagSlot(prn_a, 4, 0, ())
+    def _adkd4_slot(self, prn_a: int, gst_sf: int, cop: int) -> mack.TagSlot:
+        nav = self._adkd4(prn_a, gst_sf) if cop else None
+        if nav is None:
+            return mack.TagSlot(prn_a, 4, 0, ())
+        return mack.TagSlot(prn_a, 4, cop, tuple(nav))
 
     def _slots(self, prn_a: int, gst_sf: int, cop: int):
         seq = mack.slot_sequence(self.cfg.maclt, gst_sf)
@@ -216,7 +237,7 @@ class OsnmaGenerator:
             else:
                 adkd, kind = int(code[:2]), code[2]
             if adkd == 4:
-                slots.append(self._adkd4_slot(prn_a, gst_sf))
+                slots.append(self._adkd4_slot(prn_a, gst_sf, cop))
                 continue
             if kind == "S":
                 prn_d, c = prn_a, cop

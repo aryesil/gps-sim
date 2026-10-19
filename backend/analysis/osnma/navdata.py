@@ -36,4 +36,4 @@ def words_from_pages(pages240: list[list[int]]) -> dict[int, list[int]]:
 
 
 def words_from_eph(eph: dict, gst_week: int, tow: int) -> dict[int, list[int]]:
-    return {t: inav_encode.word_bits(t, eph, tow, gst_week) for t in range(1, 6)}
+    return {t: inav_encode.word_bits(t, eph, tow, gst_week) for t in (1, 2, 3, 4, 5, 6, 10)}

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from . import crypto, merkle, p256
 from .crypto import bits_from_bytes, bits_from_int, bytes_from_bits, int_from_bits
 from .pages import split_page, subframe_of
-from .tables import (ADKD0_MASK, DSM_BLOCK_BITS, KS_BITS, MACLT, NAVDATA_LEN, NB_DK_BLOCKS,
+from .tables import (ADKD0_MASK, ADKD4_MASK, DSM_BLOCK_BITS, KS_BITS, MACLT, NAVDATA_LEN, NB_DK_BLOCKS,
                      NB_DP_BLOCKS, TS_BITS, nt_for)
 
 _SF_S = 30
@@ -137,13 +137,14 @@ class Verifier:
             self._words[k] = w
         return w
 
-    def _adkd0_data(self, prn: int, sf: int) -> list[int] | None:
+    def _navdata(self, adkd: int, prn: int, sf: int) -> list[int] | None:
         w = self._sf_words(prn, sf)
+        mask = ADKD4_MASK if adkd == 4 else ADKD0_MASK
         out: list[int] = []
-        for wt in sorted(ADKD0_MASK):
+        for wt in sorted(mask):
             if wt not in w:
                 return None
-            a, b = ADKD0_MASK[wt]
+            a, b = mask[wt]
             out += w[wt][a:b]
         return out
 
@@ -318,7 +319,7 @@ class Verifier:
                 if cop == 0:
                     nd = [0] * NAVDATA_LEN[adkd]
                 else:
-                    nd = self._adkd0_data(data_prn, prev)
+                    nd = self._navdata(adkd, data_prn, prev)
                     if nd is None:
                         cnt["nodata"] += 1
                         return None
@@ -339,9 +340,6 @@ class Verifier:
                     rep.fail("macseq", prn, sf)
             for i, (tag, prn_d, adkd, cop, _info) in enumerate(p["tags"], 1):
                 if prn_d == 0 or adkd not in (0, 4, 12):
-                    continue
-                if adkd == 4 and cop > 0:
-                    cnt["adkd4_skip"] += 1
                     continue
                 r = check(kb if adkd == 12 else ka, prn_d, i + 1, tag, cop, adkd, prn_d)
                 if r is None:

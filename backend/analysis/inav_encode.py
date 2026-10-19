@@ -23,6 +23,7 @@ import math
 
 import numpy as np
 
+from backend.analysis.utc_params import gps_utc_params
 from backend.geometry import galileo_clock_shift_s
 
 SYNC_PATTERN = [0, 1, 0, 1, 1, 0, 0, 0, 0, 0]   # 10 symbols, even and odd
@@ -241,16 +242,51 @@ def word_type_0(eph, tow, week):
     return b
 
 
+def word_type_6(eph, tow, week):
+    # GST-UTC (OS SIS ICD Table 4.3.5.x). GST == GPST in the simulator and UTC
+    # follows config.GPS_UTC_LEAP_S, so the polynomial terms are exactly zero.
+    u = gps_utc_params(None, week, tow)
+    b = bits_of(6, 6) + bits_of(twos(u["A0"], 2 ** -30, 32), 32)
+    b += bits_of(twos(u["A1"], 2 ** -50, 24), 24)
+    b += bits_of(u["dtLS"], 8) + bits_of(int(tow) // 3600, 8) + bits_of(week, 8)
+    b += bits_of(u["WNlsf"], 8) + bits_of(u["DN"], 3) + bits_of(u["dtLSF"], 8)
+    b += bits_of(int(tow) & 0xFFFFF, 20) + [0, 0, 0]
+    return b
+
+
+def word_type_10(eph, tow, week):
+    # GST-GPS (GGTO): the simulator keeps both timescales identical, so A0G = A1G = 0.
+    b = bits_of(10, 6) + bits_of(_iodnav(eph), 10) + [0] * 70
+    b += bits_of(0, 16) + bits_of(0, 12) + bits_of(int(tow) // 3600, 8)
+    b += bits_of(week, 6)
+    return b
+
+
 _CYCLE = [1, 2, 3, 4, 5, 0]
 E1B_PAGE_PHASE_S = 1
+# OS SIS ICD 2.0 Table 38 sub-frame (15 pages, 30 s): words 1-5 once per sub-frame,
+# WT6 every sub-frame, WT10 in odd sub-frames (the 9/10 pair); almanac/reduced-CED
+# slots are filled with WT0.
+_OSNMA_SF = (2, 4, 6, 0, 0, 0, 0, 0, 0, 0, 1, 3, 5, 0, 0)
 
 
 def page_index(tow: int) -> int:
     return ((int(tow) - E1B_PAGE_PHASE_S) % 30) // 2
 
 
+def osnma_wtype(tow: int) -> int:
+    p = page_index(tow)
+    if p == 4 and ((int(tow) - 1) // 30) % 2:
+        return 10
+    return _OSNMA_SF[p]
+
+
 def word_bits(wtype: int, eph: dict, tow: int, week: int) -> list[int]:
-    if wtype == 1:
+    if wtype == 6:
+        w = word_type_6(eph, tow, week)
+    elif wtype == 10:
+        w = word_type_10(eph, tow, week)
+    elif wtype == 1:
         w = word_type_1(eph, tow)
     elif wtype == 2:
         w = word_type_2(eph, tow)
@@ -391,10 +427,11 @@ def nav_stream(eph: dict, week: int, tow0_sow: float, duration_s: float,
         # Word type follows GST, not the stream start: a stream started
         # later (live mode restarts it every segment) must continue the
         # same sequence instead of re-sending the first word type.
-        wtype = _CYCLE[page_index(tow) % len(_CYCLE)]
         if gen is None:
+            wtype = _CYCLE[page_index(tow) % len(_CYCLE)]
             syms.extend(build_page(wtype, eph, tow, wk))
             continue
+        wtype = osnma_wtype(tow)
         gst_abs = wk * 604800 + tow
         e = gen.eph_for(prn, gst_abs) or eph
         word = gen.tamper_word(prn, gst_abs, wtype, word_bits(wtype, e, tow, wk))
