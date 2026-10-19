@@ -138,6 +138,7 @@ window.addChannel = function () {
             <button type="button" class="adv-btn" data-adv="imp">RF impairments</button>
             <button type="button" class="adv-btn" data-adv="mdl">Propagation</button>
             <button type="button" class="adv-btn" data-adv="eng">Signal engine</button>
+            <button type="button" class="adv-btn" data-adv="rf" id="${id}-rf-tabbtn" hidden>RF Frontend</button>
           </div>
         <section class="adv-tab" data-adv="sp3" hidden>
           <p class="adv-head">Precise ephemeris (SP3) — optional manual override <span class="info" title="Only needed to pin a specific local SP3 instead of the auto-downloaded one.">i</span></p>
@@ -242,6 +243,25 @@ window.addChannel = function () {
           <label class="fade-keyed">key (64 hex) <input id="${id}-fade-key" type="password" autocomplete="off" spellcheck="false" size="20" placeholder="empty = random per run"></label>
           <button type="button" class="fade-keyed" id="${id}-fade-keygen" title="Fill in a new random 256-bit key (crypto.getRandomValues), so the same fading can be reused later">random key</button>
           <label class="fade-keyed" title="Write the key into meta.json so the run can be reproduced and its fading plotted. Anyone with meta.json can then predict this run's fading."><input type="checkbox" id="${id}-fade-record"> record key in meta</label>
+        </section>
+        <section class="adv-tab" data-adv="rf" hidden>
+          <p class="adv-head">RF Frontend (advanced) <span class="info" title="Places the physical AD936x TX LO away from the target RF frequency and recovers it with a baseband NCO offset, to reduce TX LO leakage/IQ image visibility at the carrier. Off (DISABLED) leaves today's behavior unchanged: TX LO = target RF, no offset.">i</span></p>
+          <label>Target RF Hz <input id="${id}-rf-target" type="number" value="1575420000"></label>
+          <label>LO Offset Mode <select id="${id}-rf-lo-mode">
+            <option value="DISABLED">Disabled (TX LO = target RF)</option>
+            <option value="AUTO">Auto</option>
+            <option value="MANUAL">Manual</option>
+          </select></label>
+          <label>LO Offset Hz <input id="${id}-rf-lo-offset" type="number" value="-1000000"></label>
+          <label>TX RF Bandwidth Hz <input id="${id}-rf-bandwidth" type="number" placeholder="device default"></label>
+          <label>TX Calibration <select id="${id}-rf-calib-mode">
+            <option value="AUTO">Auto</option>
+            <option value="MANUAL">Manual</option>
+          </select></label>
+          <button id="${id}-rf-recalibrate" type="button">Recalibrate TX</button>
+          <div id="${id}-rf-calib-status" class="hint"></div>
+          <label>TX LO (computed) <input id="${id}-rf-computed-lo" readonly></label>
+          <label>BB Offset (computed) <input id="${id}-rf-computed-bb" readonly></label>
         </section>
         </div>
         <div id="${id}-size-estimate" class="hint"></div>
@@ -452,6 +472,13 @@ function wireChannelActions(id) {
   document.getElementById(`${id}-kind`).addEventListener('change', _updateRateOptions);
   _updateRateOptions();
   st.autoFs = null;     // {band: fs} from /api/native/band_centre
+  // RF Frontend tab stays hidden unless the backend was started with
+  // RF_FRONTEND_ENABLED (Task 5) -- an untouched default keeps the panel
+  // entirely out of sight, matching the opt-in body-merge below.
+  fetch('/api/health').then(r => r.json()).then(health => {
+    document.getElementById(`${id}-rf-tabbtn`).hidden = !health.rf_frontend_enabled;
+  }).catch(() => {});
+
   function _updateSizeEstimate() {
     const bytesPerSample = document.getElementById(`${id}-fmt`).value === 'int8' ? 1 : 2;
     const auto = document.getElementById(`${id}-rate`).value === 'auto';
@@ -1002,6 +1029,59 @@ function wireChannelActions(id) {
     return Object.keys(out).length ? out : null;
   }
 
+  // Fold the opt-in "RF Frontend" panel (AD936x LO-offset planning + TX
+  // quadrature calibration) into the request body. Default lo_offset_mode
+  // is DISABLED -> returns null -> the /api/generate, /api/live/start and
+  // /api/transmit request bodies are byte-identical to before this panel
+  // existed. No gain/attenuation knob is exposed here -- that stays owned
+  // by the existing "TX gain dB" control.
+  function _rfFrontendBody() {
+    const mode = document.getElementById(`${id}-rf-lo-mode`).value;
+    if (mode === 'DISABLED') return null;
+    const out = {
+      target_rf_frequency_hz: Number(document.getElementById(`${id}-rf-target`).value),
+      lo_offset_mode: mode,
+      lo_offset_hz: Number(document.getElementById(`${id}-rf-lo-offset`).value),
+    };
+    const bw = document.getElementById(`${id}-rf-bandwidth`).value;
+    if (bw) out.tx_rf_bandwidth_hz = Number(bw);
+    return out;
+  }
+
+  function _refreshRfComputed(d) {
+    if (d && d.tx_lo_hz !== undefined) {
+      document.getElementById(`${id}-rf-computed-lo`).value = d.tx_lo_hz;
+      document.getElementById(`${id}-rf-computed-bb`).value = d.baseband_offset_hz;
+    }
+  }
+
+  document.getElementById(`${id}-rf-recalibrate`).onclick = async () => {
+    if (!document.getElementById(`${id}-tx-confirm`).checked) {
+      alert('Tick the isolated-setup confirmation (Start) before calibrating.');
+      return;
+    }
+    const body = Object.assign(
+      { confirm_isolated: document.getElementById(`${id}-tx-confirm`).checked,
+        uri: document.getElementById(`${id}-uri`).value,
+        sample_rate: Number(document.getElementById(`${id}-rate`).value),
+        calibration_mode: document.getElementById(`${id}-rf-calib-mode`).value },
+      _rfFrontendBody() || { target_rf_frequency_hz: Number(document.getElementById(`${id}-rf-target`).value) });
+    const statusEl = document.getElementById(`${id}-rf-calib-status`);
+    statusEl.textContent = 'Calibrating…';
+    const r = await fetch('/api/tx/calibrate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.status !== 200) {
+      statusEl.textContent = `Calibration request failed: ${d.detail || r.status}`;
+      return;
+    }
+    _refreshRfComputed(d);
+    statusEl.textContent = d.success
+      ? `${d.calibration_type} — calibrated (LO ${d.tx_lo_hz} Hz)`
+      : `${d.calibration_type} — ${d.error_message}`;
+  };
+
   function _renderModelSummary(cm) {
     const el = document.getElementById(`${id}-mdl-summary`);
     if (!cm || !cm.any_enabled) { el.textContent = ''; return; }
@@ -1042,6 +1122,7 @@ function wireChannelActions(id) {
     if (_mdl) Object.assign(body, _mdl);
     const _eng = _engineBody();
     Object.assign(body, _eng || {});
+    Object.assign(body, _rfFrontendBody() || {});
     fetch('/api/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -1237,6 +1318,7 @@ function wireChannelActions(id) {
     };
     const _eng = _engineBody();
     Object.assign(body, _eng || {});
+    Object.assign(body, _rfFrontendBody() || {});
     const prnInput = document.getElementById(`${id}-lnav-prn`);
     if (prnInput && prnInput.value) body.track_prn = Number(prnInput.value);
     const maxDurInput = document.getElementById(`${id}-max-duration`);

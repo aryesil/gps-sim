@@ -22,7 +22,8 @@ from backend import config, geometry, scenario, generator, inspector, auth
 from backend.ephem import ephemeris, precise, ephemeris_source, ephemeris_fit
 from backend.analysis import receiver, lnav_display
 from backend.rf import air, transmit, device
-from backend.rf.frontend import rf_frontend
+from backend.rf.frontend import rf_frontend, diagnostic as rf_diagnostic
+from backend.rf.frontend import capabilities as rf_capabilities, calibration as rf_calibration
 from backend.session import live, lead_calib, play_schedule, clock_sync
 from backend.store import trajectory, scenario_lib
 from backend.obs import audit, recording, receiver_feed, ws_hub
@@ -297,6 +298,24 @@ def _requested_tx_slot(body: dict) -> str | None:
 def _release_tx_slot(slot: str) -> None:
     with _tx_slots_lock:
         _tx_slots[slot] = None
+
+
+def _reserve_all_tx_slots_for_calibration() -> None:
+    """Calibration changes the chip-wide TX LO, which both TX1 and TX2
+    share (see backend/rf/dual_tx.py) -- so it must block against *any*
+    active slot, not just both, and the check-then-reserve must be atomic
+    under the same lock every other slot mutation uses."""
+    with _tx_slots_lock:
+        if any(occ is not None for occ in _tx_slots.values()):
+            raise HTTPException(409, "a TX slot is active -- stop transmit before calibrating")
+        for slot in _tx_slots:
+            _tx_slots[slot] = {"stop": None, "session": None}
+
+
+def _release_all_tx_slots_after_calibration() -> None:
+    with _tx_slots_lock:
+        for slot in _tx_slots:
+            _tx_slots[slot] = None
 
 
 def download_free_bytes(path) -> int:
@@ -1205,7 +1224,10 @@ def start_transmit(body: dict, request: Request):
     slot = _acquire_tx_slot(_requested_tx_slot(body))
     try:
         sample_rate = float(body.get("sample_rate") or 0.0)
-        if "outdir" in body:
+        diagnostic_mode = body.get("mode") == "diagnostic_cw" and config.RF_FRONTEND_ENABLED
+        if diagnostic_mode:
+            iq_path = "(diagnostic_cw)"
+        elif "outdir" in body:
             # A generated run plays back at the rate and format it was made
             # with (the native engine may have chosen or raised the rate),
             # not whatever the UI's rate/format controls show now.
@@ -1240,11 +1262,14 @@ def start_transmit(body: dict, request: Request):
             tx_scale=float(body.get("tx_scale", 1.0)),
             kind=body.get("kind", "pluto"),
             slot=slot, **_tx_level_kwargs(body))
-        itemsize = 1 if params.sample_format == "int8" else 2
-        try:
-            total_samples = pathlib.Path(params.iq_path).stat().st_size // (2 * itemsize)
-        except OSError:
+        if diagnostic_mode:
             total_samples = 0
+        else:
+            itemsize = 1 if params.sample_format == "int8" else 2
+            try:
+                total_samples = pathlib.Path(params.iq_path).stat().st_size // (2 * itemsize)
+            except OSError:
+                total_samples = 0
     except rf_frontend.RFFrontendError as ex:
         _release_tx_slot(slot)
         raise HTTPException(400, str(ex)) from ex
@@ -1258,6 +1283,7 @@ def start_transmit(body: dict, request: Request):
         try:
             audit.log_event("transmit_start", slot=slot, iq_path=params.iq_path,
                              dry_run=body.get("dry_run", False), tx_gain_db=params.tx_gain_db,
+                             diagnostic=diagnostic_mode,
                              **({"rf_frontend": rf_report} if rf_report else {}))
             q: list = []
             err: list = []
@@ -1266,11 +1292,14 @@ def start_transmit(body: dict, request: Request):
                 if rf_report:
                     d.update(rf_report)
                 q.append(d)
+            chunk_source = (rf_diagnostic.cw_chunk_source(params.sample_rate)
+                             if diagnostic_mode else None)
 
             def _stream_worker():
                 try:
                     transmit.stream(params=params, dry_run=body.get("dry_run", False),
-                                    progress_cb=cb, cancel=_tx_slots[slot]["stop"])
+                                    progress_cb=cb, cancel=_tx_slots[slot]["stop"],
+                                    chunk_source=chunk_source)
                 except Exception as ex:
                     err.append(str(ex))
 
@@ -1323,6 +1352,60 @@ def stop_transmit(request: Request, body: dict | None = None):
         occ["stop"].set()
         audit.log_event("manual_stop", slot=slot)
     return {"stopped": True}
+
+
+@app.post("/api/tx/calibrate")
+def tx_calibrate(body: dict, request: Request):
+    auth.require_operator(request)
+    if not config.RF_FRONTEND_ENABLED:
+        raise HTTPException(403, "RF frontend layer disabled (set RF_FRONTEND_ENABLED=1)")
+    if not config.ALLOW_TX or not body.get("confirm_isolated"):
+        raise HTTPException(403,
+            "calibration disabled: needs ALLOW_TX and confirm_isolated "
+            "(TX quadrature calibration can cause a brief RF emission)")
+
+    _reserve_all_tx_slots_for_calibration()
+    try:
+        uri = body.get("uri", config.DEVICE_URI)
+        sample_rate = float(body.get("sample_rate", config.DEFAULT_SAMPLE_RATE))
+        try:
+            lo_hz, bb_offset_hz, rf_report = _resolve_rf_plan(body, config.L1_HZ, sample_rate)
+        except rf_frontend.RFFrontendError as ex:
+            raise HTTPException(400, str(ex)) from ex
+        target_rf_hz = int(rf_report["target_rf_hz"]) if rf_report else int(lo_hz)
+
+        try:
+            import adi
+            sdr = adi.ad9361(uri=uri)
+        except Exception as ex:
+            raise HTTPException(500, f"device open failed: {ex}") from ex
+        try:
+            caps = rf_capabilities.detect(sdr)
+            try:
+                sdr.sample_rate = int(sample_rate)
+                sdr.tx_lo = int(lo_hz)
+            except Exception:
+                pass
+            result = rf_calibration.calibrate(
+                sdr, caps, tx_lo_hz=int(lo_hz), target_rf_hz=target_rf_hz,
+                baseband_offset_hz=int(bb_offset_hz))
+        finally:
+            try:
+                sdr.tx_destroy_buffer()
+            except Exception:
+                pass
+    finally:
+        _release_all_tx_slots_after_calibration()
+
+    response = {
+        "device": uri, "calibration_type": result.calibration_type,
+        "start_time": result.start_time, "end_time": result.end_time,
+        "success": result.success, "error_message": result.error_message,
+        "tx_lo_hz": result.tx_lo_hz, "target_rf_hz": result.target_rf_hz,
+        "baseband_offset_hz": result.baseband_offset_hz,
+    }
+    audit.log_event("tx_calibrate", uri=uri, **response)
+    return response
 
 
 @app.get("/api/audit")

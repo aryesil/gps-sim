@@ -320,7 +320,7 @@ Base URL: `http://127.0.0.1:8000`. Long operations stream Server-Sent Events (SS
 | **Health & Preview** | `GET /api/health`, `POST /api/preview`, `POST /api/preview_track` |
 | **Ephemeris** | `POST /api/rinex/upload`, `GET /api/precise/status`, `POST /api/precise/load`, `POST /api/precise/compare` |
 | **Synthesis & Inspection** | `POST /api/generate` (SSE), `POST /api/receiver`, `GET /api/iqplot`, `GET /api/correlation`, `GET /api/lnav` |
-| **Hardware Transmission** | `POST /api/transmit` (SSE), `POST /api/transmit/stop`, `POST /api/live/start` (SSE), `POST /api/live/stop`, `POST /api/live/jog`, `POST /api/live/time_shift` |
+| **Hardware Transmission** | `POST /api/transmit` (SSE), `POST /api/transmit/stop`, `POST /api/tx/calibrate`, `POST /api/live/start` (SSE), `POST /api/live/stop`, `POST /api/live/jog`, `POST /api/live/time_shift` |
 | **Device Control** | `POST /api/device/connect`, `POST /api/device/disconnect`, `GET /api/device/status` |
 | **Session & Presets** | `GET /api/recording/list`, `GET /api/recording/replay` (SSE), `POST/GET /api/trajectory/*`, `POST/GET /api/scenario/*` |
 | **Observability** | `GET /api/audit`, `WS /ws/events`, `POST /api/receiver/listen`, `GET /api/receiver/fix` |
@@ -390,6 +390,48 @@ Unlicensed over-the-air transmission on GNSS frequencies violates spectrum regul
 - **Mandatory In-Line Attenuation:** Insert **30 to 60 dB** of fixed RF attenuation between SDR TX and receiver input, and keep software TX gain low (−40 to −60 dB). The bench tests were run at −50 dB and later relaxed to at most −30 dB (needed when the same power is spread over a wider sample rate or many FPGA channels); do not go above that.
 - **Safety Interlocks:** Transmissions require `ALLOW_TX=1` and explicit confirmation of an isolated setup (`confirm_isolated: true` in the request body, set by the UI modal).
 - **Fail-Safe Timeouts:** Configure `max_duration_s` so unattended transmissions terminate automatically.
+
+---
+
+## AD936x TX RF frontend (LO offset & calibration)
+
+**RF frequency vs TX LO** — The AD9361 hardware shares a single TX LO across both TX1 and TX2 channels. The invariant maintained by this layer is `target_rf_frequency_hz = tx_lo_hz + baseband_offset_hz`.
+
+**LO offset modes** — The layer supports three LO offset modes: `DISABLED` (default, today's exact behavior) where the TX LO is fixed at the configured value; `MANUAL` where the operator sets `lo_offset_hz` directly; and `AUTO` where a validated candidate is picked automatically. Worked examples with `MANUAL` mode:
+```
+target_rf_frequency_hz = 1575420000, lo_offset_mode = MANUAL, lo_offset_hz = -1000000
+  -> tx_lo_hz = 1574420000, baseband_offset_hz = 1000000
+
+target_rf_frequency_hz = 1575420000, lo_offset_mode = MANUAL, lo_offset_hz = 1000000
+  -> tx_lo_hz = 1576420000, baseband_offset_hz = -1000000
+```
+
+**TX quadrature calibration** — This layer triggers the AD9361's built-in TX quadrature calibration via the `sdr._ctrl.attrs["calib_mode"]` device attribute with value `"tx_quad"`, as documented in ADI's own driver documentation. The calibration itself is a hardware-resident process, never a Python reimplementation. Because `POST /api/tx/calibrate` can cause a brief RF emission, it is gated by the same `ALLOW_TX` + `confirm_isolated` safety checks as the transmit endpoints.
+
+**Attenuation** — The `tx_gain_db` register is the AD9361's real hardware attenuation setting, distinct from the IQ-amplitude `tx_scale` parameter which provides headroom within the DAC's dynamic range (see the comment in `backend/rf/transmit.py`).
+
+**Capability degradation** — The layer detects and reports support for optional hardware features:
+
+| Capability | Detected via | If unsupported |
+|---|---|---|
+| `supports_tx_quad_calibration` | `calib_mode`/`calib_mode_available` device attrs | `/api/tx/calibrate` returns `success: false` with a named reason |
+| `supports_tx_lo_control` | `tx_lo` property | existing `dual_tx.acquire()` clamp check fails first |
+| `supports_tx_hardware_gain` | `tx_hardwaregain_chan0` property | existing `dual_tx.acquire()` gain set fails |
+| `supports_temperature_readout` | `temp0` channel | device-status temperature field omitted |
+
+**Diagnostic CW mode** — A constant-wave transmit mode for RF bench testing. Example `POST /api/transmit` body:
+```json
+{"mode": "diagnostic_cw", "target_rf_frequency_hz": 445400000,
+ "lo_offset_mode": "MANUAL", "lo_offset_hz": -1000000,
+ "sample_rate": 2600000, "sample_format": "int16", "confirm_isolated": true}
+```
+This mode never touches the GPS L1 IQ generator.
+
+**Limitation** — This software cannot measure RF leakage itself; it only reports the configured LO/offset/calibration state — verify results with an external spectrum analyzer or receiver.
+
+### Troubleshooting
+
+If a spur appears exactly at the TX LO, try TX quadrature calibration (`POST /api/tx/calibrate`), then move the TX LO away from the target carrier using LO offset. Verify the result with an external spectrum analyzer/receiver — this software cannot measure RF leakage on its own.
 
 ---
 
