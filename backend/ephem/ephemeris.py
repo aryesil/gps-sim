@@ -439,6 +439,28 @@ def _georinex_source(path):
     return io.StringIO("\n".join(lines) + "\n")
 
 
+_STATE_MAX_RADIUS_M = 1.0e8      # GEO 4.2e7 m; anything beyond is a unit slip
+
+
+def _fix_state_units(e: dict, sysc: str, src: str) -> None:
+    """Undo a metres-written-as-km slip in an ECEF-state record (S, R).
+
+    RINEX 3 stores SBAS/GLONASS positions in km, and georinex scales by 1000.
+    Some BRDC merges (BKG) also carry records written in metres for the same
+    satellite (EGNOS S21/S23/S36: X = 38667964 next to 38667.964), which the
+    scaling turns into a satellite 4e10 m away -- a 140 s flight time, a
+    wrong code phase and a nav stream stamped half a second off. Position,
+    velocity and acceleration of such a record share the slip."""
+    r = math.sqrt(sum(float(e.get(k, 0.0)) ** 2 for k in ("x_m", "y_m", "z_m")))
+    if r <= _STATE_MAX_RADIUS_M:
+        return
+    for k in ("x_m", "y_m", "z_m", "vx", "vy", "vz", "ax", "ay", "az"):
+        if k in e:
+            e[k] = float(e[k]) * 1e-3
+    _log.warning("%s%s: state vector %.3g m away in %s; metres written as km, "
+                 "rescaled by 1e-3", sysc, e.get("prn"), r, src)
+
+
 def _parse_rinex_multi(path: str | pathlib.Path, systems=("G",),
                        require=None, at_gps: dt.datetime | None = None) -> dict:
     """Parse a RINEX 2/3 nav file into per-satellite broadcast records.
@@ -488,6 +510,8 @@ def _parse_rinex_multi(path: str | pathlib.Path, systems=("G",),
             if var is None or var not in rec:
                 continue
             e[key] = float(rec[var].values)
+        if s in ("S", "R"):
+            _fix_state_units(e, s, str(path))
         if s == "E":
             ref = _gal_clock_ref(rec)
             if ref:
