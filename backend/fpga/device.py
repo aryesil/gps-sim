@@ -20,6 +20,7 @@ import dataclasses
 import re
 import shlex
 import subprocess
+import threading
 import time
 from typing import Callable
 
@@ -156,6 +157,13 @@ class GnssDevice:
     def clear_counters(self) -> None:
         self.write32(REG_CTRL, self._ctrl() | CTRL_CLEAR)
 
+    def arm_enable(self) -> "ArmedEnable":
+        """Prepare the CTRL enable write so that it can be issued at a precise
+        instant (Start Now scheduling). Default: no preparation, ``fire()`` is
+        a plain ``enable()``; transports with a per-access setup cost (ssh)
+        override this with a pre-connected command."""
+        return ArmedEnable(self.enable)
+
     def soft_reset(self, timeout_s: float = SOFT_RESET_TIMEOUT_S) -> None:
         """Flush FIFOs and the engine; needed when changing cmd_mode or
         restarting a stream. Waits for the busy bit (CTRL b2) to drop."""
@@ -192,6 +200,119 @@ class GnssDevice:
         return GnssStatus.decode(st, play, counters)
 
 
+class ArmedEnable:
+    """An enable write prepared ahead of time.
+
+    ``fire()`` issues it; it returns None when the write went out at once, or
+    the ``time.perf_counter()`` instant a slow fallback write finished (the
+    engine started no earlier than that). ``confirm()`` waits until it has
+    certainly reached the engine and returns details for the report;
+    ``close()`` releases the preparation without enabling (idempotent).
+    """
+
+    def __init__(self, enable: Callable[[], None]):
+        self._enable = enable
+        self.fired = False
+
+    def fire(self) -> float | None:
+        self._enable()
+        self.fired = True
+        return None
+
+    def confirm(self, timeout_s: float = 5.0) -> dict:
+        return {"armed": False}
+
+    def close(self) -> None:
+        pass
+
+
+class SshArmedEnable(ArmedEnable):
+    """Enable through an ssh session opened in advance.
+
+    The remote shell prints ``armed`` once connected, then blocks in ``read``;
+    ``fire()`` only writes a newline to the local pipe, so the register write
+    follows within one network hop plus a devmem exec instead of a whole ssh
+    connect (hundreds of ms, jittery). If the session is not usable at fire
+    time, or exits with an error, the write falls back to the ordinary (slow)
+    ``enable`` so the stream still runs (reported as ``enable_fallback``).
+    """
+
+    READY = "armed"
+
+    def __init__(self, proc, fallback: Callable[[], None],
+                 clock: Callable[[], float] = time.perf_counter):
+        super().__init__(fallback)
+        self._proc, self._clock = proc, clock
+        self.ready = threading.Event()
+        self.t_fire: float | None = None
+        self.fallback_used = False
+        self._reader = threading.Thread(target=self._read, daemon=True)
+        self._reader.start()
+
+    def _read(self) -> None:
+        try:
+            for line in self._proc.stdout:
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", "replace")
+                if line.strip() == self.READY:
+                    self.ready.set()
+        except Exception:
+            pass
+
+    def wait_ready(self, timeout_s: float) -> bool:
+        return self.ready.wait(timeout_s)
+
+    def fire(self) -> float | None:
+        self.fired = True
+        if self._proc.poll() is None:
+            t = self._clock()
+            try:
+                self._proc.stdin.write(b"go\n")
+                self._proc.stdin.flush()
+                self.t_fire = t
+                return None
+            except (OSError, ValueError):
+                pass
+        # session died before fire: ordinary enable (late, but the stream runs)
+        self.fallback_used = True
+        self._enable()
+        self.t_fire = self._clock()
+        return self.t_fire
+
+    def confirm(self, timeout_s: float = 5.0) -> dict:
+        info = {"armed": True, "armed_ready": self.ready.is_set(),
+                "enable_fallback": self.fallback_used}
+        if self.fallback_used or self.t_fire is None:
+            return info
+        try:
+            rc = self._proc.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            rc = None
+        info["enable_rtt_s"] = round(self._clock() - self.t_fire, 4)
+        if rc != 0:
+            # the armed write did not happen (or not provably): do it now
+            self.close()
+            self.fallback_used = True
+            info["enable_fallback"] = True
+            self._enable()
+            info["fire_mono"] = self._clock()    # the engine started no earlier
+        return info
+
+    def close(self) -> None:
+        p = self._proc
+        if p.poll() is None:
+            try:
+                p.kill()
+            except OSError:
+                pass
+        for f in (p.stdin, p.stdout, p.stderr):
+            try:
+                if f is not None:
+                    f.close()
+            except Exception:
+                pass
+
+
 # ---------------------------------------------------------------------------
 # Remote board
 # ---------------------------------------------------------------------------
@@ -214,11 +335,25 @@ class SshRunner:
             raise DeviceError(f"cannot derive an SSH host from URI {uri!r}")
         return cls(m.group(1), **kw)
 
-    def __call__(self, argv: list) -> str:
+    def _cmd(self, argv: list) -> list:
         cmd = [self.ssh, "-o", "BatchMode=yes", "-o", "ConnectTimeout=3"]
         if self.port:
             cmd += ["-p", str(self.port)]
         cmd += [f"{self.user}@{self.host}", " ".join(shlex.quote(str(a)) for a in argv)]
+        return cmd
+
+    def spawn(self, argv: list) -> subprocess.Popen:
+        """Start ``argv`` on the board and return the running ssh process with
+        binary stdin/stdout/stderr pipes (for a pre-connected command)."""
+        try:
+            return subprocess.Popen(self._cmd(argv), stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    bufsize=0)
+        except OSError as ex:
+            raise DeviceError(f"ssh to {self.host} failed: {ex}") from ex
+
+    def __call__(self, argv: list) -> str:
+        cmd = self._cmd(argv)
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
                                timeout=self.timeout_s)
@@ -264,6 +399,23 @@ class RemoteDevmem(GnssDevice):
         self._run([self.tool, f"{self.base + offset:#x}", "32",
                    f"{value & 0xFFFFFFFF:#x}"])
 
+    def _armed_enable_cmd(self) -> str:
+        # Armed only in the command-mode start sequence (CTRL = CMD_MODE), so
+        # the enable read-modify-write result is known: ENABLE | CMD_MODE.
+        return (f"{self.tool} {self.base + REG_CTRL:#x} 32 "
+                f"{CTRL_ENABLE | CTRL_CMD_MODE:#x}")
+
+    def arm_enable(self) -> ArmedEnable:
+        spawn = getattr(self._run, "spawn", None)
+        if spawn is None:
+            return super().arm_enable()
+        script = f"echo {SshArmedEnable.READY}; read _go && {self._armed_enable_cmd()}"
+        try:
+            proc = spawn(["sh", "-c", script])
+        except DeviceError:
+            return super().arm_enable()
+        return SshArmedEnable(proc, self.enable)
+
 
 class GnssctlDevice(RemoteDevmem):
     """Like RemoteDevmem, but the control verbs go through the board-side
@@ -288,6 +440,9 @@ class GnssctlDevice(RemoteDevmem):
 
     def set_cmd_mode(self, on: bool) -> None:
         self._ctl("cmdmode", "on" if on else "off")
+
+    def _armed_enable_cmd(self) -> str:
+        return f"{shlex.quote(self.ctl)} enable"
 
     def enable(self) -> None:
         self._ctl("enable")

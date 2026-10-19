@@ -78,6 +78,29 @@ def _seed_worker_cache(cache_snapshot: dict) -> None:
     ephemeris._PARSE_CACHE.update(cache_snapshot)
 
 
+def _warm_worker() -> int:
+    """Start-up work of a spawned worker done before Start Now commits to a
+    play time: import the generation stack (numpy, the native engine, the
+    command packer). Returns the worker's pid."""
+    import os
+    from backend.synth import engine  # noqa: F401
+    try:
+        from backend.fpga import stream  # noqa: F401
+    except Exception:
+        pass
+    return os.getpid()
+
+
+def _warm_pool(pool, workers: int) -> None:
+    """Spawn every worker of ``pool`` and run ``_warm_worker`` in it (one
+    task per worker submitted back to back: with no idle worker each submit
+    spawns a new process)."""
+    import concurrent.futures
+    futs = [pool.submit(_warm_worker) for _ in range(max(1, int(workers)))]
+    for f in concurrent.futures.as_completed(futs):
+        f.result()
+
+
 def _generate_segment_raw(seg_req, iq_filename):
     """One live segment's raw or IQ data (module-level so a worker process can run it).
     Returns (raw_or_iq, band file name, is_raw)."""
@@ -154,6 +177,16 @@ def _gnss_segment(seg_req, first_block, fs, level_dbfs, shift):
     return list(cs), info
 
 
+class _NotRunning:
+    """Event-like view of "the session was stopped" (cancels a play hold)."""
+
+    def __init__(self, session):
+        self._s = session
+
+    def is_set(self) -> bool:
+        return not self._s.running
+
+
 @dataclass
 class LiveState:
     llh: list[float]
@@ -161,9 +194,20 @@ class LiveState:
 
 
 class LiveSession:
-    def __init__(self, base_req: scenario.ScenarioRequest, segment_duration_s: float = 1.0):
+    def __init__(self, base_req: scenario.ScenarioRequest, segment_duration_s: float = 1.0,
+                 schedule=None):
         self.base_req = base_req
         self.segment_duration_s = segment_duration_s
+        # Start Now "schedule then play" (play_schedule.PlaySchedule): when set,
+        # base_req.start is only provisional; the segment producers replace it
+        # with the planned T_play once the slow start-up work is done, and the
+        # transmit path holds the start command until T_play.
+        self.schedule = schedule
+        # Ephemeris pin anchor: block b of the session pins at _eph_base + b*900 s.
+        # Fixed at creation (== base_req.start unless Start Now re-stamps the
+        # start later), so the RINEX parse seeded below -- and copied into every
+        # worker at spawn, before T_play is known -- is the one segments hit.
+        self._eph_base = base_req.start
         self.state = LiveState(llh=[base_req.lat, base_req.lon, base_req.alt])
         self._lock = threading.Lock()
         self.running = False
@@ -229,7 +273,7 @@ class LiveSession:
             base, lat=snap.llh[0], lon=snap.llh[1], alt=snap.llh[2],
             start=base.start + dt.timedelta(seconds=t),
             duration_s=seg, route=None, engine="native",
-            eph_epoch=base.start + dt.timedelta(seconds=block),
+            eph_epoch=self._eph_base + dt.timedelta(seconds=block),
             in_memory=True,
             skip_meta=True)
 
@@ -301,16 +345,12 @@ class LiveSession:
         released in order; jog / time shifts apply to the next submitted one."""
         import collections
         import concurrent.futures
-        import multiprocessing
-        from backend.ephem import ephemeris
         block = 65536
         first_n = int(segment_blocks)
         steady = max(int(segment_blocks), int(round(fs / block)))
         workers = max(1, int(workers if workers is not None else config.LIVE_GEN_WORKERS))
         self.running = True
-        pool = concurrent.futures.ProcessPoolExecutor(
-            max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
-            initializer=_seed_worker_cache, initargs=(dict(ephemeris._PARSE_CACHE),))
+        pool = self._make_pool(workers)
         inflight: collections.deque = collections.deque()
         first_block = 0
 
@@ -325,6 +365,31 @@ class LiveSession:
             first_block += n
 
         try:
+            sched = self.schedule
+            if sched is not None:
+                # Start Now: spawn + import every worker before committing to a
+                # time, then plan T_play from the first segment's generation
+                # time; a first segment that comes too late is dropped and
+                # re-planned (nothing is on air yet).
+                t_w = sched.now_mono()
+                _warm_pool(pool, workers)
+                sched.warmup_s = sched.now_mono() - t_w
+                while self.running:
+                    self._set_play_start(sched.plan())
+                    first_block = 0
+                    t0 = sched.now_mono()
+                    while len(inflight) < workers + 1 and self.running:
+                        submit()
+                    if not inflight:
+                        break
+                    inflight[0].result()
+                    sched.record_gen(sched.now_mono() - t0)
+                    if sched.on_time() or sched.last_attempt:
+                        break
+                    for f in inflight:
+                        f.cancel()
+                    concurrent.futures.wait(list(inflight))
+                    inflight.clear()
             while self.running:
                 while len(inflight) < workers + 1 and self.running:
                     submit()
@@ -339,6 +404,22 @@ class LiveSession:
         finally:
             self.running = False
             pool.shutdown(wait=False, cancel_futures=True)
+
+    def _make_pool(self, workers: int):
+        """Worker processes for segment generation ('spawn': same on Windows
+        and Linux; each worker gets the parent's RINEX parse cache)."""
+        import concurrent.futures
+        import multiprocessing
+        from backend.ephem import ephemeris
+        return concurrent.futures.ProcessPoolExecutor(
+            max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
+            initializer=_seed_worker_cache, initargs=(dict(ephemeris._PARSE_CACHE),))
+
+    def _set_play_start(self, t: dt.datetime) -> None:
+        """Start Now: commit the session's time base to the planned T_play.
+        Every segment (and its ephemeris pin) is relative to base_req.start, so
+        this must happen before the first segment is submitted."""
+        self.base_req = dataclasses.replace(self.base_req, start=t)
 
     def _gnss_request(self, first_block: int, n_blocks: int, fs: float, snap: LiveState):
         """Scenario request for ``n_blocks`` command blocks starting at block
@@ -360,17 +441,18 @@ class LiveSession:
             start=base.start + dt.timedelta(seconds=t),
             duration_s=(lead + n_blocks * block + 2) / float(fs), route=None,
             engine="native",
-            eph_epoch=base.start + dt.timedelta(seconds=eph_block),
+            eph_epoch=self._eph_base + dt.timedelta(seconds=eph_block),
             in_memory=True, skip_meta=True)
 
-    def air_segments(self, fmt, *, level_dbfs: float, tx_scale: float = 1.0):
+    def air_segments(self, fmt, *, level_dbfs: float, tx_scale: float = 1.0,
+                     hold: bool = True):
         """Like segments(), but every chunk is an air.AirChunk: scaled to the
         TX level, saturated and packed in the worker process, so the process
         that runs the TX pump does no per-sample work. The digital gain is
         measured on the first segment and reused (as transmit.stream does)."""
         self._air = (fmt.name, float(level_dbfs), float(tx_scale))
         self._air_gain = None
-        return self.segments()
+        return self.segments(hold=hold)
 
     def _make_air_segment(self, k: int, snap: LiveState):
         seg_req = self._segment_request(k, snap)
@@ -383,7 +465,7 @@ class LiveSession:
         self._air_gain = chunk.gain
         return chunk
 
-    def segments(self):
+    def segments(self, hold: bool = True):
         """Generator of complex IQ chunks -- transmit.stream()'s chunk_source
         for a live session. Stops (StopIteration) once self.running is set
         False by the caller (mirrors TxSession's cancel-event pattern but
@@ -399,14 +481,8 @@ class LiveSession:
         self._pool = None
         # a precise-ephemeris provider object need not pickle: stay in-process
         if self.use_process and self.base_req.nav_override is None:
-            import concurrent.futures
-            import multiprocessing
-            from backend.ephem import ephemeris
             self._workers = max(1, int(config.LIVE_GEN_WORKERS)) if self._air else 1
-            self._pool = concurrent.futures.ProcessPoolExecutor(
-                max_workers=self._workers, mp_context=multiprocessing.get_context("spawn"),
-                initializer=_seed_worker_cache,
-                initargs=(dict(ephemeris._PARSE_CACHE),))
+            self._pool = self._make_pool(self._workers)
 
         def _put(item) -> bool:
             while self.running:
@@ -417,14 +493,14 @@ class LiveSession:
                     pass
             return False
 
-        def _producer_pipelined():
+        def _producer_pipelined(k0: int = 0):
             """Air path with several workers: segment k+1..k+W are generated
             while k is still being sent, results are released in order. The
             first segment runs alone: it fixes the band file and the digital
             gain every later segment reuses."""
             import collections
             inflight: collections.deque = collections.deque()   # (k, snap, future)
-            k_submit = 0
+            k_submit = k0
             errors = 0
             while self.running:
                 while (len(inflight) < self._workers and self.running
@@ -472,10 +548,10 @@ class LiveSession:
                 if not _put(chunk):
                     return
 
-        def _producer():
+        def _producer(k0: int = 0):
             if self._air and self._pool is not None and self._workers > 1:
-                return _producer_pipelined()
-            k = 0
+                return _producer_pipelined(k0)
+            k = k0
             while self.running:
                 with self._lock:
                     snap = copy.deepcopy(self.state)
@@ -502,9 +578,27 @@ class LiveSession:
                     except queue.Full:
                         pass
 
-        th = threading.Thread(target=_producer, daemon=True)
-        th.start()
+        th = None
         try:
+            first = None
+            if self.schedule is not None:
+                # Start Now: warm up, plan T_play, generate segment 0 for it
+                # (re-planning while late), then hold it until T_play minus the
+                # PC path's start latency. Later segments are generated during
+                # the hold.
+                first = self._scheduled_first_segment()
+                if first is None:
+                    return
+            th = threading.Thread(target=_producer, args=(0 if first is None else 1,),
+                                  daemon=True)
+            th.start()
+            if first is not None:
+                # hold=False: the consumer holds instead (transmit.stream's
+                # start_gate, after it has prepared the first samples)
+                if hold and self.schedule.wait_and_fire(
+                        None, cancel=_NotRunning(self)) is None:
+                    return
+                yield first
             while self.running:
                 try:
                     item = out.get(timeout=0.5)
@@ -522,6 +616,38 @@ class LiveSession:
                 self._pool.shutdown(wait=False, cancel_futures=True)
             if getattr(self, "_scratch_dir", None) and self._scratch_dir.exists():
                 shutil.rmtree(self._scratch_dir, ignore_errors=True)
+
+    def _scheduled_first_segment(self):
+        """Segment 0 of a scheduled Start Now (PC-IQ path), generated for the
+        planned T_play; re-planned while it comes too late. None if stopped."""
+        sched = self.schedule
+        t_w = sched.now_mono()
+        if self._pool is not None:
+            _warm_pool(self._pool, self._workers)
+        sched.warmup_s = sched.now_mono() - t_w
+        errors = 0
+        while self.running:
+            self._set_play_start(sched.plan())
+            self._air_gain = None          # level measured on the segment that plays
+            with self._lock:
+                snap = copy.deepcopy(self.state)
+            t0 = sched.now_mono()
+            try:
+                item = (self._make_air_segment(0, snap) if self._air
+                        else self._make_segment(0, snap))
+            except RuntimeError:
+                raise
+            except Exception:
+                errors += 1
+                if errors >= 3:
+                    raise
+                continue
+            sched.record_gen(sched.now_mono() - t0)
+            if sched.on_time() or sched.last_attempt:
+                if self.first_segment_latency_s is None:
+                    self.first_segment_latency_s = time.monotonic() - self._created_mono
+                return item
+        return None
 
     def stop(self) -> None:
         self.running = False

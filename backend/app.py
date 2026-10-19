@@ -23,7 +23,7 @@ from backend.ephem import ephemeris, precise, ephemeris_source, ephemeris_fit
 from backend.analysis import receiver, lnav_display
 from backend.rf import air, transmit, device
 from backend.rf.frontend import rf_frontend
-from backend.session import live, lead_calib
+from backend.session import live, lead_calib, play_schedule
 from backend.store import trajectory, scenario_lib
 from backend.obs import audit, recording, receiver_feed, ws_hub
 from backend.models import impairments, channel_models
@@ -1596,6 +1596,7 @@ def live_start(body: dict, request: Request):
     internal_band = next(iter(needed))
     slot = _acquire_tx_slot(_requested_tx_slot(body))
     lead_s = lead_key = tx_buf_s = None
+    schedule = None
     try:
         start_now = _is_start_now(body.get("start_utc"))
         start = (_utcnow() if start_now
@@ -1611,11 +1612,23 @@ def live_start(body: dict, request: Request):
             # Öncü süre: varsayılan sabit LIVE_START_LEAD_S; LIVE_START_LEAD_AUTO
             # açıksa önceki oturumların ölçümlerinden (lead_calib).
             rate_req = _auto_sample_rate(body, engine, systems)
-            lead_key = lead_calib.make_key(body.get("kind", "pluto"), rate_req,
-                                           systems, internal_band)
-            tx_buf_s = lead_calib.tx_buffer_estimate_s(rate_req)
-            lead_s = lead_calib.lead_for(lead_key, tx_buf_s)
-            start = _utcnow() + dt.timedelta(seconds=lead_s)
+            kind = body.get("kind", "pluto")
+            lead_key = lead_calib.make_key(kind, rate_req, systems, internal_band)
+            if config.LIVE_START_SCHEDULED:
+                # Schedule then play (backend/session/play_schedule.py): the
+                # session picks the real start time T_play after warming up
+                # and holds the start command until then; `start` here is only
+                # provisional (RINEX record choice, cache seed).
+                schedule = play_schedule.PlaySchedule(
+                    play_latency_s=(config.GNSS_PLAY_LATENCY_S if kind == "tezuka_gnss"
+                                    else config.LIVE_PC_PLAY_LATENCY_S),
+                    gen_est_s=lead_calib.gen_estimate_s(lead_key),
+                    utcnow=lambda: _utcnow())
+                start = _utcnow()
+            else:
+                tx_buf_s = lead_calib.tx_buffer_estimate_s(rate_req)
+                lead_s = lead_calib.lead_for(lead_key, tx_buf_s)
+                start = _utcnow() + dt.timedelta(seconds=lead_s)
         req = scenario.ScenarioRequest(
             rinex_path=rinex_path, lat=body["lat"], lon=body["lon"], alt=body["alt"],
             start=start, duration_s=int(body.get("duration_s", 300)),
@@ -1623,7 +1636,7 @@ def live_start(body: dict, request: Request):
             sample_format=body.get("sample_format", "int16"),
             nav_override=nav_override,
             engine=engine, systems=systems, bands=bands_req)
-        session = live.LiveSession(req)
+        session = live.LiveSession(req, schedule=schedule)
         _tx_slots[slot]["session"] = session
         # The SDR must run at the resolved band's REAL rate/centre, not the
         # request's nominal (often L1-oriented) sample_rate -- native L2/L5
@@ -1717,18 +1730,29 @@ def live_start(body: dict, request: Request):
                                progress_cb=cb, cancel=_tx_slots[slot]["stop"]))
                 th.start()
             else:
+                # Scheduled Start Now: the session plans T_play and generates
+                # segment 0 for it; transmit.stream holds the first push (after
+                # preparing the first samples) until T_play - play latency.
+                hold_in_session = schedule is None
                 source = (session.air_segments(air_fmt, level_dbfs=params.level_dbfs,
-                                               tx_scale=params.tx_scale)
-                          if air_fmt is not None else session.segments())
+                                               tx_scale=params.tx_scale,
+                                               hold=hold_in_session)
+                          if air_fmt is not None else session.segments(hold=hold_in_session))
                 chunk_source = _tee_spectrogram(
                     source, params.sample_rate, on_row,
                     track_prn=int(track_prn) if track_prn else None, on_cn0=on_cn0)
+                stop_ev = _tx_slots[slot]["stop"]
+                start_gate = None
+                if schedule is not None:
+                    start_gate = lambda: schedule.wait_and_fire(   # noqa: E731
+                        None, cancel=stop_ev)
                 th = threading.Thread(
                     target=run_guarded,
                     args=(transmit.stream,),
                     kwargs=dict(params=params, dry_run=body.get("dry_run", False),
-                               progress_cb=cb, cancel=_tx_slots[slot]["stop"],
-                               chunk_source=chunk_source))
+                               progress_cb=cb, cancel=stop_ev,
+                               chunk_source=chunk_source,
+                               **({"start_gate": start_gate} if start_gate else {})))
                 th.start()
 
             def emit(payload: dict) -> str:
@@ -1738,11 +1762,22 @@ def live_start(body: dict, request: Request):
 
             last_ping = time.monotonic()
             timeline_idx = 0
-            lead_reported = lead_s is None
+            lead_reported = lead_s is None and schedule is None
             while th.is_alive() or q:
                 while q:
                     yield emit({**q.pop(0), "slot": slot})
-                if not lead_reported and session.first_segment_latency_s is not None:
+                if not lead_reported and schedule is not None and schedule.played.is_set():
+                    # Scheduled Start Now: lag_s is the measured residual between
+                    # the start command (+ the configured play latency) and the
+                    # planned T_play; ~0 means the time on air is real time.
+                    lead_reported = True
+                    rep = schedule.report(session.first_segment_latency_s)
+                    if schedule.gen_s is not None and not body.get("dry_run", False):
+                        lead_calib.record_gen(lead_key, schedule.gen_s)
+                    audit.log_event("live_lead", slot=slot, **rep)
+                    yield emit({"lead_report": rep, "slot": slot})
+                if not lead_reported and schedule is None \
+                        and session.first_segment_latency_s is not None:
                     # Start Now: ilk segmentin hazır olma gecikmesi öncü süreyi
                     # aştıysa havadaki GPS zamanı gerçek zamandan geride (lag>0).
                     lead_reported = True

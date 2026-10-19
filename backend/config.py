@@ -121,7 +121,8 @@ DEVICE_URI = _str("DEVICE_URI", "ip:192.168.3.1")
 # Measured reference-oscillator error of the TX SDR in ppm (see
 # transmit.TxParams.xo_ppm); a request body's "xo_ppm" overrides it.
 DEVICE_XO_PPM = _float("DEVICE_XO_PPM", 0.0)
-# Live start_utc "now": how far ahead of the wall clock segment 0 is
+# Live start_utc "now" with LIVE_START_SCHEDULED=0 (the default schedules the
+# start instead, see below): how far ahead of the wall clock segment 0 is
 # stamped -- the delay from session start until its first sample leaves
 # the antenna (first-segment generation + host/kernel TX buffering).
 # Measured 2.5 s on a LibreSDR (AD9361, USB) at 2.6 Msps.
@@ -171,6 +172,35 @@ LIVE_START_LEAD_AUTO = _flag("LIVE_START_LEAD_AUTO", False)
 # 30 Msps, so a single worker cannot keep real time on a loaded PC.
 LIVE_GEN_WORKERS = max(1, int(_float("LIVE_GEN_WORKERS", min(6, max(2, (os.cpu_count() or 4) - 2)))))
 LIVE_START_LEAD_MARGIN_S = _float("LIVE_START_LEAD_MARGIN_S", 0.3)
+
+# Start Now "schedule then play" (backend/session/play_schedule.py). On (the
+# default), Start Now warms the worker pool first, then picks the scenario start
+# T_play = now + first-segment generation estimate * margin + guard + play
+# latency, generates the first segment for T_play (re-planning if it comes too
+# late) and holds the start command until T_play - play latency, so the first
+# sample on air carries T_play. Off = the old fixed-lead stamp above.
+LIVE_START_SCHEDULED = _flag("LIVE_START_SCHEDULED", True)
+# First plan's generation estimate when there is no history for this
+# kind/rate/systems/band (later attempts use the measured time).
+LIVE_SCHED_GEN_EST_S = _float("LIVE_SCHED_GEN_EST_S", 3.0)
+LIVE_SCHED_GEN_MARGIN = _float("LIVE_SCHED_GEN_MARGIN", 1.3)
+# Time the transmit path needs between "first segment ready" and the start
+# command (FPGA: prefill the command DMA; PC: hand the chunk to the pump).
+LIVE_SCHED_GUARD_S = _float("LIVE_SCHED_GUARD_S", 0.5)
+LIVE_SCHED_MAX_ATTEMPTS = int(_float("LIVE_SCHED_MAX_ATTEMPTS", 4))
+# Start command -> first sample at the DAC, in seconds. NOT measurable from the
+# host; calibrate on the board: Start Now with the receiver attached, wait for a
+# fix, compare the receiver's GPS time with the host's UTC + GPS_UTC_LEAP_S
+# (e.g. Septentrio PVTGeodetic TOW vs the PC clock at the SBF epoch, PC clock
+# NTP-synced). If the receiver is behind by d seconds while lead_report lag_s
+# is ~0, add d to the latency (behind = the real latency is longer).
+#   FPGA ("tezuka_gnss"): from writing the newline to the pre-connected ssh
+#   `read; devmem CTRL enable` (device.arm_enable) to the first DAC sample: ssh
+#   one-way + busybox devmem exec + sample-FIFO prefill (512 samples).
+GNSS_PLAY_LATENCY_S = _float("GNSS_PLAY_LATENCY_S", 0.03)
+#   PC-IQ path: from releasing the first chunk to transmit.stream (level
+#   measure, scale, queue, pump prefill, first libiio push) to the first DAC sample.
+LIVE_PC_PLAY_LATENCY_S = _float("LIVE_PC_PLAY_LATENCY_S", 0.08)
 DEFAULT_SAMPLE_RATE = _float("DEFAULT_SAMPLE_RATE", 2.6e6)
 DEFAULT_FORMAT = _str("DEFAULT_FORMAT", "int16")
 
