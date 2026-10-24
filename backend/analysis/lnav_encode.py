@@ -87,9 +87,14 @@ def HOW_solve_bits(tow_count: int, subframe_id: int,
 
 # --- TLM / HOW / subframe skeleton --------------------------------------
 
+# 14-bit TLM message of the frame being built: the GPS week mod 1024, which is
+# what every public capture of real satellites carries (set by frame_bits).
+_TLM_MSG = [0]
+
+
 def tlm_word(D29_prev: int, D30_prev: int) -> list[int]:
-    """Word 1: preamble + 14-bit TLM message (0) + integrity + reserved."""
-    src = PREAMBLE + bits_of(0, 14) + [0, 0]
+    """Word 1: preamble + 14-bit TLM message + integrity + reserved."""
+    src = PREAMBLE + bits_of(_TLM_MSG[0], 14) + [0, 0]
     return make_word(src, D29_prev, D30_prev)
 
 
@@ -155,10 +160,13 @@ def subframe1(eph: dict, week: int, tow_count: int) -> list[int]:
     health = int(eph.get("health", 0)) & 0x3F
     w3 = (bits_of(week & 0x3FF, 10) + [0, 1] + bits_of(0, 4)
           + bits_of(health, 6) + bits_of(iodc >> 8, 2))
-    w4 = [0] + bits_of(0, 23)
-    w5 = bits_of(0, 24)
-    w6 = bits_of(0, 24)
-    w7 = bits_of(0, 16) + bits_of(twos(eph["tgd"], 2 ** -31, 8), 8)
+    # Reserved words 4-7 as satellites broadcast them (identical on every SV in
+    # public captures; the values change with the control segment's uploads, so
+    # this is the 2026-03 pattern).
+    w4 = bits_of(0x345273, 24)
+    w5 = bits_of(0x1A3A17, 24)
+    w6 = bits_of(0x45FA4B, 24)
+    w7 = bits_of(0x8D36, 16) + bits_of(twos(eph["tgd"], 2 ** -31, 8), 8)
     w8 = bits_of(iodc & 0xFF, 8) + bits_of(round(eph["toc"] / 16) & 0xFFFF, 16)
     w9 = (bits_of(twos(eph["af2"], 2 ** -55, 8), 8)
           + bits_of(twos(eph["af1"], 2 ** -43, 16), 16))
@@ -189,7 +197,8 @@ def subframe2(eph: dict, tow_count: int) -> list[int]:
     w7 = e_lo
     w8 = bits_of(cus, 16) + a_hi
     w9 = a_lo
-    w10 = bits_of(toe, 16) + [0] + bits_of(0, 5) + [0, 0]
+    # AODO 31 = "not used", what almost every satellite broadcasts.
+    w10 = bits_of(toe, 16) + [0] + bits_of(31, 5) + [0, 0]
     return subframe([w3, w4, w5, w6, w7, w8, w9, w10], tow_count, 2)
 
 
@@ -402,6 +411,7 @@ def frame_bits(eph: dict, header, week: int, tow_count: int,
     """1500 bits: SF1, SF2, SF3, SF4[page], SF5[page]. Each subframe's
     TOW-count increments by one. ``sf4_page`` overrides the SF4 page only."""
     ebp = eph_by_prn or {}
+    _TLM_MSG[0] = week & 0x3FF
     if sf4_page is None:
         sf4_page = sf45_page
     return (subframe1(eph, week, tow_count)
