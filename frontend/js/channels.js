@@ -102,6 +102,12 @@ window.addChannel = function () {
           <select id="${id}-lo-mode"><option value="auto">Auto</option><option value="custom">Custom</option></select>
         </label>
         <label>TX gain dB <input id="${id}-gain" type="number" value="-50"></label>
+        <details class="osc-adv">
+          <summary>SDR oscillator (optional)</summary>
+          <label>Measured error ppm <input id="${id}-osc-ppm" type="number" step="any" placeholder="none"><span class="info" title="The board reference oscillator's true error (+ = runs fast), e.g. from a GPSDO measurement. Blank sends nothing and keeps the configured default. The integer-Hz part goes to the driver's xo correction; the rest is removed from the LO.">i</span></label>
+          <label>Drift ppb/s <input id="${id}-osc-drift" type="number" step="any" placeholder="0"><span class="info" title="FPGA synth only: oscillator drift pre-compensated by the on-board command generator (carrier and chip rate), ppb per second.">i</span></label>
+          <label>Drift accel ppb/s&sup2; <input id="${id}-osc-accel" type="number" step="any" placeholder="0"><span class="info" title="FPGA synth only: rate of change of the drift, ppb per second squared.">i</span></label>
+        </details>
         <label><input type="checkbox" id="${id}-tx-dryrun"> Dry run (no RF)</label>
         <label>Auto-stop after (s) <input type="number" id="${id}-max-duration" placeholder="none" min="1"><span class="info" title="Fail-safe: leave blank to run until stopped manually. The isolated-setup confirmation is done by typing TRANSMIT at Start.">i</span></label>
         <label><input type="checkbox" id="${id}-record"> Record this session</label>
@@ -1071,6 +1077,17 @@ function wireChannelActions(id) {
     return out;
   }
 
+  // Optional SDR oscillator figures; a blank field adds nothing to the body.
+  function _oscBody() {
+    const out = {};
+    [['osc-ppm', 'osc_error_ppm'], ['osc-drift', 'osc_drift_ppb_per_s'],
+     ['osc-accel', 'osc_drift_accel_ppb_per_s2']].forEach(([el, key]) => {
+      const v = document.getElementById(`${id}-${el}`).value;
+      if (v !== '') out[key] = Number(v);
+    });
+    return out;
+  }
+
   function _refreshRfComputed(d) {
     if (d && d.tx_lo_hz !== undefined) {
       document.getElementById(`${id}-rf-computed-lo`).value = d.tx_lo_hz;
@@ -1146,6 +1163,7 @@ function wireChannelActions(id) {
     const _eng = _engineBody();
     Object.assign(body, _eng || {});
     Object.assign(body, _rfFrontendBody() || {});
+    Object.assign(body, _oscBody());
     const _osn = _osnmaBody();
     if (_osn) body.osnma = _osn;
     fetch('/api/generate', {
@@ -1344,6 +1362,7 @@ function wireChannelActions(id) {
     const _eng = _engineBody();
     Object.assign(body, _eng || {});
     Object.assign(body, _rfFrontendBody() || {});
+    Object.assign(body, _oscBody());
     const _osn = _osnmaBody();
     if (_osn) body.osnma = _osn;
     const prnInput = document.getElementById(`${id}-lnav-prn`);

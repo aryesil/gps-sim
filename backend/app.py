@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import logging
 import math
+import os
 import pathlib
 import queue
 import shutil
@@ -28,6 +29,7 @@ from backend.session import live, lead_calib, play_schedule, clock_sync
 from backend.store import trajectory, scenario_lib
 from backend.obs import audit, recording, receiver_feed, ws_hub
 from backend.models import impairments, channel_models
+from backend.rf import xo as xo_mod
 from backend.gpstime import GPSTime
 from backend.synth import signal_engine, signals
 
@@ -258,6 +260,41 @@ def _auto_sample_rate(body: dict, engine: str, systems: list[str]) -> float:
     return fs_policy.default_fs(l1) if l1 else float(config.DEFAULT_SAMPLE_RATE)
 
 
+def _np_arr(x):
+    import numpy as _np
+    return _np.asarray(x)
+
+
+# What the FPGA command generator can synthesise (backend/fpga/cmdgen.py _check_supported
+# and the code ROMs in the bitstream): C/A on GPS, QZSS and SBAS, B1I, E1 -- all on the L1 output.
+_FPGA_SYSTEMS = ("G", "J", "S", "E", "C")
+
+
+def _live_fading(body: dict):
+    """Per-SV fading for a live run: the FPGA path (absolute block time keeps it continuous across
+    command segments) only. A keyed run without a key gets one fixed here, because every
+    segment is planned on its own and would otherwise draw a fresh random key."""
+    f = body.get("fading")
+    if not f or body.get("kind") != "tezuka_gnss":
+        return None
+    f = dict(f)
+    if f.get("model") == "keyed" and not f.get("key"):
+        f["key"] = os.urandom(32).hex()
+    return f
+
+
+def _check_fpga_selection(systems: list[str], internal_band: str) -> None:
+    """Reject, before a TX slot is taken, a selection the FPGA engine cannot synthesise
+    (it would otherwise fail on the first plan, after the radio is already armed)."""
+    bad = sorted(set(systems) - set(_FPGA_SYSTEMS))
+    if bad or internal_band != "L1":
+        what = (f"systems {bad}" if bad else f"band {internal_band}")
+        raise HTTPException(422,
+            f"FPGA synth (tezuka_gnss) cannot generate {what}: it supports GPS, QZSS, SBAS, "
+            "Galileo and BeiDou on L1 only. Use a host-IQ SDR kind (tezuka / pluto) for "
+            "GLONASS, NavIC, L2 or L5.")
+
+
 @app.get("/api/native/band_centre")
 def native_band_centre(systems: str = "G", bands: str = ""):
     """Centre frequency (Hz) of every distinct native RF band the given
@@ -428,16 +465,34 @@ def _signal_bandwidth_hz(internal_band: str, systems: list[str]) -> int:
     return int(max(widths) + span)
 
 
+def _osc_residual(body: dict) -> float:
+    """Fractional carrier error the driver's integer-Hz xo_correction cannot absorb for the
+    measured ``osc_error_ppm`` (0.0 when not given). The live path moves the TX LO by
+    ``-residual * lo_hz`` (AD9361 LO steps are about 2 Hz, finer than the 25 ppb xo step)."""
+    if body.get("osc_error_ppm") is None:
+        return 0.0
+    return xo_mod.split_osc_error(float(body["osc_error_ppm"]))[1]
+
+
 def _tx_level_kwargs(body: dict) -> dict:
     """Device-side TX knobs shared by /api/transmit and /api/live/start:
     DAC leveling target (null = legacy raw pass-through), analog TX filter
     bandwidth and the SDR reference-oscillator correction."""
     kw = {"xo_ppm": float(body.get("xo_ppm", config.DEVICE_XO_PPM))}
+    if body.get("osc_error_ppm") is not None:
+        # measured true oscillator error: the driver takes its integer-Hz grid
+        # point, the live path pre-compensates the residual (see _osc_residual)
+        kw["xo_ppm"] = xo_mod.split_osc_error(float(body["osc_error_ppm"]))[0]
     if "level_dbfs" in body:
         lv = body["level_dbfs"]
         kw["level_dbfs"] = None if lv is None else float(lv)
     if body.get("tx_rf_bandwidth_hz") is not None:
         kw["tx_rf_bandwidth_hz"] = float(body["tx_rf_bandwidth_hz"])
+    # oscillator drift pre-compensation (FPGA command generator), ppb/s and ppb/s^2
+    if body.get("osc_drift_ppb_per_s") is not None:
+        kw["osc_drift_per_s"] = float(body["osc_drift_ppb_per_s"]) * 1e-9
+    if body.get("osc_drift_accel_ppb_per_s2") is not None:
+        kw["osc_drift_accel_per_s2"] = float(body["osc_drift_accel_ppb_per_s2"]) * 1e-9
     return kw
 
 
@@ -1708,6 +1763,8 @@ def live_start(body: dict, request: Request):
         raise HTTPException(422,
             f"systems={systems!r}: no signals on bands={user_bands_desc!r}")
     internal_band = next(iter(needed))
+    if body.get("kind") == "tezuka_gnss":
+        _check_fpga_selection(systems, internal_band)
     osnma_req = _osnma_body(body)
     slot = _acquire_tx_slot(_requested_tx_slot(body))
     lead_s = lead_key = tx_buf_s = None
@@ -1760,7 +1817,7 @@ def live_start(body: dict, request: Request):
             sample_format=body.get("sample_format", "int16"),
             nav_override=nav_override,
             engine=engine, systems=systems, bands=bands_req,
-            osnma=osnma_req)
+            osnma=osnma_req, fading=_live_fading(body))
         session = live.LiveSession(req, schedule=schedule)
         _tx_slots[slot]["session"] = session
         # The SDR must run at the resolved band's REAL rate/centre, not the
@@ -1775,6 +1832,7 @@ def live_start(body: dict, request: Request):
         sig_bw_hz = _signal_bandwidth_hz(internal_band, systems)
         lo_hz, bb_offset_hz, rf_report = _resolve_rf_plan(
             body, band_centre_hz, band_fs, sig_bw_hz)
+        lo_hz = float(round(lo_hz * (1.0 - _osc_residual(body))))
         params = transmit.TxParams(
             iq_path="(live)", sample_rate=band_fs, sample_format=req.sample_format,
             lo_hz=lo_hz, baseband_offset_hz=bb_offset_hz,
@@ -1847,6 +1905,12 @@ def live_start(body: dict, request: Request):
                 # FPGA engine: the board synthesises, the host sends command
                 # words (backend.fpga.tx); no IQ taps, no host-side chunks.
                 from backend.fpga import tx as gnss_tx
+                # the board synthesises, so the dashboard's spectrogram comes from the
+                # engine model's expansion of one block per segment; the C/N0 trend is that
+                # block's acquisition metric for track_prn
+                session.on_spectrum = lambda f, d: on_row(_np_arr(f), _np_arr(d))
+                if track_prn:
+                    session.track_prn, session.on_cn0 = int(track_prn), on_cn0
                 th = threading.Thread(
                     target=run_guarded,
                     args=(gnss_tx.stream,),
@@ -2049,13 +2113,23 @@ def live_time_shift(body: dict, request: Request):
 
 
 @app.post("/api/live/stop")
-def live_stop(body: dict, request: Request):
+def live_stop(request: Request, body: dict | None = None):
     auth.require_viewer_or_operator(request)  # a stop is safety-positive: any role may issue it
-    slot = body["slot"]
+    slot = (body or {}).get("slot")
+    if slot is None:
+        # The Stop button sends {} when the page does not know its slot: stop the one that is running.
+        occupied = [s for s, occ in _tx_slots.items() if occ is not None]
+        if len(occupied) == 1:
+            slot = occupied[0]
+        elif len(occupied) == 0:
+            return {"stopped": True}
+        else:
+            raise HTTPException(400, "both TX1 and TX2 occupied: specify {\"slot\": \"TX1\"|\"TX2\"}")
     occ = _tx_slots.get(slot)
     if occ:
-        occ["stop"].set()
-        if occ["session"]:
+        if occ.get("stop") is not None:
+            occ["stop"].set()
+        if occ.get("session"):
             occ["session"].stop()
         audit.log_event("manual_stop", slot=slot)
     return {"stopped": True}

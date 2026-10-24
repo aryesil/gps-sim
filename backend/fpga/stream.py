@@ -20,7 +20,7 @@ import numpy as np
 
 from backend.fpga import cmdfmt, select
 from backend.fpga import widths as W
-from backend.fpga.cmdgen import generate_blocks
+from backend.fpga.cmdgen import CommonRamp, generate_blocks
 
 MIN_FS = 2.05e6             # a block spans at most 32 code periods (sign_bits)
 F_ENG = select.F_ENG
@@ -111,7 +111,8 @@ class CommandStream:
                  level_dbfs: float | None = -15.0, cfg: bool = True,
                  trim: bool = True, group_blocks: int = GROUP_BLOCKS,
                  shift: int = 0, min_per_system: int = 3,
-                 cfg_nch: int | str | None = None, sample_offset: int = 0):
+                 cfg_nch: int | str | None = None, sample_offset: int = 0,
+                 common_ramp: CommonRamp | None = None):
         if group_blocks < 1:
             raise ValueError("group_blocks must be >= 1")
         fs = float(band.fs)
@@ -137,7 +138,8 @@ class CommandStream:
                                 f"[{self.nch}, {self.channel_plan.nch_max}]")
         self._gen = generate_blocks(band, first_block=first_block,
                                     n_blocks=n_blocks, out_lsb=self.out_lsb,
-                                    sample_offset=sample_offset, limit_fs=fs, min_per_system=min_per_system)
+                                    sample_offset=sample_offset, limit_fs=fs, min_per_system=min_per_system,
+                                    common_ramp=common_ramp)
         self.total_blocks = min((int(band.total_samples) - int(sample_offset))
                                 // int(band.block_samples),
                                 n_blocks if n_blocks is not None else 1 << 62)

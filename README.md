@@ -7,7 +7,7 @@ Pick a place and time on a map, generate baseband IQ recordings across multiple 
 **High-Performance Native C++ Engine:**  
 Powered by a built-in C++20 engine that renders **GPS (L1 C/A, L2C, L5), GLONASS (G1, G2), Galileo (E1, E5a), BeiDou (B1I, B2a), QZSS (L1 C/A, L5), SBAS (L1), and NavIC (L5)** from a correlated multi-constellation geometry (synchronized receive epoch so cross-system acquisition lines up). Supports completely arbitrary constellation selection (Galileo-only, BeiDou-only, GPS-free multi-GNSS), per-satellite land-mobile-satellite channel fading (seeded or cryptographically unpredictable ChaCha20), and multi-band RF routing (1575.42 MHz L1 group, 1602 MHz GLONASS FDMA, 1227.60 MHz L2, 1176.45 MHz L5).
 
-Two ways to produce the transmitted IQ: the **host (PC) path** renders it in software and streams it over libiio, and the **FPGA path** (`kind: tezuka_gnss`) only sends compact command words to a Tezuka LibreSDR whose programmable logic generates GPS L1 C/A, Galileo E1, BeiDou B1I and SBAS L1 samples itself, at up to 61.44 Msps. See [Transmit paths](#transmit-paths).
+Two ways to produce the transmitted IQ: the **host (PC) path** renders it in software and streams it over libiio, and the **FPGA path** (`kind: tezuka_gnss`) only sends compact command words to a Tezuka LibreSDR whose programmable logic generates GPS L1 C/A, Galileo E1, BeiDou B1I, QZSS L1 C/A and SBAS L1 samples itself, at up to 61.44 Msps. See [Transmit paths](#transmit-paths).
 
 Signal generation runs from broadcast ephemeris by default; in **precise mode** an IGS SP3 orbit/clock product drives satellite propagation directly at runtime across all constellations (GPS, GLONASS, Galileo, BeiDou, QZSS from an MGEX SP3 product), or fits into broadcast records with sub-metre residual error.
 
@@ -209,8 +209,12 @@ Both paths are started with `POST /api/live/start` (the UI's **Start Now**). The
 | | `kind: "tezuka_gnss"` (FPGA engine) | `kind: "tezuka"` (host IQ over libiio) |
 |---|---|---|
 | Who generates the samples | The Zynq PL on the LibreSDR (`gs_wrap`); the host sends command words through the DMA | The PC (native C++ engine); IQ is sent over the network as cs16 / cs8 / cs4 |
-| Signals | GPS L1 C/A, Galileo E1 (B and C), BeiDou B1I, SBAS L1 (PRN 120..150, through the C/A ROM) | Everything the software engine supports (`backend/synth/bands.py`, `signals.py`): GPS L1/L2C/L5, GLONASS G1/G2, Galileo E1/E5a, BeiDou B1I/B2a, QZSS L1/L5, SBAS L1, NavIC L5 |
+| Signals | GPS L1 C/A, Galileo E1 (B and C), BeiDou B1I, QZSS L1 C/A (PRN 193..202) and SBAS L1 (PRN 120..137, 142..144), both through the C/A ROM | Everything the software engine supports (`backend/synth/bands.py`, `signals.py`): GPS L1/L2C/L5, GLONASS G1/G2, Galileo E1/E5a, BeiDou B1I/B2a, QZSS L1/L5, SBAS L1, NavIC L5 |
 | Sample rates | Tested at 20, 30, 30.72, 40, 50 and 61.44 Msps (the UI lists up to 61.44) | Limited by the libiio link, see [Accuracy and limitations](#accuracy-and-limitations) |
+| Unsupported selections | GLONASS, NavIC, L2 and L5 are rejected with HTTP 422 before a TX slot is taken (`_check_fpga_selection` in `backend/app.py`) | Supported |
+| Per-SV fading | Supported on `/api/live/start` and in the command generator: the engine's complex channel gain is sampled on block edges (`backend/fpga/cmdgen.py` `_Fade`); amplitude goes into the per-block `coef`, phase into the carrier word, phase-continuous. Block = 65536 samples (3.3 ms at 20 Msps, 1.07 ms at 61.44 Msps), so fades faster than about one per two blocks are undersampled; a keyed run without a key gets a fixed key at start | Supported on `/api/generate`; the live host-IQ path does not pass `fading` |
+| RF-frontend LO offset | Supported: the offset is added to every channel's carrier in `backend/fpga/cmdgen.py` (`CommonRamp.offset_hz`), phase-continuous | Supported (host NCO mixer) |
+| Dashboard spectrogram / C/N0 trend | From the bit-exact engine model, one block per segment (`live._block_spectrum`); the C/N0 trend is the GPS PRN acquisition metric of that block | From the IQ chunks |
 | Fading (`fading` field) | Not supported: `backend/fpga/cmdgen.py` raises `NotImplementedError` | Supported |
 | Needs on the board | A Tezuka image with the GNSS bitstream (`libre_gnss`, see the [Tezuka fork](https://github.com/aryesil/ZYNQsdr)) and ssh access as `root` for the `devmem` register path | Any supported image; cs8 / cs4 need the matching FPGA image |
 

@@ -303,14 +303,23 @@ def default_device(uri: str) -> dev.GnssDevice:
     return dev.RemoteDevmem(runner, config.GNSS_BASE_ADDR)
 
 
+def _ramp_of(params):
+    from backend.fpga.cmdgen import CommonRamp
+    r = CommonRamp(float(getattr(params, "osc_drift_per_s", 0.0)),
+                   float(getattr(params, "osc_drift_accel_per_s2", 0.0)),
+                   float(getattr(params, "baseband_offset_hz", 0.0) or 0.0))
+    return r if r.active else None
+
+
 def _live_buffers(params, session, cancel, *, segment_blocks: int, shift: int = 0):
     """Command buffers for a live session: one engine plan per segment, block
     indices continuing across segments (CFG only in the first)."""
     if hasattr(session, "gnss_buffers"):
         # worker processes plan and pack the segments (GIL-free for the TX threads)
         n_logged = False
+        extra = {"ramp": _ramp_of(params)} if _ramp_of(params) is not None else {}
         for buf in session.gnss_buffers(params.sample_rate, segment_blocks,
-                                        level_dbfs=params.level_dbfs, shift=shift):
+                                        level_dbfs=params.level_dbfs, shift=shift, **extra):
             if cancel.is_set():
                 return
             if not n_logged and getattr(session, "gnss_info", None):
@@ -325,7 +334,7 @@ def _live_buffers(params, session, cancel, *, segment_blocks: int, shift: int = 
             return
         cs = CommandStream(band, first_block=first_block,
                            level_dbfs=params.level_dbfs, cfg=(first_block == 0),
-                           cfg_nch="max", shift=shift)
+                           cfg_nch="max", shift=shift, common_ramp=_ramp_of(params))
         if first_block == 0:
             _log.info("GNSS plan: %d channels (limit %d at %.3f Msps), dropped %d",
                       cs.nch, cs.channel_plan.nch_max, cs.fs / 1e6, len(cs.dropped))

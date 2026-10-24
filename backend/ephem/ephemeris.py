@@ -184,6 +184,16 @@ def align_epochs(eph_by_prn: dict[int, dict], week: int, sow: float,
         # since, so the gap is constant): snap on that scale, then store the
         # result back on the GPS scale (+ 14 s) like every other system.
         k_sow_bds = ((float(sow) - 14.0) // g) * g + 14.0
+    # A relabelled GPS record follows the real LNAV pattern: a data set is sent
+    # from toe - 2 h until toe, with toe on an even hour (IS-GPS-200 20.3.4.4-5),
+    # so t - toe is in [-2 h, 0], and every set has its own IODE/IODC (IODE =
+    # IODC mod 256, one per toe). Galileo and BeiDou are the opposite (t >= toe)
+    # and keep the grid-floor epoch below. In the last two hours of the week the
+    # next even hour would be in the next week, so the grid-floor epoch is used.
+    toe_ahead = None
+    cand = math.ceil(float(sow) / 7200.0) * 7200.0     # on an even hour: toe = sow, no shift
+    if cand < _WEEK_SECONDS:
+        toe_ahead = cand
     out = {}
     for prn, e in eph_by_prn.items():
         e2 = dict(e)
@@ -207,6 +217,13 @@ def align_epochs(eph_by_prn: dict[int, dict], week: int, sow: float,
               and abs((float(e2["gps_week"]) - week) * _WEEK_SECONDS
                       + float(e2["toe"]) - float(sow)) <= keep_real_within_s):
             e2["gps_week"] = int(e2["gps_week"])
+        elif toe_ahead is not None and e2.get("system", "G") == "G":
+            e2["toc"] = e2["toe"] = toe_ahead
+            e2["gps_week"] = week
+            iod = int(toe_ahead // 7200) & 0xFF
+            e2["iode"] = iod
+            if "iodc" in e2:
+                e2["iodc"] = iod
         else:
             k = k_sow_bds if e2.get("system") == "C" else k_sow
             e2["toc"] = k

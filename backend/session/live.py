@@ -155,10 +155,14 @@ def _gnss_lead_samples(first_block: int, fs: float) -> int:
     return (int(first_block) * 65536) % int(round(fs))
 
 
-def _gnss_segment(seg_req, first_block, fs, level_dbfs, shift):
+def _gnss_segment(seg_req, first_block, fs, level_dbfs, shift, ramp=None, want_spectrum=False,
+                  track_prn=None):
     """One FPGA command segment (module-level so a worker process can run it):
     plan the band, then pack its command buffers. Returns
-    ``(buffers, info)``; buffers are picklable ``DmaBuffer`` objects."""
+    ``(buffers, info)``; buffers are picklable ``DmaBuffer`` objects.
+    ``want_spectrum``: ``info["spectrum"]`` is the (freqs, power_db) of the first block as
+    the engine model expands it -- what the host-IQ path shows in the dashboard.
+    ``track_prn``: also ``info["cn0_db"]``, the acquisition metric of that GPS PRN in the block."""
     from backend.fpga.stream import CommandStream
     from backend.synth import engine
     bands = engine.plan(seg_req).bands
@@ -172,9 +176,45 @@ def _gnss_segment(seg_req, first_block, fs, level_dbfs, shift):
         raise RuntimeError(f"planned band rate {band.fs} differs from the TX rate {fs}")
     cs = CommandStream(band, first_block=first_block, level_dbfs=level_dbfs,
                        cfg=(first_block == 0), cfg_nch="max", shift=shift,
-                       sample_offset=_gnss_lead_samples(first_block, fs))
+                       sample_offset=_gnss_lead_samples(first_block, fs), common_ramp=ramp)
     info = {"nch": cs.nch, "nch_max": cs.channel_plan.nch_max, "dropped": len(cs.dropped)}
+    if want_spectrum:
+        spec = _block_spectrum(band, first_block, fs, cs.out_lsb,
+                               _gnss_lead_samples(first_block, fs), ramp, track_prn)
+        if spec is not None:
+            info["spectrum"] = spec[:2]
+            if spec[2] is not None:
+                info["cn0_db"] = spec[2]
     return list(cs), info
+
+
+def _block_spectrum(band, first_block, fs, out_lsb, sample_offset, ramp, track_prn=None):
+    """``(freqs, power_db, cn0_db)`` of the first block of a plan, expanded with the bit-exact
+    engine model from the same command records the board will get: a 256-bin spectrum snapshot
+    and, with ``track_prn``, that PRN's acquisition metric (None if it fails). None if the plan
+    has no block."""
+    import numpy as np
+    from backend import inspector
+    from backend.fpga.cmdgen import generate_blocks
+    from backend.fpga.model import EngineModel
+    for idx, recs in generate_blocks(band, first_block=first_block, n_blocks=1, out_lsb=out_lsb,
+                                     sample_offset=sample_offset, limit_fs=fs,
+                                     common_ramp=ramp):
+        model = EngineModel(fs)
+        model.start(idx)
+        iq = model.feed_block(idx, recs)
+        cplx = iq[:, 0].astype(np.float32) + 1j * iq[:, 1].astype(np.float32)
+        freqs, db = inspector.spectrum(cplx, fs, nfft=256)
+        cn0 = None
+        if track_prn is not None:
+            off = float(ramp.offset_hz) if ramp is not None else 0.0
+            try:        # an LO offset moves the whole signal in baseband
+                cn0 = inspector.acquire(cplx, fs, int(track_prn),
+                                        doppler_range=(-6000 + off, 6000 + off))["metric_db"]
+            except Exception:
+                cn0 = None
+        return freqs.tolist(), db.tolist(), cn0
+    return None
 
 
 class _NotRunning:
@@ -198,6 +238,11 @@ class LiveSession:
                  schedule=None):
         self.base_req = base_req
         self.segment_duration_s = segment_duration_s
+        # FPGA path: called with (freqs_hz, power_db) lists once per generated segment, from the
+        # TX feeding thread; set by the API layer to feed the dashboard's spectrogram.
+        self.on_spectrum = None
+        self.on_cn0 = None          # (metric_db) per segment, with track_prn set
+        self.track_prn: int | None = None
         # Start Now "schedule then play" (play_schedule.PlaySchedule): when set,
         # base_req.start is only provisional; the segment producers replace it
         # with the planned T_play once the slow start-up work is done, and the
@@ -374,7 +419,7 @@ class LiveSession:
             self.running = False
 
     def gnss_buffers(self, fs: float, segment_blocks: int, *, level_dbfs,
-                     shift: int = 0, workers: int | None = None):
+                     shift: int = 0, workers: int | None = None, ramp=None):
         """Generator of FPGA command ``DmaBuffer`` s for the live session,
         produced by worker PROCESSES (plan + command packing is pure Python
         and, in this process, starved the TX threads of the GIL: at 20 Msps with
@@ -400,8 +445,11 @@ class LiveSession:
             with self._lock:
                 snap = copy.deepcopy(self.state)
             req = self._gnss_request(first_block, n, fs, snap)
+            want_spec = self.on_spectrum is not None
+            extra = ((ramp, want_spec, self.track_prn) if want_spec and self.track_prn
+                     else (ramp, want_spec) if (ramp is not None or want_spec) else ())
             inflight.append(pool.submit(_gnss_segment, req, first_block, fs,
-                                        level_dbfs, shift))
+                                        level_dbfs, shift, *extra))
             first_block += n
 
         try:
@@ -440,6 +488,12 @@ class LiveSession:
                 if self.first_segment_latency_s is None:
                     self.first_segment_latency_s = time.monotonic() - self._created_mono
                     self.gnss_info = info
+                spec = info.pop("spectrum", None)
+                cn0 = info.pop("cn0_db", None)
+                if spec is not None and self.on_spectrum is not None:
+                    self.on_spectrum(*spec)
+                if cn0 is not None and self.on_cn0 is not None:
+                    self.on_cn0(cn0)
                 yield from bufs
         finally:
             self.running = False

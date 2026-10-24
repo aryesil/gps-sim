@@ -85,6 +85,11 @@ class TxParams:
     # xo_correction, which re-derives both the LO and the sample clock.
     # Pluto only; measure it once (e.g. receiver-reported clock drift).
     xo_ppm: float = 0.0
+    # Time-varying part of the oscillator error pre-compensated by the FPGA command
+    # generator (tezuka_gnss only): eps(t) = rate * t + 0.5 * accel * t**2, fractional,
+    # + = oscillator runs fast, t = seconds since TX block 0. See fpga.cmdgen.CommonRamp.
+    osc_drift_per_s: float = 0.0
+    osc_drift_accel_per_s2: float = 0.0
 
 
 class _DrySink:

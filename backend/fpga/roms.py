@@ -8,8 +8,8 @@ IS-GPS-200 notation: the ICD tabulates C/A chips as register bits, where
 logic 1 corresponds to chip -1 in the native generator. So GPS PRN 1 starts
 1100100000 in ICD bits, which is ROM bits 0011011111.
 
-PRN ranges: GPS C/A 1..32, SBAS L1 (same C/A code family, PRN 120..150) at
-ROM index 33..63 of the C/A kind (see ``ca_index``), Galileo E1B and E1C 1..50 (the native generator
+PRN ranges: GPS C/A 1..32; SBAS L1 (PRN 120..137, 142..144) and QZSS L1 C/A (PRN 193..202),
+the same C/A code family, at ROM index 33..63 of the C/A kind (see ``ca_index``), Galileo E1B and E1C 1..50 (the native generator
 accepts up to 50; the engine plan does use PRNs above 36), BeiDou B1I 1..63.
 """
 from __future__ import annotations
@@ -39,19 +39,27 @@ FULL = 4096
 AMPLITUDE = 32767
 
 
-SBAS_PRN_FIRST = 120           # SBAS L1 PRN 120..150 -> C/A ROM index 33..63
-SBAS_IDX_FIRST = 33
-SBAS_PRN_LAST = SBAS_PRN_FIRST + 63 - SBAS_IDX_FIRST
+# The 6-bit PRN field of a command record addresses 63 C/A codes. GPS PRN 1..32 sit at their own
+# index; the 31 slots 33..63 hold the other members of the family, listed here in index order as
+# (engine system code, PRN): SBAS L1 (sys 2) 120..137 and 142..144 (every SBAS PRN in the
+# broadcast ephemeris files of 2026), then QZSS L1 C/A (sys 1) 193..202.
+SBAS_PRNS = tuple(range(120, 138)) + (142, 143, 144)
+QZSS_PRNS = tuple(range(193, 203))
+CA_IDX_FIRST = 33
+CA_FAMILY = tuple([(2, p) for p in SBAS_PRNS] + [(1, p) for p in QZSS_PRNS])
+assert CA_IDX_FIRST + len(CA_FAMILY) - 1 == 63
+_CA_INDEX = {sp: CA_IDX_FIRST + i for i, sp in enumerate(CA_FAMILY)}
 
 
 def ca_index(sys_code: int, prn: int) -> int:
     """C/A ROM index (the PRN field of a command record) of an engine SV:
-    GPS (sys 0) PRN 1..32 as is, SBAS (sys 2) PRN 120..150 mapped to 33..63."""
+    GPS (sys 0) PRN 1..32 as is, SBAS (sys 2) and QZSS (sys 1) through ``CA_FAMILY``."""
     if sys_code == 0 and 1 <= prn <= 32:
         return prn
-    if sys_code == 2 and SBAS_PRN_FIRST <= prn <= SBAS_PRN_LAST:
-        return prn - SBAS_PRN_FIRST + SBAS_IDX_FIRST
-    raise ValueError(f"no C/A ROM code for sys {sys_code} prn {prn}")
+    idx = _CA_INDEX.get((sys_code, prn))
+    if idx is None:
+        raise ValueError(f"no C/A ROM code for sys {sys_code} prn {prn}")
+    return idx
 
 
 def code_len(kind: int) -> int:
@@ -67,8 +75,8 @@ def code_chips(kind: int, prn: int) -> np.ndarray:
     sysc, n, pmax = _KINDS[kind]
     if not 1 <= prn <= pmax:
         raise ValueError(f"PRN {prn} out of range 1..{pmax} for kind {kind}")
-    if kind == KIND_CA and prn >= SBAS_IDX_FIRST:
-        sysc, prn = 2, prn - SBAS_IDX_FIRST + SBAS_PRN_FIRST       # SBAS L1
+    if kind == KIND_CA and prn >= CA_IDX_FIRST:
+        sysc, prn = CA_FAMILY[prn - CA_IDX_FIRST]                   # SBAS L1 / QZSS L1 C/A
     prim, _ = _lib.code(sysc, prn, n, 0)
     return prim
 

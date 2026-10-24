@@ -82,14 +82,14 @@ def make_band(fs: float, nsv: int, total_blocks: int, prns=None) -> BandPlan:
         prn = int(prns[i]) if prns else i + 1
         f = (1500.0 * (i + 1)) * (1 if i % 2 == 0 else -1)
         s = _lib.SvSpec()
-        sbas = prn >= roms.SBAS_PRN_FIRST               # SBAS L1: sys 2, C/A ROM index 33..63
-        rom_prn = prn - roms.SBAS_PRN_FIRST + roms.SBAS_IDX_FIRST if sbas else prn
+        sysc = 0 if prn <= 32 else 1 if prn >= 193 else 2   # GPS / QZSS / SBAS L1 C/A family
+        rom_prn = roms.ca_index(sysc, prn)
         code = np.ascontiguousarray(roms.code_chips(cmdfmt.KIND_CA, rom_prn), dtype=np.int8)
         keep.append(code)
         s.code = ctypes.cast(code.ctypes.data, ctypes.POINTER(ctypes.c_int8))
         s.code_len = 1023
         s.chip_rate_hz = 1.023e6
-        s.sys = 2 if sbas else 0
+        s.sys = sysc
         s.prn = prn
         s.carrier_freq_hz = f
         s.carrier_phase0_rad = 0.37 * i

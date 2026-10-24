@@ -22,6 +22,13 @@ Per-channel block parameters
     gains     ``coef = round(gain * scale * 2^COEF_FRAC_BITS)`` with
               ``scale = 0.25 * out_lsb / sqrt(len(band.svs))`` (engine.cpp);
               CBOC channels also ``g*(A+B)`` and ``g*(A-B)``.
+    fading    channels with ``sv.fading.model != 0``: the engine's complex channel gain h(t)
+              (``fading_gain_series``, absolute time ``block * block_samples / fs``) is
+              sampled on the block edges.  The amplitude is the mean |h| of the two edges
+              (a per-block constant ``coef``); the phase starts at arg h(t0) and the carrier
+              word is moved by the unwrapped phase step to arg h(t1) over the block, so the
+              phase is continuous.  The board cannot follow fading faster than about one
+              fade per two blocks (a block is 65536 samples).
 
 Sign-bit convention (documented once, used by ``sign_bits_for_block``)
     u0 = (code phase of the block's first sample) + tx_chips_offset, in chips.
@@ -33,6 +40,8 @@ Sign-bit convention (documented once, used by ``sign_bits_for_block``)
 """
 from __future__ import annotations
 
+import cmath
+import ctypes
 import dataclasses
 import math
 from typing import Callable, Iterator
@@ -45,11 +54,42 @@ from backend.fpga.select import ChannelPlan, plan_channels  # noqa: F401
 
 CBOC_A = 0.95346258924559231     # kCbocA, mixer.cpp
 CBOC_B = 0.30151134457776363     # kCbocB, mixer.cpp
-_SYS_GPS, _SYS_SBAS, _SYS_BEIDOU, _SYS_GALILEO = 0, 2, 3, 5   # engine._SYS_INT
+_SYS_GPS, _SYS_QZSS, _SYS_SBAS, _SYS_BEIDOU, _SYS_GALILEO = 0, 1, 2, 3, 5   # engine._SYS_INT
 _TWO_PI = 2.0 * math.pi
 _U32 = 0xFFFFFFFF
 _FRAC = 1 << W.CODE_FRAC_BITS
 _NAV_DEFAULT_HZ = 50.0           # constants.hpp kNavBitHz
+
+
+@dataclasses.dataclass(frozen=True)
+class CommonRamp:
+    """Time-varying common oscillator error pre-compensation.
+
+    The board oscillator error is ``eps(t) = rate_per_s * t + 0.5 * accel_per_s2 * t**2``
+    (fractional, + = runs fast) with ``t`` the time since plan block 0 of the session. A fast
+    oscillator moves every carrier up by ``eps * f_rf`` and every chip rate up by ``eps *
+    chip_rate``; the generator moves them the other way, with phases integrated exactly so
+    nothing steps between blocks.
+
+    ``offset_hz`` is the RF-frontend LO offset: every carrier is moved up by that many Hz
+    (the LO sits ``offset_hz`` below the target frequency), phase-continuous from block 0 of
+    the session, like the host path's baseband mixer.
+    """
+    rate_per_s: float = 0.0
+    accel_per_s2: float = 0.0
+    offset_hz: float = 0.0
+
+    def eps(self, t: float) -> float:
+        return self.rate_per_s * t + 0.5 * self.accel_per_s2 * t * t
+
+    def eps_int(self, t: float) -> float:
+        """Integral of eps from 0 to t."""
+        return 0.5 * self.rate_per_s * t * t + self.accel_per_s2 * t ** 3 / 6.0
+
+    @property
+    def active(self) -> bool:
+        return (self.rate_per_s != 0.0 or self.accel_per_s2 != 0.0
+                or self.offset_hz != 0.0)
 
 
 def _rnd(x: float) -> int:
@@ -67,19 +107,49 @@ def _chip_rate(sv) -> float:
 
 def _check_supported(sv, ch: int) -> None:
     tag = f"channel {ch} (sys {sv.sys}, prn {sv.prn})"
-    if sv.sys not in (_SYS_GPS, _SYS_SBAS, _SYS_GALILEO, _SYS_BEIDOU):
+    if sv.sys not in (_SYS_GPS, _SYS_QZSS, _SYS_SBAS, _SYS_GALILEO, _SYS_BEIDOU):
         raise NotImplementedError(
             f"{tag}: system {sv.sys} not supported by the FPGA command "
-            "generator (GPS 0, SBAS 2, BeiDou 3, Galileo 5 only)")
+            "generator (GPS 0, QZSS 1, SBAS 2, BeiDou 3, Galileo 5 only)")
     if sv.tx_time_valid == 0:
         raise NotImplementedError(
             f"{tag}: tx_time_valid == 0 (receiver-time nav) is not supported")
-    if sv.fading.model != 0:
-        raise NotImplementedError(f"{tag}: fading / gain knots not supported")
+
+
+class _Fade:
+    """Complex fading gain of one channel on the block-edge grid ``k * block_samples / fs``.
+
+    Edges are fetched in chunks from ``fading_gain_series`` (one channel process per call,
+    values depend only on (config, prn, time), so any block can be asked in any order)."""
+    CHUNK = 256
+
+    def __init__(self, sv, dt: float):
+        from backend.synth import _lib
+        self._lib = _lib.load_lib()
+        _lib.bind_fading(self._lib)
+        self._cfg = sv.fading
+        self._prn = int(sv.prn)
+        self._dt = dt
+        self._k0 = 0
+        self._h = None
+
+    def edges(self, k: int):
+        """(h at the start, h at the end) of absolute block ``k``."""
+        h = self._h
+        if h is None or not self._k0 <= k < self._k0 + len(h) - 1:
+            n = self.CHUNK + 1
+            buf = (ctypes.c_double * (2 * n))()
+            self._lib.fading_gain_series(ctypes.byref(self._cfg), self._prn,
+                                         k * self._dt, self._dt, n, buf)
+            a = np.ctypeslib.as_array(buf)
+            self._h, self._k0 = a[0::2] + 1j * a[1::2], k
+            h = self._h
+        i = k - self._k0
+        return complex(h[i]), complex(h[i + 1])
 
 
 def _kind_of(sv) -> int:
-    if sv.sys in (_SYS_GPS, _SYS_SBAS):
+    if sv.sys in (_SYS_GPS, _SYS_QZSS, _SYS_SBAS):
         return cmdfmt.KIND_CA
     if sv.sys == _SYS_BEIDOU:
         return cmdfmt.KIND_B1I
@@ -96,7 +166,7 @@ class _Static:
         self.sv = sv
         self.ch = ch
         self.kind = _kind_of(sv)
-        # PRN field of the command record = C/A ROM index (SBAS 120..150 -> 33..63)
+        # PRN field of the command record = C/A ROM index (SBAS / QZSS -> 33..63, see roms.CA_FAMILY)
         self.rom_prn = (roms.ca_index(int(sv.sys), int(sv.prn))
                         if self.kind == cmdfmt.KIND_CA else int(sv.prn))
         self.L = _code_len(sv)
@@ -223,8 +293,10 @@ def _carr_words(f: float, ph: float, fs: float) -> tuple[int, int]:
     return inc, int(cyc * 4294967296.0) & _U32
 
 
-def _coefs(g: float, scale: float, cboc: int) -> tuple[int, int, int]:
+def _coefs(g: float, scale: float, cboc: int, clamp: bool = False) -> tuple[int, int, int]:
     k = scale * (1 << W.COEF_FRAC_BITS)
+    if clamp:               # a fading peak must not stop the run: saturate instead of raising
+        g = min(g, ((1 << (W.COEF_BITS - 1)) - 1) / (k * ((CBOC_A + CBOC_B) if cboc else 1.0)))
     c0 = _rnd(g * k)
     if cboc:
         c = (c0, _rnd(g * k * (CBOC_A + CBOC_B)), _rnd(g * k * (CBOC_A - CBOC_B)))
@@ -258,7 +330,7 @@ def generate_blocks(band, first_block: int = 0, n_blocks: int | None = None,
                     out_lsb: float = 32767.0, *, sample_offset: int = 0,
                     active: Callable[[int, int], bool] | None = None,
                     limit_fs: float | None = None, f_eng: float = 250e6,
-                    min_per_system: int = 3
+                    min_per_system: int = 3, common_ramp: CommonRamp | None = None
                     ) -> Iterator[tuple[int, list[cmdfmt.ChannelBlock]]]:
     """Yield ``(first_block + j, [ChannelBlock, ...])`` for plan blocks
     j = 0 .. total_samples // block_samples - 1 (at most ``n_blocks``).
@@ -281,6 +353,7 @@ def generate_blocks(band, first_block: int = 0, n_blocks: int | None = None,
     count.  The returned iterator then has ``.channel_plan`` (kept, dropped,
     nch, nch_max, T, fs_max).  Default None: unchanged behaviour.
     """
+    ramp = common_ramp if (common_ramp is not None and common_ramp.active) else None
     cplan = None
     if limit_fs is not None:
         cplan = plan_channels(band, limit_fs, f_eng, min_per_system)
@@ -309,6 +382,7 @@ def generate_blocks(band, first_block: int = 0, n_blocks: int | None = None,
     cbocs = [int(st.sv.cboc) if st.sv.sub_carrier_hz > 0.0 else 0
              for st in statics]
     coefs = [_coefs(g, scale, c) for g, c in zip(gains, cbocs)]
+    fades = [_Fade(st.sv, bs / fs) if st.sv.fading.model != 0 else None for st in statics]
 
     def gen():
         for j in range(nblk):
@@ -318,6 +392,27 @@ def generate_blocks(band, first_block: int = 0, n_blocks: int | None = None,
                     continue
                 sv = st.sv
                 f, ph, rate, cp0 = _kinematics(sv, st.L, st.rate_nom, j * bs + sample_offset, fs)
+                if ramp is not None:
+                    t_blk = (first_block + j) * bs / fs
+                    t_mid = t_blk + 0.5 * bs / fs
+                    f_rf = float(band.centre_hz) + f
+                    f -= ramp.eps(t_mid) * f_rf
+                    ph -= _TWO_PI * f_rf * ramp.eps_int(t_blk)
+                    rate -= ramp.eps(t_mid) * st.rate_nom
+                    cp0 -= st.rate_nom * ramp.eps_int(t_blk)
+                    if ramp.offset_hz:
+                        f += ramp.offset_hz
+                        ph += _TWO_PI * ramp.offset_hz * t_blk
+                coef = coefs[st.ch]
+                if fades[st.ch] is not None:
+                    h0, h1 = fades[st.ch].edges(first_block + j)
+                    a0 = cmath.phase(h0) if h0 else 0.0
+                    a1 = cmath.phase(h1) if h1 else a0
+                    d = (a1 - a0 + math.pi) % _TWO_PI - math.pi      # unwrapped step, |d| <= pi
+                    ph += a0
+                    f += d / (_TWO_PI * bs / fs)
+                    coef = _coefs(gains[st.ch] * 0.5 * (abs(h0) + abs(h1)), scale,
+                                  cbocs[st.ch], clamp=True)
                 cinc, cph = _carr_words(f, ph, fs)
                 lim = st.L * _FRAC
                 cp_fx = _rnd((cp0 % st.L) * _FRAC)
@@ -331,7 +426,7 @@ def generate_blocks(band, first_block: int = 0, n_blocks: int | None = None,
                     code_inc=code_inc, code_phase0=cp_fx, sign_phase0=sp,
                     sign_idx0=0, sign_bits=bits,
                     boc=int(sv.sub_carrier_hz > 0.0), cboc=cbocs[st.ch],
-                    coef=coefs[st.ch]))
+                    coef=coef))
             yield first_block + j, recs
 
     if cplan is None:
